@@ -1,0 +1,10 @@
+[Unit]
+Description=Refresh imported Iron memory every five minutes
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=5min
+Unit=iron-memory-refresh.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,244 @@
+use anyhow::{Context, Result};
+use clap::{Args, Parser, Subcommand};
+use iron_suite::{backup, import, mcp, native, output, refresh, service, store::Store};
+use serde_json::json;
+use std::{
+    io::{self, Write},
+    path::PathBuf,
+};
+
+#[derive(Parser)]
+#[command(
+    name = "iron",
+    version,
+    about = "Local memory retrieval for Iron Suite"
+)]
+struct Cli {
+    #[arg(long, global = true)]
+    db: Option<PathBuf>,
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    Memory {
+        #[command(subcommand)]
+        command: MemoryCommand,
+    },
+    Context(ContextArgs),
+    Mcp {
+        #[arg(long)]
+        claude_root: Option<PathBuf>,
+        #[arg(long)]
+        cavemem_db: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
+enum MemoryCommand {
+    Backup {
+        #[arg(long)]
+        output: PathBuf,
+    },
+    Export {
+        #[arg(long)]
+        output: PathBuf,
+        #[arg(long, default_value = "native", value_parser = ["native", "summaries"])]
+        scope: String,
+    },
+    Remember {
+        #[arg(long)]
+        title: String,
+        #[arg(long)]
+        content: String,
+        #[arg(long)]
+        project: String,
+        #[arg(long)]
+        kind: Option<String>,
+        #[arg(long)]
+        agent: Option<String>,
+    },
+    Import {
+        #[arg(long)]
+        claude_root: Option<PathBuf>,
+        #[arg(long)]
+        cavemem_db: Option<PathBuf>,
+        #[arg(long)]
+        native_jsonl: Option<PathBuf>,
+    },
+    Search(SearchArgs),
+    Get {
+        id: String,
+        #[arg(long, default_value_t = 0)]
+        offset: usize,
+        #[arg(long, default_value_t = 4000)]
+        max_bytes: usize,
+    },
+    Related {
+        id: String,
+        #[arg(long)]
+        relation: Option<String>,
+        #[arg(long, default_value_t = 10)]
+        limit: usize,
+        #[arg(long, default_value_t = 4000)]
+        max_bytes: usize,
+    },
+    Stats,
+}
+
+#[derive(Args)]
+struct SearchArgs {
+    query: String,
+    #[arg(long, conflicts_with = "repo")]
+    project: Option<String>,
+    #[arg(long)]
+    repo: Option<PathBuf>,
+    #[arg(long)]
+    strict_project: bool,
+    #[arg(long, default_value_t = 10)]
+    limit: usize,
+    #[arg(long, default_value_t = 4000)]
+    max_bytes: usize,
+    #[arg(long, value_parser=["all", "curated", "history", "native"])]
+    source: Option<String>,
+}
+
+#[derive(Args)]
+struct ContextArgs {
+    #[command(flatten)]
+    search: SearchArgs,
+    #[arg(long, default_value="developer", value_parser=["developer", "reviewer", "verifier"])]
+    role: String,
+}
+
+impl SearchArgs {
+    fn request(self, role: Option<String>) -> Result<service::SearchRequest> {
+        let project = match self.repo {
+            Some(repo) => Some(import::project_for_repo(&repo)?),
+            None => self.project,
+        };
+        Ok(service::SearchRequest {
+            query: self.query,
+            project,
+            strict_project: self.strict_project,
+            limit: Some(self.limit),
+            max_bytes: Some(self.max_bytes),
+            role,
+            source: self.source,
+        })
+    }
+}
+
+fn default_db() -> Result<PathBuf> {
+    let home = std::env::var_os("HOME").context("HOME is unset; supply --db")?;
+    Ok(PathBuf::from(home).join(".local/share/iron/memory.db"))
+}
+
+fn run(cli: Cli) -> Result<()> {
+    let db = cli.db.map(Ok).unwrap_or_else(default_db)?;
+    if let Command::Mcp {
+        claude_root,
+        cavemem_db,
+    } = &cli.command
+    {
+        if claude_root.is_some() || cavemem_db.is_some() {
+            refresh::run(&db, claude_root.as_deref(), cavemem_db.as_deref(), None)?;
+        }
+        return mcp::serve(&db);
+    }
+    let result = match cli.command {
+        Command::Memory {
+            command: MemoryCommand::Backup { output },
+        } => backup::run(&db, &output)?,
+        Command::Memory {
+            command:
+                MemoryCommand::Remember {
+                    title,
+                    content,
+                    project,
+                    kind,
+                    agent,
+                },
+        } => native::remember(
+            &db,
+            native::RememberRequest {
+                title,
+                content,
+                project,
+                kind,
+                agent,
+            },
+        )?,
+        Command::Memory {
+            command:
+                MemoryCommand::Import {
+                    claude_root,
+                    cavemem_db,
+                    native_jsonl,
+                },
+        } => refresh::run(
+            &db,
+            claude_root.as_deref(),
+            cavemem_db.as_deref(),
+            native_jsonl.as_deref(),
+        )?,
+        Command::Memory { command } => {
+            let store = Store::open(&db, false)
+                .context("cannot open Iron index; run memory import first")?;
+            match command {
+                MemoryCommand::Search(args) => service::search(&store, args.request(None)?)?,
+                MemoryCommand::Get {
+                    id,
+                    offset,
+                    max_bytes,
+                } => service::get(
+                    &store,
+                    service::GetRequest {
+                        id,
+                        offset,
+                        max_bytes: Some(max_bytes),
+                    },
+                )?,
+                MemoryCommand::Related {
+                    id,
+                    relation,
+                    limit,
+                    max_bytes,
+                } => service::related(
+                    &store,
+                    service::RelatedRequest {
+                        id,
+                        relation,
+                        limit: Some(limit),
+                        max_bytes: Some(max_bytes),
+                    },
+                )?,
+                MemoryCommand::Export { output, scope } => {
+                    native::export_jsonl(&store, &output, &scope)?
+                }
+                MemoryCommand::Stats => store.stats()?,
+                MemoryCommand::Import { .. }
+                | MemoryCommand::Remember { .. }
+                | MemoryCommand::Backup { .. } => unreachable!(),
+            }
+        }
+        Command::Context(args) => {
+            let store = Store::open(&db, false)
+                .context("cannot open Iron index; run memory import first")?;
+            service::search(&store, args.search.request(Some(args.role))?)?
+        }
+        Command::Mcp { .. } => unreachable!(),
+    };
+    io::stdout()
+        .lock()
+        .write_all(output::encode(&result)?.as_bytes())?;
+    Ok(())
+}
+
+fn main() {
+    if let Err(error) = run(Cli::parse()) {
+        eprintln!("{}", json!({"error": format!("{error:#}")}));
+        std::process::exit(1);
+    }
+}

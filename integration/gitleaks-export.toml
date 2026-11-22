@@ -1,0 +1,13 @@
+title = "Iron Memory JSONL Export Gitleaks Config"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Iron content-addressed memory IDs and SHA-256 hex digests (matched secret token only, never whole JSONL line)"
+regexTarget = "secret"
+regexes = [
+  '''^mem_[0-9a-f]{64}$''',
+  '''^[0-9a-f]{64}$''',
+  '''^8080/recommendations[`'"]?(?:\s+(?:in|row|\+))?$''',
+]

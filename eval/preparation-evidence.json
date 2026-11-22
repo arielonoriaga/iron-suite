@@ -1,0 +1,37 @@
+{
+  "prepared_at_utc": "2026-11-20T17:39:56.351519+00:00",
+  "scope": "Evaluation preparation only; no Iron binary or upstream package test was executed.",
+  "python_version": "3.14.10",
+  "historical": {
+    "cases": 40,
+    "calibration": 20,
+    "heldout": 20,
+    "english": 25,
+    "spanish": 15,
+    "exact_identifier": 14,
+    "natural_paraphrase": 26,
+    "fixture_sha256": "ccbb2cd2fc9d61e827a8663fe353e83df0c1b33f448076619a27540403cefcac",
+    "source_manifest_validation": "matched supplied copied corpus"
+  },
+  "synthetic": {
+    "cases": 10,
+    "fixture_sha256": "e1b8f4fa2950f2f66b7ad612ffeb24ad16cee51f5e5745982fbe7e40c2fb9554",
+    "source_manifest_validation": "matched synthetic corpus"
+  },
+  "runner_tests": {
+    "command": "python3 -m unittest discover -s eval -p test_runner.py -v",
+    "observed_result": "12 tests passed",
+    "runner_sha256": "2b83837f9f9090acf79857d603265f8863a0afcb758354ad63a292273cfc4e1f",
+    "tests_sha256": "d58eaecf538dfa2f4c1ffd04814fd2213acb148eebbd286b9f5f9f2fc200d4bf",
+    "boundary": "fixture executable; does not verify Iron"
+  },
+  "entropy": {
+    "status": "not_measured",
+    "reason": "staging directory is not a Git repository; file has no existing entropy analysis"
+  },
+  "upstream": {
+    "sha": "cd470f2386b10bbc8d6fafd7a94832593d5e036e",
+    "test_execution": "not_run",
+    "source_copying": "none"
+  }
+}

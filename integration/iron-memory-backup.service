@@ -1,0 +1,9 @@
+[Unit]
+Description=Verified rolling SQLite backup of authoritative Iron Memory store
+
+[Service]
+Type=oneshot
+UMask=0077
+Nice=10
+IOSchedulingClass=idle
+ExecStart=%h/.local/bin/iron-memory-backup

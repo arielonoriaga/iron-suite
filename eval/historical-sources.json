@@ -1,0 +1,201 @@
+{
+  "schema_version": 1,
+  "prepared_utc": "2026-11-20",
+  "fixture_sha256": "ccbb2cd2fc9d61e827a8663fe353e83df0c1b33f448076619a27540403cefcac",
+  "fixture_origin": "Independent read-only review of the supplied copied Markdown corpus; no Iron search results used.",
+  "source_root_label": "reference-corpus",
+  "sources": {
+    "agent-memory/iron-backend-review/MEMORY.md": {
+      "sha256": "cf1628926f314f2d06016925847fe35e3905c594377940b934525de4e531fd3b",
+      "bytes": 10222
+    },
+    "agent-memory/iron-backend-review/gotcha_concurrent_worktree_migration_race.md": {
+      "sha256": "4eca274f2226cd0175afceaf198992c183c8fd8dcc2975f59f21b31abadb9465",
+      "bytes": 2574
+    },
+    "agent-memory/iron-backend-review/pattern_cas_blob_gc_supersede_age.md": {
+      "sha256": "79175c50401e521f84dd104cf471bd899662a3ba95783a4b7b622a639988f346",
+      "bytes": 1844
+    },
+    "agent-memory/iron-backend-review/pattern_file_sync_engine_review.md": {
+      "sha256": "f4a44e9b44393692a6e303fe198d7a65b619c84998316b11ffe29a19ff5a61f2",
+      "bytes": 16833
+    },
+    "agent-memory/iron-backend-review/pattern_internal_model_behind_legacy_wire.md": {
+      "sha256": "02624f2f686d7748ac097d20894fff4cea74a2f5b8c1466447cf5b666a65c225",
+      "bytes": 1888
+    },
+    "agent-memory/iron-backend-review/pattern_jsonl_merge_reader_review.md": {
+      "sha256": "05e863b94144a2b402e78179001b659205234864e18e9b6a18e357337a4b6709",
+      "bytes": 2272
+    },
+    "agent-memory/iron-backend-review/pattern_landed_check_vacuous_ancestor.md": {
+      "sha256": "73e73d9120a31e567bef80c87517ccf0e854b836f6311b06f16e5a4ff4456e7b",
+      "bytes": 1242
+    },
+    "agent-memory/iron-backend-review/pattern_sync_client_stale_self_echo.md": {
+      "sha256": "8d64b5a1da54e446b4a5c928aeb6495a6bc3a24f899092e922a28efc13452e6c",
+      "bytes": 4520
+    },
+    "agent-memory/test-quality-engineer/MEMORY.md": {
+      "sha256": "a993c225e457fcf65e356f0f686f2552043e657f694da6c17651eaaa8392ecd9",
+      "bytes": 4326
+    },
+    "agent-memory/test-quality-engineer/feedback_ledger_stale_task_ids.md": {
+      "sha256": "22eefdfc27c7a73e3763eaeeb11aaca4828e3042fcf34bd501029a505233ccdd",
+      "bytes": 4282
+    },
+    "agent-memory/test-quality-engineer/ignore-gated-infra-tests.md": {
+      "sha256": "be13e71cc3959485179a0d094a718eeb61ec3ef18f91bfe4c219c161d8792fb0",
+      "bytes": 1546
+    },
+    "agent-memory/test-quality-engineer/technique-fake-timer-real-protocol-ms-boundary-limit.md": {
+      "sha256": "ea047cec3227b7c5236977307ab60e68f6c7f2df519f4c4795327acfd20e6036",
+      "bytes": 3103
+    },
+    "agent-memory/test-quality-engineer/technique-mutate-the-fake.md": {
+      "sha256": "f1f85347a39d13d475881bdf0b76d27c3b302055dc0f04a7bfbfa4ed565d6afd",
+      "bytes": 1667
+    },
+    "agent-memory/test-quality-engineer/technique-test-deletion-name-diff-audit.md": {
+      "sha256": "7a319b441570342c96e718e89470b0faca8df3a8f7ed172cd7925436b36cad50",
+      "bytes": 2305
+    },
+    "memory/MEMORY.md": {
+      "sha256": "d15917de55123e601f09771e4d0c410fb7c2e247c105a7f8a1571d5fab8223b0",
+      "bytes": 132
+    },
+    "memory/projects/realtime-api-sdk/MEMORY.md": {
+      "sha256": "2a813910ae82dd1aaf0473611a161535de648da6741f90c4f2c05445734f884c",
+      "bytes": 439
+    },
+    "memory/projects/realtime-api-sdk/project-tooling.md": {
+      "sha256": "c4fe493fc58276594273c86d3be8cca14232c09b55660b13d4fd6df8ebb58b89",
+      "bytes": 762
+    },
+    "memory/projects/realtime-game-server/MEMORY.md": {
+      "sha256": "f3fc15b259e1ba130be9f6a48fcd7c85de0799a250e66249fb4688b50e66fb34",
+      "bytes": 12732
+    },
+    "memory/projects/realtime-game-server/bet-config-cascade.md": {
+      "sha256": "abb6a60728d2b5ac492552b7d8dd131ee987bb1361c880b83666a19eb200d58d",
+      "bytes": 6436
+    },
+    "memory/projects/realtime-game-server/round-v2-runaway-state-diagnosis.md": {
+      "sha256": "db2bcf9473c68745c58c767bb3142be79eaa7438486b721d45e1af4d2767706f",
+      "bytes": 2327
+    },
+    "memory/projects/realtime-game-server/dynamodb-slated-for-removal.md": {
+      "sha256": "a473ee40d9e1c39d06b1f27cdb195f991a80af8f36357e1019557a6c49aa7ceb",
+      "bytes": 1303
+    },
+    "memory/projects/realtime-game-server/arcade-client-tab-return-freeze.md": {
+      "sha256": "29be9103ac4047bd8828d5228dbc06c3168cffd8baae113b7e7a84d430b3fc7b",
+      "bytes": 1919
+    },
+    "memory/projects/realtime-game-server/session-token-fake-rotations.md": {
+      "sha256": "2560ea2374ac203b11a752b975f4ad13febd96d269db08a4870e15f62615889e",
+      "bytes": 2283
+    },
+    "memory/projects/realtime-game-server/top-waits-query-optimization.md": {
+      "sha256": "5acc32482613e448c0c08f7ad15cb13212a748be65d25e9e558ebad884dccc57",
+      "bytes": 5393
+    },
+    "memory/projects/realtime-game-server/typecheck-noop-trap-site-manager.md": {
+      "sha256": "d9a738146bdca3c7416c48e1af9bc42f9c6f10a8f6f134ae50c08f11496f03c9",
+      "bytes": 924
+    },
+    "memory/projects/realtime-game-server/wrapper-double-api-intentional.md": {
+      "sha256": "9003f36c263773830076decfa6bccbee0d558d3fb64ff7ba548ad012fe6dfa9d",
+      "bytes": 1480
+    },
+    "memory/projects/dot-claude/MEMORY.md": {
+      "sha256": "be199ec10fc26180bf889f86745e3ff74da03a504a1e8370300d9c4a854bb60d",
+      "bytes": 3128
+    },
+    "memory/projects/dot-claude/agent-journal.md": {
+      "sha256": "c107af5c94cfae29d613d657d125b7a94e05464115e8e9117a6594fa089ea37c",
+      "bytes": 1912
+    },
+    "memory/projects/dot-claude/deploy-from-current-main.md": {
+      "sha256": "8120bbb1dc1806932178461376975fb59b604f0356697ada170588de314ee55b",
+      "bytes": 1033
+    },
+    "memory/projects/dot-claude/guardrail-hook.md": {
+      "sha256": "5e677db9ac5117d283499886b46254a225f5bd7af12b3ae79b9620d729165f82",
+      "bytes": 1891
+    },
+    "memory/projects/dot-claude/laptop-work-hours.md": {
+      "sha256": "7728c3933f98a3eb5ddca9f46cf930a037591cc32bf176dbf9c1ade6aeaaf74a",
+      "bytes": 1725
+    },
+    "memory/projects/dot-claude/memory-compact-hook.md": {
+      "sha256": "8deebc22ddc7acac6142f8ac92fb06d54281916ec766bbfbd0cd8b66e7397e9f",
+      "bytes": 2332
+    },
+    "memory/projects/dot-claude/project-map-hooks.md": {
+      "sha256": "3a104ef3330c14f23fd134a3070c05f385c56d9f7a187b61bcba13ec8d3d9d91",
+      "bytes": 1715
+    },
+    "memory/projects/dot-claude/runq-coordinator.md": {
+      "sha256": "a38b8c4edaf4a85c95c91416b986030236011c56ef456044a61bdcd925289048",
+      "bytes": 3880
+    },
+    "memory/projects/dot-claude/rust-regex-no-backrefs.md": {
+      "sha256": "179485ce8ecb3f10e949516957903207c0642943f8aa8ea61843e288f722f9ee",
+      "bytes": 945
+    },
+    "memory/projects/entropy-hunter/MEMORY.md": {
+      "sha256": "ed96e6787fb5ee199d5058a0dde42629fbf150a4d87f4d43ed4ee248d82662a4",
+      "bytes": 174
+    },
+    "memory/projects/entropy-hunter/no-optional-param-bags.md": {
+      "sha256": "724cbe03686c975d6522c009ead6ed2d4344ecdb3d412a682bc31be57c6b67a4",
+      "bytes": 809
+    },
+    "memory/projects/retail-pos/MEMORY.md": {
+      "sha256": "0a9e46674e1b3d24a61a6f95203f5617ca35f291a0458dc48ab6e3a46ba70ea7",
+      "bytes": 16784
+    },
+    "memory/projects/retail-pos/feedback_nav_never_loses_place.md": {
+      "sha256": "14ceae355979d29a865f0bdeccaddd038310a6bccdbbaf2626dd7e47bd78c28c",
+      "bytes": 1114
+    },
+    "memory/projects/retail-pos/gotcha_solid_preload_is_not_a_route_guard.md": {
+      "sha256": "fe1eebcc40c0ec35156f0af7de2e78667addb310f958dbeb14443e01607cf99a",
+      "bytes": 1910
+    },
+    "memory/projects/retail-pos/project_cargo_fmt_unsafe.md": {
+      "sha256": "0a4eac7c4b0cc8013224028f50fb5bb9786da3c859a690c71283f78816843ff8",
+      "bytes": 1452
+    },
+    "memory/projects/retail-pos/project_intake_variant_row_identity.md": {
+      "sha256": "602e73d0b785b52e5f7ecbbd1b85190525f22e04592185172bf1b18c6ab5474f",
+      "bytes": 3059
+    },
+    "memory/projects/retail-pos/project_permission_seed_list_gotcha.md": {
+      "sha256": "45cf685ed110e39b633b48adbc101f9d1ef70bb92f58ecb6faf47e7b999491db",
+      "bytes": 1719
+    },
+    "memory/projects/retail-pos/project_price_rounding_swallows_cheap_prices.md": {
+      "sha256": "f8096dfd8b946fbac03ebe0734fec4636f8690bca3cdf3a0b9ccce3a210e1987",
+      "bytes": 1459
+    },
+    "memory/projects/retail-pos/project_search_multiword_word_order.md": {
+      "sha256": "17ceabfa12326338af6896f030b4b7456693ae5129871f8a6d7907b26d9922bf",
+      "bytes": 2135
+    },
+    "memory/projects/retail-pos/project_serde_empty_array_footgun.md": {
+      "sha256": "561569478492a841df79f9219b2e8065ba020f70fa90f14b67e90075486b97c6",
+      "bytes": 3305
+    },
+    "memory/projects/retail-pos/project_stale_test_db_masks_broken_tests.md": {
+      "sha256": "64283d1f76b17bb12ef5c8108829bf93eb668a94b004dd190c347bc878f9a0fe",
+      "bytes": 3315
+    },
+    "memory/projects/retail-pos/project_turno_gated_selling.md": {
+      "sha256": "ca12c004ddd7adbd51ee247f1b8410ec42126a8258f78a1cc3d881fe06bf46d9",
+      "bytes": 4509
+    }
+  }
+}

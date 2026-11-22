@@ -1,0 +1,11 @@
+[Unit]
+Description=Nightly rolling backup of authoritative Iron Memory store
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+Persistent=true
+RandomizedDelaySec=5m
+Unit=iron-memory-backup.service
+
+[Install]
+WantedBy=timers.target
