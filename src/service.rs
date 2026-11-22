@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use crate::{model::SearchOptions, output, store::Store};
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
@@ -53,6 +55,14 @@ fn identifier(id: &str) -> Result<()> {
 }
 
 pub fn search(store: &Store, req: SearchRequest) -> Result<Value> {
+    search_with_archive(store, None, req)
+}
+
+pub fn search_with_archive(
+    store: &Store,
+    db_path: Option<&Path>,
+    req: SearchRequest,
+) -> Result<Value> {
     let budget = req.max_bytes.unwrap_or(output::DEFAULT_BUDGET);
     output::validate_budget(budget)?;
     if req.query.trim().is_empty() || req.query.len() > 2048 {
@@ -77,16 +87,46 @@ pub fn search(store: &Store, req: SearchRequest) -> Result<Value> {
     }
     let requested = limit(req.limit)?;
     let source = req.source.as_deref().unwrap_or("all");
+    if req.role.as_deref() == Some("reviewer") && matches!(source, "history" | "native" | "archive") {
+        bail!("reviewer context excludes history, archive, and native notes; use source all or curated");
+    }
+    if source == "archive" {
+        let Some(archive_path) = db_path.map(|p| p.with_file_name("archive.db")) else {
+            return output::items(Vec::new(), budget);
+        };
+        if !archive_path.is_file() {
+            return output::items(Vec::new(), budget);
+        }
+        let archive_store = Store::open(&archive_path, false)?;
+        let hits = archive_store.search(
+            &req.query,
+            &SearchOptions {
+                project: req.project,
+                include_global: !req.strict_project,
+                kinds: Vec::new(),
+                source_types: Vec::new(),
+                exclude_superseded: false,
+                limit: requested,
+            },
+        )?;
+        let values = hits
+            .into_iter()
+            .map(|mut hit| {
+                hit.title = output::prefix(&hit.title, 200).to_owned();
+                hit.snippet = output::prefix(&hit.snippet, 480).to_owned();
+                serde_json::to_value(hit)
+            })
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        return output::items(values, budget);
+    }
+
     let source_types = match source {
         "all" => Vec::new(),
         "curated" => vec!["markdown".to_owned(), "iron".to_owned()],
         "history" => vec!["cavemem".to_owned()],
         "native" => vec!["iron".to_owned()],
-        _ => bail!("source must be all, curated, history, or native"),
+        _ => bail!("source must be all, curated, history, native, or archive"),
     };
-    if req.role.as_deref() == Some("reviewer") && matches!(source, "history" | "native") {
-        bail!("reviewer context excludes history and native notes; use source all or curated");
-    }
     let hits = store.search(
         &req.query,
         &SearchOptions {
@@ -98,6 +138,7 @@ pub fn search(store: &Store, req: SearchRequest) -> Result<Value> {
             } else {
                 source_types
             },
+            exclude_superseded: false,
             limit: requested,
         },
     )?;
@@ -113,18 +154,44 @@ pub fn search(store: &Store, req: SearchRequest) -> Result<Value> {
 }
 
 pub fn get(store: &Store, req: GetRequest) -> Result<Value> {
+    get_with_archive(store, None, req)
+}
+
+pub fn get_with_archive(
+    store: &Store,
+    db_path: Option<&Path>,
+    req: GetRequest,
+) -> Result<Value> {
     identifier(&req.id)?;
     let budget = req.max_bytes.unwrap_or(output::DEFAULT_BUDGET);
     output::validate_budget(budget)?;
-    match store.get(&req.id)? {
-        None => Ok(json!({"found": false, "id": req.id})),
-        Some(record) => {
+    if let Some(record) = store.get(&req.id)? {
+        let content = record.content.clone();
+        let signal = store.record_signal(&req.id)?;
+        let mut value = serde_json::to_value(record)?;
+        value["found"] = json!(true);
+        if let Some(sig) = signal
+            && sig.get("status").and_then(Value::as_str) == Some("superseded")
+        {
+            value["metadata"]["status"] = json!("superseded");
+            if let Some(rep) = sig.get("superseded_by") {
+                value["metadata"]["superseded_by"] = rep.clone();
+            }
+        }
+        return output::body(value, &content, req.offset, budget);
+    }
+    if let Some(archive_path) = db_path.map(|p| p.with_file_name("archive.db"))
+        && archive_path.is_file()
+    {
+        let archive_store = Store::open(&archive_path, false)?;
+        if let Some(record) = archive_store.get(&req.id)? {
             let content = record.content.clone();
             let mut value = serde_json::to_value(record)?;
             value["found"] = json!(true);
-            output::body(value, &content, req.offset, budget)
+            return output::body(value, &content, req.offset, budget);
         }
     }
+    Ok(json!({"found": false, "id": req.id}))
 }
 
 pub fn related(store: &Store, req: RelatedRequest) -> Result<Value> {

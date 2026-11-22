@@ -6,7 +6,7 @@
 
 Iron Suite solves two recurring failures in agentic software engineering:
 
-1. **Unbounded, noisy, cloud-locked agent memory:** `iron` indexes your curated Markdown memories and session history into a local SQLite FTS5 + WAL store, serves 4 deterministic MCP tools over `stdio` (locally or across machines via plain `ssh`), enforces **hard UTF-8 byte budgets (`--max-bytes`)**, and scrubs credentials/private spans before indexing — with **zero vector databases, zero hosted APIs, and zero background daemons**.
+1. **Unbounded, noisy, cloud-locked agent memory:** `iron` indexes your curated Markdown memories and session history into a compact local SQLite FTS5 + WAL store (with integer-keyed 32-byte SHA-256 content deduplication and hot/cold archive tiering), serves **5 deterministic MCP tools** over `stdio` (locally or across machines via plain `ssh`), auto-links lessons across separate conversations via shared technical anchors, reinforces helpful memories while decaying superseded ones, enforces **hard UTF-8 byte budgets (`--max-bytes`)**, and scrubs credentials/private spans before indexing — with **zero vector databases, zero hosted APIs, and zero background daemons**.
 2. **rubber-stamp "looks good" AI coding loops:** The bundled **7 `iron-*` skills** and **7 role-isolated subagents** enforce bounded ownership (`irondev`), fresh-context adversarial code & security review (`irondev-review`), offensive vulnerability hunting with `1 -> N` structural variant sweeps (`iron-hunt`), measurement-first performance profiling (`iron-perf`), systematic production forensics (`iron-debug`), and read-only architecture/security audits (`iron-audit`).
 
 ---
@@ -55,18 +55,26 @@ iron memory get mem_ID --max-bytes 4000
 iron memory related mem_ID --relation references
 iron context 'migration rollback' --project commerce-core --role reviewer
 
-# Save durable native notes & verified active-WAL backups
-iron memory remember --project iron-suite --agent claude --kind decision \
-  --title 'Shared memory hub' --content 'Desktop holds the authoritative Iron store.'
+# Save durable native notes or corrections (superseding outdated guidance & auto-linking past sessions)
+iron memory remember --project iron-suite --agent claude --kind correction \
+  --supersedes mem_OLD_ID \
+  --title 'Shared memory hub' --content 'Desktop holds the authoritative Iron v2 store.'
+iron memory feedback mem_ID --outcome helpful
+
+# Cross-session anchor linking, pattern consolidation & hot/cold v2 archive split
+iron memory consolidate --min-occurrences 3
+iron memory migrate --from ~/.local/share/iron/memory.v1.db \
+  --output ~/.local/share/iron/memory.db --archive-output ~/.local/share/iron/archive.db
 iron memory backup --output ~/backups/iron-snapshot.db
 ```
 
 #### MCP Server (`iron mcp`)
-Exposes 4 tools over newline-delimited JSON-RPC `stdio` (`2025-06-18` / `2025-03-26` / `2024-11-05`):
-- `memory_search` — tokenized FTS5 retrieval with `project`, `strict_project`, `role`, `source` (`all|curated|history|native`), and `max_bytes` (`256..65536`, default `4000`).
-- `memory_get` — UTF-8 byte-paginated record retrieval (`offset` / `next_offset`); accepts record IDs only, never arbitrary file paths.
-- `memory_related` — traverses explicit outgoing/incoming Markdown links without inventing semantic edges.
-- `memory_remember` — replay-safe native durable note persistence with `<private>` tag and credential redaction prior to hashing.
+Exposes 5 tools over newline-delimited JSON-RPC `stdio` (`2025-06-18` / `2025-03-26` / `2024-11-05`):
+- `memory_search` — tokenized FTS5 retrieval ranked by BM25, bounded Hebbian usage/confirmation boost, and supersession decay, with `project`, `strict_project`, `role`, `source` (`all|curated|history|native|archive`), and `max_bytes` (`256..65536`, default `4000`).
+- `memory_get` — UTF-8 byte-paginated record retrieval (`offset` / `next_offset`) with supersession metadata, cold `archive.db` fallback, and per-session implicit usage reinforcement. Accepts record IDs only, never arbitrary file paths.
+- `memory_related` — traverses explicit Markdown `references`, `supersedes` chains, and deterministic high-IDF cross-conversation `shares_anchor` edges (including matched file/path/symbol/CWE/CVE evidence).
+- `memory_remember` — replay-safe native note & `correction` persistence (`supersedes: [...]`) with write-time cross-session `related_memories` discovery and `<private>`/credential redaction prior to hashing.
+- `memory_feedback` — explicitly reinforces `helpful` memories or demotes `outdated`/`contradicted` memories (with optional `superseded_by` pointer).
 
 #### Zero-Cloud Multi-Machine Shared Hub over SSH
 Run one authoritative SQLite WAL store on your workstation (`desktop`) and point every AI client on your laptop or remote devboxes at it over authenticated SSH — no sync conflicts, no open ports, no third-party cloud:

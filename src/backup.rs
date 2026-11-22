@@ -258,6 +258,7 @@ mod tests {
                 project: "iron-suite".into(),
                 kind: Some("decision".into()),
                 agent: Some("backup-test".into()),
+                ..Default::default()
             },
         )
         .unwrap()["id"]

@@ -21,6 +21,33 @@ pub struct MemoryLink {
     pub from_id: String,
     pub to_id: String,
     pub relation: String,
+    #[serde(default = "default_link_origin")]
+    pub origin: String,
+    #[serde(default = "default_link_weight")]
+    pub weight: f64,
+    #[serde(default)]
+    pub evidence: Vec<String>,
+}
+
+fn default_link_origin() -> String {
+    "explicit".to_owned()
+}
+
+fn default_link_weight() -> f64 {
+    1.0
+}
+
+impl MemoryLink {
+    pub fn explicit(from_id: String, to_id: String, relation: String) -> Self {
+        Self {
+            from_id,
+            to_id,
+            relation,
+            origin: "explicit".to_owned(),
+            weight: 1.0,
+            evidence: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -42,6 +69,14 @@ pub struct SearchHit {
     pub updated_at: i64,
     pub snippet: String,
     pub score: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub relation: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub evidence: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub superseded_by: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -51,6 +86,7 @@ pub struct ImportReport {
     pub unchanged: usize,
     pub removed: usize,
     pub links: usize,
+    pub auto_links: usize,
     pub warnings: Vec<String>,
 }
 
@@ -60,5 +96,6 @@ pub struct SearchOptions {
     pub include_global: bool,
     pub kinds: Vec<String>,
     pub source_types: Vec<String>,
+    pub exclude_superseded: bool,
     pub limit: usize,
 }

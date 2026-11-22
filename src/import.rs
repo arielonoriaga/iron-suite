@@ -478,10 +478,8 @@ fn collect_markdown(root: &Path, batch: &mut ImportBatch, budget: &mut Budget) -
     }
     batch
         .links
-        .extend(links.into_iter().map(|(from_id, to_id)| MemoryLink {
-            from_id,
-            to_id,
-            relation: "references".into(),
+        .extend(links.into_iter().map(|(from_id, to_id)| {
+            MemoryLink::explicit(from_id, to_id, "references".into())
         }));
     batch.groups.push(group);
     Ok(())

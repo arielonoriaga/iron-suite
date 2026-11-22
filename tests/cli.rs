@@ -282,7 +282,7 @@ fn mcp_stdio_initializes_calls_tools_and_keeps_notifications_silent() {
         .collect();
     assert_eq!(replies.len(), 5);
     assert_eq!(replies[0]["result"]["protocolVersion"], "2025-06-18");
-    assert_eq!(replies[1]["result"]["tools"].as_array().unwrap().len(), 4);
+    assert_eq!(replies[1]["result"]["tools"].as_array().unwrap().len(), 5);
     let content = replies[2]["result"]["content"][0]["text"].as_str().unwrap();
     assert!(content.len() <= 1000);
     assert_eq!(
@@ -431,4 +431,270 @@ fn mcp_handles_maximum_escaped_native_content_and_rejects_oversized_content() {
     assert_eq!(replies[1]["result"]["isError"], false);
     assert_eq!(replies[2]["result"]["isError"], true);
     assert_eq!(replies[3]["result"], json!({}));
+}
+
+#[test]
+fn migrate_v1_store_splits_hot_and_cold_archive_with_zero_loss_and_archive_fallback() {
+    let temp = tempfile::tempdir().unwrap();
+    let v1_db = temp.path().join("v1_legacy.db");
+    let conn = Connection::open(&v1_db).unwrap();
+    conn.pragma_update(None, "application_id", 0x4952_4f4e_i64)
+        .unwrap();
+    conn.execute_batch(
+        "PRAGMA user_version = 1;
+         CREATE TABLE bodies (
+             hash TEXT PRIMARY KEY NOT NULL CHECK(length(hash) = 64),
+             content TEXT NOT NULL
+         ) WITHOUT ROWID;
+         CREATE TABLE records (
+             rowid INTEGER PRIMARY KEY,
+             id TEXT NOT NULL UNIQUE,
+             source_group TEXT NOT NULL,
+             source_key TEXT NOT NULL UNIQUE,
+             source_type TEXT NOT NULL,
+             kind TEXT NOT NULL,
+             project TEXT NOT NULL,
+             title TEXT NOT NULL,
+             content_hash TEXT NOT NULL REFERENCES bodies(hash),
+             source_path TEXT NOT NULL,
+             updated_at INTEGER NOT NULL,
+             metadata TEXT NOT NULL
+         );
+         CREATE TABLE memory_links (
+             from_id TEXT NOT NULL REFERENCES records(id) ON DELETE CASCADE,
+             to_id TEXT NOT NULL REFERENCES records(id) ON DELETE CASCADE,
+             relation TEXT NOT NULL,
+             PRIMARY KEY (from_id, to_id, relation)
+         ) WITHOUT ROWID;
+         INSERT INTO bodies VALUES (
+             'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+             'Curated ledger rule referencing src/ledger_guard.rs and CWE-89.'
+         );
+         INSERT INTO bodies VALUES (
+             'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+             'Turn summary referencing src/ledger_guard.rs and CWE-89 in session two.'
+         );
+         INSERT INTO bodies VALUES (
+             'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+             'Cold raw tool output observation containing raretoken_coldobs_99.'
+         );
+         INSERT INTO records VALUES (
+             1, 'mem_curated_one', 'md:alpha:rule.md', 'md:alpha:rule.md', 'markdown', 'curated',
+             'alpha', 'Ledger guard rule',
+             'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+             'memory/projects/alpha/rule.md', 1000, '{}'
+         );
+         INSERT INTO records VALUES (
+             2, 'mem_summary_two', 'cavemem:summaries', 'cavemem:summary:2', 'cavemem', 'summary',
+             'beta', 'Session summary two',
+             'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+             'cavemem://summary/2', 2000, '{\"session_id\":\"sess-2\"}'
+         );
+         INSERT INTO records VALUES (
+             3, 'mem_obs_three', 'cavemem:observations', 'cavemem:obs:3', 'cavemem', 'observation',
+             'alpha', 'Raw bash observation',
+             'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+             'cavemem://observation/3', 3000, '{\"session_id\":\"sess-1\"}'
+         );
+         INSERT INTO memory_links VALUES ('mem_curated_one', 'mem_summary_two', 'references');",
+    )
+    .unwrap();
+    drop(conn);
+
+    let hot_db = temp.path().join("memory.db");
+    let archive_db = temp.path().join("archive.db");
+    let out = Command::new(env!("CARGO_BIN_EXE_iron"))
+        .args([
+            "memory",
+            "migrate",
+            "--from",
+            v1_db.to_str().unwrap(),
+            "--output",
+            hot_db.to_str().unwrap(),
+            "--archive-output",
+            archive_db.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let report: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(report["source_records"], 3);
+    assert_eq!(report["hot_records"], 2);
+    assert_eq!(report["archive_records"], 1);
+    assert!(report["auto_links_built"].as_u64().unwrap() >= 2);
+
+    // Hot search does not include cold observation, archive search finds it, and get falls back cleanly
+    let hot_miss: Value = serde_json::from_slice(
+        &Command::new(env!("CARGO_BIN_EXE_iron"))
+            .arg("--db")
+            .arg(&hot_db)
+            .args(["memory", "search", "raretoken_coldobs_99"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
+    assert_eq!(hot_miss["no_match"], true);
+
+    let arch_hit: Value = serde_json::from_slice(
+        &Command::new(env!("CARGO_BIN_EXE_iron"))
+            .arg("--db")
+            .arg(&hot_db)
+            .args([
+                "memory",
+                "search",
+                "raretoken_coldobs_99",
+                "--source",
+                "archive",
+            ])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
+    assert_eq!(arch_hit["results"][0]["id"], "mem_obs_three");
+
+    let fallback_get: Value = serde_json::from_slice(
+        &Command::new(env!("CARGO_BIN_EXE_iron"))
+            .arg("--db")
+            .arg(&hot_db)
+            .args(["memory", "get", "mem_obs_three"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
+    assert_eq!(fallback_get["found"], true);
+    assert!(
+        fallback_get["content"]
+            .as_str()
+            .unwrap()
+            .contains("raretoken_coldobs_99")
+    );
+}
+
+#[test]
+fn v02_autolink_reinforcement_feedback_supersession_and_consolidate_work_end_to_end() {
+    let fixture = Fixture::new();
+    fixture.import();
+
+    // Save two notes across different projects sharing technical anchors (src/outbox_worker.rs + SQLSTATE 40001)
+    let first = fixture
+        .call(&[
+            "memory",
+            "remember",
+            "--title",
+            "Outbox serialization failure",
+            "--content",
+            "Retry SQLSTATE 40001 inside src/outbox_worker.rs using jittered backoff.",
+            "--project",
+            "alpha",
+            "--agent",
+            "claude",
+            "--kind",
+            "gotcha",
+        ])
+        .0;
+    let first_id = first["id"].as_str().unwrap().to_owned();
+
+    let second = fixture
+        .call(&[
+            "memory",
+            "remember",
+            "--title",
+            "Beta outbox retry lesson",
+            "--content",
+            "Service beta also hit SQLSTATE 40001 in src/outbox_worker.rs during burst writes.",
+            "--project",
+            "beta",
+            "--agent",
+            "codex",
+            "--kind",
+            "note",
+        ])
+        .0;
+    let second_id = second["id"].as_str().unwrap().to_owned();
+    // Write-time cross-project auto-link discovery!
+    assert!(
+        second["related_memories"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|m| m["id"] == first_id && m["relation"] == "shares_anchor")
+    );
+
+    // Consolidate surfaces recurring anchor cluster across distinct memories
+    let consolidated = fixture
+        .call(&["memory", "consolidate", "--min-occurrences", "2"])
+        .0;
+    assert!(
+        consolidated["clusters"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["anchor"].as_str().unwrap().contains("outbox_worker.rs"))
+    );
+
+    // MCP session: supersede first_id via a correction, verify implicit get reinforcement & feedback tool
+    let mut child = Command::new(env!("CARGO_BIN_EXE_iron"))
+        .arg("--db")
+        .arg(&fixture.db)
+        .arg("mcp")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let messages = [
+        json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"v02-fixture","version":"1"}}}),
+        json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
+        json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"memory_remember","arguments":{
+            "title":"Corrected outbox retry cap",
+            "content":"Cap SQLSTATE 40001 retries in src/outbox_worker.rs at 3 attempts before dead-lettering.",
+            "project":"alpha",
+            "agent":"antigravity",
+            "kind":"correction",
+            "supersedes":[first_id]
+        }}}),
+        json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"memory_get","arguments":{"id":second_id}}}),
+        json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"memory_feedback","arguments":{"id":second_id,"outcome":"helpful"}}}),
+        json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"memory_search","arguments":{"query":"outbox_worker","project":"alpha","strict_project":true}}}),
+    ];
+    let mut input = child.stdin.take().unwrap();
+    for message in messages {
+        writeln!(input, "{message}").unwrap();
+    }
+    drop(input);
+    let out = child.wait_with_output().unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let replies: Vec<Value> = String::from_utf8(out.stdout)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let corr_saved: Value =
+        serde_json::from_str(replies[1]["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    let corr_id = corr_saved["id"].as_str().unwrap();
+    assert_eq!(corr_saved["superseded"][0], first_id);
+
+    let feedback_reply: Value =
+        serde_json::from_str(replies[3]["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(feedback_reply["stats"]["use_count"], 2);
+    assert_eq!(feedback_reply["stats"]["confirm_count"], 1);
+
+    let search_reply: Value =
+        serde_json::from_str(replies[4]["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    let results = search_reply["results"].as_array().unwrap();
+    assert_eq!(results[0]["id"], corr_id);
+    let old_hit = results.iter().find(|r| r["id"] == first_id).unwrap();
+    assert_eq!(old_hit["status"], "superseded");
+    assert_eq!(old_hit["superseded_by"], corr_id);
 }

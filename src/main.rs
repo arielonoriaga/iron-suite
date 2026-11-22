@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
-use iron_suite::{backup, import, mcp, native, output, refresh, service, store::Store};
+use iron_suite::{backup, import, mcp, migrate, native, output, refresh, service, store::Store};
 use serde_json::json;
 use std::{
     io::{self, Write},
@@ -11,7 +11,7 @@ use std::{
 #[command(
     name = "iron",
     version,
-    about = "Local memory retrieval for Iron Suite"
+    about = "Local memory retrieval, reinforcement, and cross-session linking for Iron Suite"
 )]
 struct Cli {
     #[arg(long, global = true)]
@@ -58,6 +58,32 @@ enum MemoryCommand {
         kind: Option<String>,
         #[arg(long)]
         agent: Option<String>,
+        #[arg(long = "supersedes")]
+        supersedes: Vec<String>,
+    },
+    Feedback {
+        id: String,
+        #[arg(long, value_parser = ["helpful", "outdated", "contradicted"])]
+        outcome: String,
+        #[arg(long)]
+        superseded_by: Option<String>,
+    },
+    Link,
+    Consolidate {
+        #[arg(long)]
+        project: Option<String>,
+        #[arg(long, default_value_t = 3)]
+        min_occurrences: usize,
+        #[arg(long, default_value_t = 15)]
+        limit: usize,
+    },
+    Migrate {
+        #[arg(long)]
+        from: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
+        #[arg(long)]
+        archive_output: Option<PathBuf>,
     },
     Import {
         #[arg(long)]
@@ -100,7 +126,7 @@ struct SearchArgs {
     limit: usize,
     #[arg(long, default_value_t = 4000)]
     max_bytes: usize,
-    #[arg(long, value_parser=["all", "curated", "history", "native"])]
+    #[arg(long, value_parser=["all", "curated", "history", "native", "archive"])]
     source: Option<String>,
 }
 
@@ -153,12 +179,21 @@ fn run(cli: Cli) -> Result<()> {
         } => backup::run(&db, &output)?,
         Command::Memory {
             command:
+                MemoryCommand::Migrate {
+                    from,
+                    output,
+                    archive_output,
+                },
+        } => migrate::migrate_store(&from, &output, archive_output.as_deref())?,
+        Command::Memory {
+            command:
                 MemoryCommand::Remember {
                     title,
                     content,
                     project,
                     kind,
                     agent,
+                    supersedes,
                 },
         } => native::remember(
             &db,
@@ -168,8 +203,31 @@ fn run(cli: Cli) -> Result<()> {
                 project,
                 kind,
                 agent,
+                supersedes,
             },
         )?,
+        Command::Memory {
+            command:
+                MemoryCommand::Feedback {
+                    id,
+                    outcome,
+                    superseded_by,
+                },
+        } => native::feedback(
+            &db,
+            native::FeedbackRequest {
+                id,
+                outcome,
+                superseded_by,
+            },
+        )?,
+        Command::Memory {
+            command: MemoryCommand::Link,
+        } => {
+            let mut store = Store::open(&db, true)?;
+            let built = store.rebuild_auto_links()?;
+            json!({"auto_links_built": built})
+        }
         Command::Memory {
             command:
                 MemoryCommand::Import {
@@ -187,13 +245,16 @@ fn run(cli: Cli) -> Result<()> {
             let store = Store::open(&db, false)
                 .context("cannot open Iron index; run memory import first")?;
             match command {
-                MemoryCommand::Search(args) => service::search(&store, args.request(None)?)?,
+                MemoryCommand::Search(args) => {
+                    service::search_with_archive(&store, Some(&db), args.request(None)?)?
+                }
                 MemoryCommand::Get {
                     id,
                     offset,
                     max_bytes,
-                } => service::get(
+                } => service::get_with_archive(
                     &store,
+                    Some(&db),
                     service::GetRequest {
                         id,
                         offset,
@@ -214,19 +275,27 @@ fn run(cli: Cli) -> Result<()> {
                         max_bytes: Some(max_bytes),
                     },
                 )?,
+                MemoryCommand::Consolidate {
+                    project,
+                    min_occurrences,
+                    limit,
+                } => store.consolidate(project.as_deref(), min_occurrences, limit)?,
                 MemoryCommand::Export { output, scope } => {
                     native::export_jsonl(&store, &output, &scope)?
                 }
                 MemoryCommand::Stats => store.stats()?,
                 MemoryCommand::Import { .. }
                 | MemoryCommand::Remember { .. }
+                | MemoryCommand::Feedback { .. }
+                | MemoryCommand::Link
+                | MemoryCommand::Migrate { .. }
                 | MemoryCommand::Backup { .. } => unreachable!(),
             }
         }
         Command::Context(args) => {
             let store = Store::open(&db, false)
                 .context("cannot open Iron index; run memory import first")?;
-            service::search(&store, args.search.request(Some(args.role))?)?
+            service::search_with_archive(&store, Some(&db), args.search.request(Some(args.role))?)?
         }
         Command::Mcp { .. } => unreachable!(),
     };

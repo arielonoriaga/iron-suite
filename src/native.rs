@@ -12,7 +12,7 @@ use std::path::Path;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RememberRequest {
     pub title: String,
@@ -20,6 +20,50 @@ pub struct RememberRequest {
     pub project: String,
     pub kind: Option<String>,
     pub agent: Option<String>,
+    #[serde(default)]
+    pub supersedes: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FeedbackRequest {
+    pub id: String,
+    pub outcome: String,
+    pub superseded_by: Option<String>,
+}
+
+pub fn feedback(db: &Path, req: FeedbackRequest) -> Result<Value> {
+    ensure!(
+        db != Path::new(":memory:"),
+        "feedback requires a durable index path"
+    );
+    validate_id(&req.id)?;
+    if let Some(rep) = &req.superseded_by {
+        validate_id(rep)?;
+    }
+    let mut store = Store::open(db, true)?;
+    let _lock = lock_native_writes(db)?;
+    store.record_feedback(&req.id, &req.outcome, req.superseded_by.as_deref())
+}
+
+pub fn reinforce_once(db: &Path, id: &str) -> Result<bool> {
+    if db == Path::new(":memory:") {
+        return Ok(false);
+    }
+    validate_id(id)?;
+    let mut store = Store::open(db, true)?;
+    let _lock = lock_native_writes(db)?;
+    store.reinforce_use(id)
+}
+
+fn validate_id(id: &str) -> Result<()> {
+    ensure!(
+        !id.is_empty()
+            && id.len() <= 128
+            && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_'),
+        "invalid memory ID"
+    );
+    Ok(())
 }
 
 pub fn remember(db: &Path, req: RememberRequest) -> Result<Value> {
@@ -30,10 +74,20 @@ pub fn remember(db: &Path, req: RememberRequest) -> Result<Value> {
     validate_text("title", &req.title, 200)?;
     validate_text("content", &req.content, 65_536)?;
     validate_text("project", &req.project, 256)?;
+    ensure!(
+        req.supersedes.len() <= 16,
+        "supersedes must not exceed 16 target IDs"
+    );
+    for old_id in &req.supersedes {
+        validate_id(old_id)?;
+    }
     let kind = req.kind.unwrap_or_else(|| "note".into());
     ensure!(
-        matches!(kind.as_str(), "note" | "decision" | "preference" | "gotcha"),
-        "kind must be note, decision, preference, or gotcha"
+        matches!(
+            kind.as_str(),
+            "note" | "decision" | "preference" | "gotcha" | "correction"
+        ),
+        "kind must be note, decision, preference, gotcha, or correction"
     );
     let agent = req.agent.unwrap_or_else(|| "unknown".into());
     ensure!(agent.len() <= 64, "agent must not exceed 64 UTF-8 bytes");
@@ -73,6 +127,11 @@ pub fn remember(db: &Path, req: RememberRequest) -> Result<Value> {
                 && existing.metadata == metadata,
             "native memory identity conflicts with an existing record"
         );
+        if !req.supersedes.is_empty() {
+            for old_id in &req.supersedes {
+                let _ = store.record_feedback(old_id, "outdated", Some(&id));
+            }
+        }
         return Ok(json!({"id": id, "saved": true, "duplicate": true}));
     }
     let updated_at = i64::try_from(
@@ -84,7 +143,7 @@ pub fn remember(db: &Path, req: RememberRequest) -> Result<Value> {
     .context("system time exceeds the supported timestamp range")?;
     let record = MemoryRecord {
         id: id.clone(),
-        source_group: group.clone(),
+        source_group: group,
         source_key: id.clone(),
         source_type: "iron".into(),
         kind,
@@ -95,12 +154,16 @@ pub fn remember(db: &Path, req: RememberRequest) -> Result<Value> {
         updated_at,
         metadata,
     };
-    let report = store.apply(&ImportBatch {
-        groups: vec![group],
-        records: vec![record],
-        ..ImportBatch::default()
-    })?;
-    Ok(json!({"id": id, "saved": true, "duplicate": report.inserted == 0}))
+    let (duplicate, superseded, related_memories) =
+        store.insert_native_and_autolink(&record, &req.supersedes)?;
+    let mut out = json!({"id": id, "saved": true, "duplicate": duplicate});
+    if !superseded.is_empty() {
+        out["superseded"] = json!(superseded);
+    }
+    if !related_memories.is_empty() {
+        out["related_memories"] = json!(related_memories);
+    }
+    Ok(out)
 }
 
 const MAX_IMPORT_BYTES: u64 = 64 * 1024 * 1024;
@@ -319,7 +382,7 @@ pub fn import_jsonl(db: &Path, input_path: &Path) -> Result<Value> {
         ensure!(
             matches!(
                 record.kind.as_str(),
-                "note" | "decision" | "preference" | "gotcha"
+                "note" | "decision" | "preference" | "gotcha" | "correction"
             ),
             "line {}: unsupported native kind",
             idx + 1
@@ -503,6 +566,7 @@ mod tests {
             project: "iron-suite".into(),
             kind: None,
             agent: None,
+            supersedes: Vec::new(),
         }
     }
 
@@ -613,6 +677,7 @@ mod tests {
             project: "sk-abcdefghijklmnop1234".into(),
             kind: Some("gotcha".into()),
             agent: Some("ghp_abcdefghijklmnopqrstuvwxyz1234".into()),
+            supersedes: Vec::new(),
         };
         let result = remember(&db, capture).unwrap();
         let store = Store::open(&db, false).unwrap();
