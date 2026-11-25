@@ -99,3 +99,16 @@ pub struct SearchOptions {
     pub exclude_superseded: bool,
     pub limit: usize,
 }
+
+#[derive(Debug, Clone, Default)]
+pub struct BrowseOptions {
+    pub project: Option<String>,
+    pub source: Option<String>,
+    pub kind: Option<String>,
+    pub status: Option<String>,
+    pub query: Option<String>,
+    pub sort: Option<String>,
+    pub day: Option<String>,
+    pub limit: usize,
+    pub offset: usize,
+}

@@ -1,4 +1,4 @@
-use crate::{import, store::Store};
+use crate::{aliases, import, store::Store};
 use anyhow::{Context, Result, bail};
 use fs2::FileExt;
 use serde_json::{Value, json};
@@ -79,7 +79,9 @@ pub fn run(
     let started = Instant::now();
     let mut result = if claude_root.is_some() || cavemem_db.is_some() {
         let _lock = lock(db)?;
-        let batch = import::collect(claude_root, cavemem_db)?;
+        let mut batch = import::collect(claude_root, cavemem_db)?;
+        let alias_map = aliases::load(db)?;
+        aliases::apply_to_batch(&alias_map, &mut batch);
         let mut store = Store::open(db, true)?;
         serde_json::to_value(store.apply(&batch)?)?
     } else {
@@ -90,4 +92,43 @@ pub fn run(
     }
     result["elapsed_ms"] = json!(started.elapsed().as_millis());
     Ok(result)
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    #[test]
+    fn refresh_applies_persistent_project_aliases() {
+        let tmp = TempDir::new().unwrap();
+        let claude_root = tmp.path().join("claude");
+        let mem_dir = claude_root
+            .join("memory")
+            .join("projects")
+            .join("legacy-app");
+        fs::create_dir_all(&mem_dir).unwrap();
+        fs::write(
+            mem_dir.join("note.md"),
+            "# Legacy Note\nKeep this rule under unified project.\n",
+        )
+        .unwrap();
+
+        let db = tmp.path().join("iron").join("memory.db");
+        let _ = crate::aliases::set_alias(&db, "legacy-app", "unified-app").unwrap();
+
+        let summary = run(&db, Some(&claude_root), None, None).unwrap();
+        assert!(summary["inserted"].as_u64().unwrap() >= 1, "summary: {summary}");
+
+        let store = Store::open(&db, false).unwrap();
+        let browsed = store
+            .browse(&crate::model::BrowseOptions {
+                project: Some("unified-app".into()),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(browsed["total"], 1);
+    }
 }

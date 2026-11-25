@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::path::Path;
 use std::sync::LazyLock;
@@ -15,7 +15,9 @@ use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 
 use crate::linker;
-use crate::model::{ImportBatch, ImportReport, MemoryLink, MemoryRecord, SearchHit, SearchOptions};
+use crate::model::{
+    BrowseOptions, ImportBatch, ImportReport, MemoryLink, MemoryRecord, SearchHit, SearchOptions,
+};
 
 pub const SCHEMA_VERSION: i64 = 2;
 pub const APPLICATION_ID: i64 = 0x4952_4f4e;
@@ -439,6 +441,38 @@ impl Store {
         Ok(true)
     }
 
+    pub fn merge_projects(
+        &mut self,
+        from_project: &str,
+        to_project: &str,
+        include_subpaths: bool,
+    ) -> Result<usize> {
+        ensure!(self.writable, "memory index was opened read-only");
+        ensure!(from_project != to_project, "source and target project names must differ");
+        let tx = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let updated = if include_subpaths {
+            let slash_prefix = format!("{from_project}/");
+            let wt_prefix = format!("{from_project}-worktrees/");
+            tx.execute(
+                "UPDATE records
+                  SET project = ?1
+                  WHERE project = ?2
+                     OR substr(project, 1, length(?3)) = ?3
+                     OR substr(project, 1, length(?4)) = ?4",
+                params![to_project, from_project, slash_prefix, wt_prefix],
+            )?
+        } else {
+            tx.execute(
+                "UPDATE records SET project = ?1 WHERE project = ?2",
+                params![to_project, from_project],
+            )?
+        };
+        tx.commit()?;
+        Ok(updated)
+    }
+
     pub fn record_signal(&self, id: &str) -> Result<Option<Value>> {
         query_stats_conn(&self.connection, id)
     }
@@ -656,8 +690,1152 @@ impl Store {
         transaction.commit()?;
         Ok(statistics)
     }
-}
 
+    pub fn facets(&self) -> Result<Value> {
+        let tx = self.connection.unchecked_transaction()?;
+        let mut projects_stmt = tx.prepare(
+            "SELECT project,
+                    COUNT(*) AS total,
+                    SUM(CASE WHEN source_type IN ('markdown', 'iron') THEN 1 ELSE 0 END) AS curated
+             FROM records
+             GROUP BY project
+             ORDER BY total DESC, project ASC",
+        )?;
+        let projects: Vec<Value> = projects_stmt
+            .query_map([], |row| {
+                let project: String = row.get(0)?;
+                let canonical = canonical_project_root(&project);
+                Ok(json!({
+                    "project": project,
+                    "canonical_root": canonical,
+                    "total": row.get::<_, i64>(1)?,
+                    "curated": row.get::<_, i64>(2)?,
+                }))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        drop(projects_stmt);
+
+        let by_kind = grouped_counts(
+            &tx,
+            "SELECT kind, COUNT(*) FROM records GROUP BY kind ORDER BY COUNT(*) DESC, kind ASC",
+        )?;
+        let by_source_type = grouped_counts(
+            &tx,
+            "SELECT source_type, COUNT(*) FROM records GROUP BY source_type ORDER BY source_type",
+        )?;
+        let by_link_origin = grouped_counts(
+            &tx,
+            "SELECT origin, COUNT(*) FROM memory_links GROUP BY origin ORDER BY origin",
+        )?;
+        tx.commit()?;
+        Ok(json!({
+            "projects": projects,
+            "by_kind": by_kind,
+            "by_source_type": by_source_type,
+            "by_link_origin": by_link_origin,
+        }))
+    }
+
+    pub fn browse(&self, opts: &BrowseOptions) -> Result<Value> {
+        let limit = if opts.limit == 0 {
+            30
+        } else {
+            opts.limit.min(100)
+        };
+        let offset_i64 = i64::try_from(opts.offset).context("invalid offset: exceeds range")?;
+        let tx = self.connection.unchecked_transaction()?;
+
+        let mut where_clauses: Vec<String> = Vec::new();
+        let mut args: Vec<SqlValue> = Vec::new();
+
+        if let Some(project) = opts.project.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            where_clauses.push("r.project = ?".to_owned());
+            args.push(SqlValue::Text(project.to_owned()));
+        }
+
+        if let Some(source) = opts.source.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            match source {
+                "all" => {}
+                "curated" => where_clauses.push("r.source_type IN ('markdown', 'iron')".to_owned()),
+                "markdown" | "iron" | "cavemem" => {
+                    where_clauses.push("r.source_type = ?".to_owned());
+                    args.push(SqlValue::Text(source.to_owned()));
+                }
+                "history" => where_clauses.push("r.source_type = 'cavemem'".to_owned()),
+                "native" => where_clauses.push("r.source_type = 'iron'".to_owned()),
+                _ => bail!("invalid source filter: {source}"),
+            }
+        }
+
+        if let Some(kind) = opts.kind.as_deref().map(str::trim).filter(|s| !s.is_empty())
+            && kind != "all"
+        {
+            where_clauses.push("r.kind = ?".to_owned());
+            args.push(SqlValue::Text(kind.to_owned()));
+        }
+
+        if let Some(day) = opts.day.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            ensure!(is_valid_iso_day(day), "invalid day filter: expected YYYY-MM-DD");
+            where_clauses.push(
+                "date(CASE WHEN r.updated_at > 1000000000000 THEN r.updated_at / 1000 ELSE r.updated_at END, 'unixepoch', 'localtime') = ?"
+                    .to_owned(),
+            );
+            args.push(SqlValue::Text(day.to_owned()));
+        }
+
+        if let Some(status) = opts.status.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            match status {
+                "all" => {}
+                "active" => where_clauses.push("COALESCE(s.status, 'active') = 'active'".to_owned()),
+                "superseded" => where_clauses.push("s.status = 'superseded'".to_owned()),
+                "unverified" => where_clauses.push(
+                    "COALESCE(s.confirm_count, 0) = 0 AND COALESCE(s.status, 'active') = 'active'"
+                        .to_owned(),
+                ),
+                "verified" => where_clauses.push("COALESCE(s.confirm_count, 0) > 0".to_owned()),
+                "reinforced" => where_clauses
+                    .push("(COALESCE(s.use_count, 0) > 0 OR COALESCE(s.confirm_count, 0) > 0)".to_owned()),
+                "contested" => where_clauses.push("COALESCE(s.contradict_count, 0) > 0".to_owned()),
+                _ => bail!("invalid status filter: {status}"),
+            }
+        }
+
+        if let Some(query) = opts.query.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            ensure!(query.len() <= 2048, "query exceeds 2048 bytes");
+            let exact_id_exists = query.len() <= 128
+                && query.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+                && tx
+                    .query_row("SELECT 1 FROM records WHERE id = ?", [query], |_| Ok(()))
+                    .optional()?
+                    .is_some();
+            if exact_id_exists {
+                where_clauses.push("r.id = ?".to_owned());
+                args.push(SqlValue::Text(query.to_owned()));
+            } else if let Some(expr) = search_expression(query) {
+                where_clauses.push(
+                    "r.rowid IN (SELECT rowid FROM record_fts WHERE record_fts MATCH ?)"
+                        .to_owned(),
+                );
+                args.push(SqlValue::Text(expr));
+            } else {
+                let escaped = escape_like(query);
+                where_clauses.push(
+                    r"(r.title LIKE ? ESCAPE '\' OR r.source_path LIKE ? ESCAPE '\')".to_owned(),
+                );
+                let pattern = format!("%{escaped}%");
+                args.push(SqlValue::Text(pattern.clone()));
+                args.push(SqlValue::Text(pattern));
+            }
+        }
+
+        let where_sql = if where_clauses.is_empty() {
+            String::new()
+        } else {
+            format!(" WHERE {}", where_clauses.join(" AND "))
+        };
+
+        let sort_key = opts.sort.as_deref().unwrap_or("updated");
+        let (inner_order_sql, outer_order_sql) = match sort_key {
+            "updated" => (
+                "r.updated_at DESC, r.id ASC",
+                "page.updated_at DESC, page.id ASC",
+            ),
+            "use_count" => (
+                "COALESCE(s.use_count, 0) DESC, COALESCE(s.confirm_count, 0) DESC, r.updated_at DESC, r.id ASC",
+                "page.use_count DESC, page.confirm_count DESC, page.updated_at DESC, page.id ASC",
+            ),
+            "confirm_count" => (
+                "COALESCE(s.confirm_count, 0) DESC, COALESCE(s.use_count, 0) DESC, r.updated_at DESC, r.id ASC",
+                "page.confirm_count DESC, page.use_count DESC, page.updated_at DESC, page.id ASC",
+            ),
+            "contradict_count" => (
+                "COALESCE(s.contradict_count, 0) DESC, r.updated_at DESC, r.id ASC",
+                "page.contradict_count DESC, page.updated_at DESC, page.id ASC",
+            ),
+            "links" => (
+                "link_count DESC, r.updated_at DESC, r.id ASC",
+                "page.link_count DESC, page.updated_at DESC, page.id ASC",
+            ),
+            "title" => (
+                "r.title COLLATE NOCASE ASC, r.id ASC",
+                "page.title COLLATE NOCASE ASC, page.id ASC",
+            ),
+            _ => bail!("invalid sort key: {sort_key}"),
+        };
+
+        let count_sql = format!(
+            "SELECT COUNT(*)
+             FROM records r
+             LEFT JOIN record_stats s ON s.record_id = r.id
+             {where_sql}"
+        );
+        let total: i64 = tx.query_row(&count_sql, params_from_iter(args.iter().cloned()), |row| {
+            row.get(0)
+        })?;
+
+        let list_sql = if sort_key == "links" {
+            format!(
+                "SELECT page.id, page.title, page.project, page.kind, page.source_type, page.source_path,
+                        page.updated_at, substr(b.content, 1, 320), length(CAST(b.content AS BLOB)),
+                        page.use_count, page.confirm_count, page.contradict_count, page.last_used_at,
+                        page.status, page.superseded_by, page.link_count
+                 FROM (
+                    SELECT r.id, r.title, r.project, r.kind, r.source_type, r.source_path,
+                           r.updated_at, r.body_id,
+                           COALESCE(s.use_count, 0) AS use_count,
+                           COALESCE(s.confirm_count, 0) AS confirm_count,
+                           COALESCE(s.contradict_count, 0) AS contradict_count,
+                           COALESCE(s.last_used_at, 0) AS last_used_at,
+                           COALESCE(s.status, 'active') AS status,
+                           s.superseded_by,
+                           (SELECT COUNT(*) FROM memory_links l WHERE l.from_id = r.id) AS link_count
+                    FROM records r
+                    LEFT JOIN record_stats s ON s.record_id = r.id
+                    {where_sql}
+                    ORDER BY {inner_order_sql}
+                    LIMIT ? OFFSET ?
+                 ) page
+                 JOIN bodies b ON b.id = page.body_id
+                 ORDER BY {outer_order_sql}"
+            )
+        } else {
+            format!(
+                "SELECT page.id, page.title, page.project, page.kind, page.source_type, page.source_path,
+                        page.updated_at, substr(b.content, 1, 320), length(CAST(b.content AS BLOB)),
+                        page.use_count, page.confirm_count, page.contradict_count, page.last_used_at,
+                        page.status, page.superseded_by,
+                        (SELECT COUNT(*) FROM memory_links l WHERE l.from_id = page.id) AS link_count
+                 FROM (
+                    SELECT r.id, r.title, r.project, r.kind, r.source_type, r.source_path,
+                           r.updated_at, r.body_id,
+                           COALESCE(s.use_count, 0) AS use_count,
+                           COALESCE(s.confirm_count, 0) AS confirm_count,
+                           COALESCE(s.contradict_count, 0) AS contradict_count,
+                           COALESCE(s.last_used_at, 0) AS last_used_at,
+                           COALESCE(s.status, 'active') AS status,
+                           s.superseded_by
+                    FROM records r
+                    LEFT JOIN record_stats s ON s.record_id = r.id
+                    {where_sql}
+                    ORDER BY {inner_order_sql}
+                    LIMIT ? OFFSET ?
+                 ) page
+                 JOIN bodies b ON b.id = page.body_id
+                 ORDER BY {outer_order_sql}"
+            )
+        };
+
+        let mut list_args = args;
+        list_args.push(SqlValue::Integer(limit as i64));
+        list_args.push(SqlValue::Integer(offset_i64));
+
+        let mut stmt = tx.prepare(&list_sql)?;
+        let items: Vec<Value> = stmt
+            .query_map(params_from_iter(list_args), |row| {
+                let project: String = row.get(2)?;
+                let canonical = canonical_project_root(&project);
+                Ok(json!({
+                    "id": row.get::<_, String>(0)?,
+                    "title": row.get::<_, String>(1)?,
+                    "project": project,
+                    "canonical_root": canonical,
+                    "kind": row.get::<_, String>(3)?,
+                    "source_type": row.get::<_, String>(4)?,
+                    "source_path": row.get::<_, String>(5)?,
+                    "updated_at": row.get::<_, i64>(6)?,
+                    "snippet": bounded_snippet(row.get::<_, String>(7)?),
+                    "body_bytes": row.get::<_, i64>(8)?,
+                    "use_count": row.get::<_, i64>(9)?,
+                    "confirm_count": row.get::<_, i64>(10)?,
+                    "contradict_count": row.get::<_, i64>(11)?,
+                    "last_used_at": row.get::<_, i64>(12)?,
+                    "status": row.get::<_, String>(13)?,
+                    "superseded_by": row.get::<_, Option<String>>(14)?,
+                    "link_count": row.get::<_, i64>(15)?,
+                }))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        drop(stmt);
+        tx.commit()?;
+
+        Ok(json!({
+            "total": total,
+            "offset": opts.offset,
+            "limit": limit,
+            "items": items,
+        }))
+    }
+
+    pub fn inspect(&self, id: &str) -> Result<Option<Value>> {
+        let tx = self.connection.unchecked_transaction()?;
+        let sql = format!(
+            "SELECT {RECORD_COLUMNS}, r.body_id, length(CAST(b.content AS BLOB))
+             FROM records r JOIN bodies b ON b.id = r.body_id WHERE r.id = ?"
+        );
+        let found: Option<(MemoryRecord, i64, i64)> = tx
+            .query_row(&sql, [id], |row| {
+                let record = record_from_row(row)?;
+                let body_id: i64 = row.get(11)?;
+                let body_bytes: i64 = row.get(12)?;
+                Ok((record, body_id, body_bytes))
+            })
+            .optional()?;
+        let Some((record, body_id, body_bytes)) = found else {
+            tx.commit()?;
+            return Ok(None);
+        };
+
+        let stats = query_stats_conn(&tx, id)?.unwrap_or_else(|| {
+            json!({
+                "use_count": 0,
+                "confirm_count": 0,
+                "contradict_count": 0,
+                "last_used_at": 0,
+                "status": "active",
+                "superseded_by": Value::Null,
+            })
+        });
+
+        let superseded_by_record = match stats.get("superseded_by").and_then(Value::as_str) {
+            Some(rep_id) => tx
+                .query_row(
+                    "SELECT r.id, r.title, r.project, r.kind, r.source_type, COALESCE(s.status, 'active')
+                     FROM records r LEFT JOIN record_stats s ON s.record_id = r.id
+                     WHERE r.id = ?",
+                    [rep_id],
+                    |row| {
+                        Ok(json!({
+                            "id": row.get::<_, String>(0)?,
+                            "title": row.get::<_, String>(1)?,
+                            "project": row.get::<_, String>(2)?,
+                            "kind": row.get::<_, String>(3)?,
+                            "source_type": row.get::<_, String>(4)?,
+                            "status": row.get::<_, String>(5)?,
+                        }))
+                    },
+                )
+                .optional()?,
+            None => None,
+        };
+
+        let mut supersedes_stmt = tx.prepare(
+            "SELECT r.id, r.title, r.project, r.kind, r.source_type, r.updated_at
+             FROM record_stats s
+             JOIN records r ON r.id = s.record_id
+             WHERE s.superseded_by = ?
+             ORDER BY r.updated_at DESC, r.id ASC
+             LIMIT 25",
+        )?;
+        let supersedes: Vec<Value> = supersedes_stmt
+            .query_map([id], |row| {
+                Ok(json!({
+                    "id": row.get::<_, String>(0)?,
+                    "title": row.get::<_, String>(1)?,
+                    "project": row.get::<_, String>(2)?,
+                    "kind": row.get::<_, String>(3)?,
+                    "source_type": row.get::<_, String>(4)?,
+                    "updated_at": row.get::<_, i64>(5)?,
+                }))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        drop(supersedes_stmt);
+
+        let mut dup_stmt = tx.prepare(
+            "SELECT r.id, r.title, r.project, r.kind, r.source_type, r.source_path, r.updated_at
+             FROM records r
+             WHERE r.body_id = ?1 AND r.id != ?2
+             ORDER BY r.updated_at DESC, r.id ASC
+             LIMIT 10",
+        )?;
+        let duplicate_bodies: Vec<Value> = dup_stmt
+            .query_map(params![body_id, id], |row| {
+                Ok(json!({
+                    "id": row.get::<_, String>(0)?,
+                    "title": row.get::<_, String>(1)?,
+                    "project": row.get::<_, String>(2)?,
+                    "kind": row.get::<_, String>(3)?,
+                    "source_type": row.get::<_, String>(4)?,
+                    "source_path": row.get::<_, String>(5)?,
+                    "updated_at": row.get::<_, i64>(6)?,
+                }))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        drop(dup_stmt);
+
+        let outgoing_total: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM memory_links WHERE from_id = ?",
+            [id],
+            |row| row.get(0),
+        )?;
+        let incoming_total: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM memory_links WHERE to_id = ?",
+            [id],
+            |row| row.get(0),
+        )?;
+
+        let mut out_stmt = tx.prepare(
+            "SELECT r.id, r.title, r.project, r.kind, r.source_type, COALESCE(s.status, 'active'),
+                    l.relation, l.origin, l.weight, l.evidence
+             FROM memory_links l
+             JOIN records r ON r.id = l.to_id
+             LEFT JOIN record_stats s ON s.record_id = r.id
+             WHERE l.from_id = ?
+             ORDER BY l.weight DESC, l.origin DESC, l.relation ASC, r.updated_at DESC
+             LIMIT 60",
+        )?;
+        let outgoing_links: Vec<Value> = out_stmt
+            .query_map([id], link_peer_from_row)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        drop(out_stmt);
+
+        let mut in_stmt = tx.prepare(
+            "SELECT r.id, r.title, r.project, r.kind, r.source_type, COALESCE(s.status, 'active'),
+                    l.relation, l.origin, l.weight, l.evidence
+             FROM memory_links l
+             JOIN records r ON r.id = l.from_id
+             LEFT JOIN record_stats s ON s.record_id = r.id
+             WHERE l.to_id = ?
+             ORDER BY l.weight DESC, l.origin DESC, l.relation ASC, r.updated_at DESC
+             LIMIT 60",
+        )?;
+        let incoming_links: Vec<Value> = in_stmt
+            .query_map([id], link_peer_from_row)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        drop(in_stmt);
+
+        tx.commit()?;
+
+        let canonical = canonical_project_root(&record.project);
+        let mut val = serde_json::to_value(record)?;
+        val["canonical_root"] = json!(canonical);
+        val["body_bytes"] = json!(body_bytes);
+        val["stats"] = stats;
+        val["superseded_by_record"] = match superseded_by_record {
+            Some(v) => v,
+            None => Value::Null,
+        };
+        val["supersedes"] = json!(supersedes);
+        val["duplicate_bodies"] = json!(duplicate_bodies);
+        val["outgoing_link_count"] = json!(outgoing_total);
+        val["incoming_link_count"] = json!(incoming_total);
+        val["outgoing_links"] = json!(outgoing_links);
+        val["incoming_links"] = json!(incoming_links);
+        Ok(Some(val))
+    }
+
+    pub fn audit_health(&self) -> Result<Value> {
+        let tx = self.connection.unchecked_transaction()?;
+        let mut summary = tx.query_row(
+            "SELECT
+                (SELECT COUNT(*) FROM records),
+                (SELECT COUNT(*) FROM bodies),
+                (SELECT COALESCE(SUM(length(CAST(b.content AS BLOB))), 0)
+                    FROM records r JOIN bodies b ON b.id = r.body_id),
+                (SELECT COALESCE(SUM(length(CAST(content AS BLOB))), 0) FROM bodies),
+                (SELECT COUNT(*) FROM records WHERE source_type IN ('markdown', 'iron')),
+                (SELECT COUNT(*) FROM records r
+                    JOIN record_stats s ON s.record_id = r.id
+                    WHERE r.source_type IN ('markdown', 'iron') AND s.confirm_count > 0),
+                (SELECT COUNT(*) FROM records r
+                    LEFT JOIN record_stats s ON s.record_id = r.id
+                    WHERE r.source_type IN ('markdown', 'iron')
+                      AND COALESCE(s.confirm_count, 0) = 0
+                      AND COALESCE(s.status, 'active') = 'active'),
+                (SELECT COUNT(*) FROM records r
+                    JOIN record_stats s ON s.record_id = r.id
+                    WHERE r.source_type IN ('markdown', 'iron') AND s.status = 'superseded'),
+                (SELECT COUNT(*) FROM record_stats WHERE confirm_count > 0),
+                (SELECT COUNT(*) FROM record_stats WHERE use_count > 0 OR confirm_count > 0),
+                (SELECT COUNT(*) FROM record_stats WHERE contradict_count > 0),
+                (SELECT COUNT(*) FROM record_stats WHERE status = 'superseded'),
+                (SELECT COUNT(*) FROM memory_links)",
+            [],
+            |row| {
+                let records = row.get::<_, i64>(0)?;
+                let unique_bodies = row.get::<_, i64>(1)?;
+                let content_bytes = row.get::<_, i64>(2)?;
+                let unique_content_bytes = row.get::<_, i64>(3)?;
+                Ok(json!({
+                    "schema_version": SCHEMA_VERSION,
+                    "records": records,
+                    "unique_bodies": unique_bodies,
+                    "duplicate_body_records": (records - unique_bodies).max(0),
+                    "content_bytes": content_bytes,
+                    "unique_content_bytes": unique_content_bytes,
+                    "dedup_saved_bytes": (content_bytes - unique_content_bytes).max(0),
+                    "curated_total": row.get::<_, i64>(4)?,
+                    "curated_verified": row.get::<_, i64>(5)?,
+                    "curated_unverified": row.get::<_, i64>(6)?,
+                    "curated_superseded": row.get::<_, i64>(7)?,
+                    "all_verified": row.get::<_, i64>(8)?,
+                    "reinforced": row.get::<_, i64>(9)?,
+                    "contested": row.get::<_, i64>(10)?,
+                    "superseded": row.get::<_, i64>(11)?,
+                    "links_total": row.get::<_, i64>(12)?,
+                }))
+            },
+        )?;
+        summary["by_source_type"] = grouped_counts(
+            &tx,
+            "SELECT source_type, COUNT(*) FROM records GROUP BY source_type ORDER BY source_type",
+        )?;
+        summary["by_kind"] = grouped_counts(
+            &tx,
+            "SELECT kind, COUNT(*) FROM records GROUP BY kind ORDER BY COUNT(*) DESC, kind ASC",
+        )?;
+        summary["by_link_origin"] = grouped_counts(
+            &tx,
+            "SELECT origin, COUNT(*) FROM memory_links GROUP BY origin ORDER BY origin",
+        )?;
+
+        let mut proj_stmt = tx.prepare(
+            "SELECT project,
+                    COUNT(*) AS total,
+                    SUM(CASE WHEN source_type IN ('markdown', 'iron') THEN 1 ELSE 0 END) AS curated
+             FROM records
+             GROUP BY project",
+        )?;
+        let raw_projects: Vec<(String, i64, i64)> = proj_stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        drop(proj_stmt);
+
+        let total_project_names = raw_projects.len();
+        let mut grouped: BTreeMap<String, Vec<(String, i64, i64)>> = BTreeMap::new();
+        for (project, total, curated) in raw_projects {
+            let root = canonical_project_root(&project);
+            grouped.entry(root).or_default().push((project, total, curated));
+        }
+        let canonical_root_count = grouped.len();
+        let mut fragmented: Vec<(i64, Value)> = Vec::new();
+        for (root, mut variants) in grouped {
+            if variants.len() <= 1 {
+                continue;
+            }
+            variants.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+            let total_records: i64 = variants.iter().map(|v| v.1).sum();
+            let curated_records: i64 = variants.iter().map(|v| v.2).sum();
+            let variant_json: Vec<Value> = variants
+                .into_iter()
+                .map(|(project, records, curated)| {
+                    json!({
+                        "project": project,
+                        "records": records,
+                        "curated": curated,
+                    })
+                })
+                .collect();
+            fragmented.push((
+                total_records,
+                json!({
+                    "canonical_root": root,
+                    "total_records": total_records,
+                    "curated_records": curated_records,
+                    "variant_count": variant_json.len(),
+                    "variants": variant_json,
+                }),
+            ));
+        }
+        let fragmented_roots = fragmented.len();
+        fragmented.sort_by_key(|b| std::cmp::Reverse(b.0));
+        let fragmented_groups: Vec<Value> = fragmented.into_iter().take(30).map(|(_, v)| v).collect();
+
+        let mut unverified_stmt = tx.prepare(
+            "SELECT r.id, r.title, r.project, r.kind, r.source_type, r.updated_at,
+                    COALESCE(s.use_count, 0) AS use_count,
+                    COALESCE(s.contradict_count, 0) AS contradict_count,
+                    (SELECT COUNT(*) FROM memory_links l WHERE l.from_id = r.id) AS link_count
+             FROM records r
+             LEFT JOIN record_stats s ON s.record_id = r.id
+             WHERE r.source_type IN ('markdown', 'iron')
+               AND COALESCE(s.confirm_count, 0) = 0
+               AND COALESCE(s.status, 'active') = 'active'
+             ORDER BY use_count DESC, link_count DESC, r.updated_at DESC, r.id ASC
+             LIMIT 25",
+        )?;
+        let unverified_high_leverage: Vec<Value> = unverified_stmt
+            .query_map([], |row| {
+                Ok(json!({
+                    "id": row.get::<_, String>(0)?,
+                    "title": row.get::<_, String>(1)?,
+                    "project": row.get::<_, String>(2)?,
+                    "kind": row.get::<_, String>(3)?,
+                    "source_type": row.get::<_, String>(4)?,
+                    "updated_at": row.get::<_, i64>(5)?,
+                    "use_count": row.get::<_, i64>(6)?,
+                    "contradict_count": row.get::<_, i64>(7)?,
+                    "link_count": row.get::<_, i64>(8)?,
+                }))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        drop(unverified_stmt);
+
+        let mut contested_stmt = tx.prepare(
+            "SELECT r.id, r.title, r.project, r.kind, r.source_type, r.updated_at,
+                    s.use_count, s.confirm_count, s.contradict_count, s.status, s.superseded_by
+             FROM record_stats s
+             JOIN records r ON r.id = s.record_id
+             WHERE s.contradict_count > 0 OR s.status = 'superseded'
+             ORDER BY s.contradict_count DESC, s.last_used_at DESC, r.id ASC
+             LIMIT 50",
+        )?;
+        let contested_and_superseded: Vec<Value> = contested_stmt
+            .query_map([], |row| {
+                Ok(json!({
+                    "id": row.get::<_, String>(0)?,
+                    "title": row.get::<_, String>(1)?,
+                    "project": row.get::<_, String>(2)?,
+                    "kind": row.get::<_, String>(3)?,
+                    "source_type": row.get::<_, String>(4)?,
+                    "updated_at": row.get::<_, i64>(5)?,
+                    "use_count": row.get::<_, i64>(6)?,
+                    "confirm_count": row.get::<_, i64>(7)?,
+                    "contradict_count": row.get::<_, i64>(8)?,
+                    "status": row.get::<_, String>(9)?,
+                    "superseded_by": row.get::<_, Option<String>>(10)?,
+                }))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        drop(contested_stmt);
+
+        // Group duplicate body_ids via index first before joining bodies
+        let mut dup_bodies_stmt = tx.prepare(
+            "SELECT d.body_id, d.cnt, length(CAST(b.content AS BLOB)) AS bytes,
+                    substr(b.content, 1, 200) AS preview
+             FROM (
+                SELECT body_id, COUNT(*) AS cnt
+                FROM records
+                GROUP BY body_id
+                HAVING cnt > 1
+                ORDER BY cnt DESC
+                LIMIT 20
+             ) d
+             JOIN bodies b ON b.id = d.body_id
+             ORDER BY d.cnt DESC, bytes DESC",
+        )?;
+        let raw_dups: Vec<(i64, i64, i64, String)> = dup_bodies_stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        drop(dup_bodies_stmt);
+
+        let mut sample_stmt = tx.prepare(
+            "SELECT id, title, project, source_type, kind
+             FROM records
+             WHERE body_id = ?
+             ORDER BY updated_at DESC, id ASC
+             LIMIT 5",
+        )?;
+        let mut duplicate_bodies = Vec::with_capacity(raw_dups.len());
+        for (body_id, count, bytes, preview) in raw_dups {
+            let samples: Vec<Value> = sample_stmt
+                .query_map([body_id], |row| {
+                    Ok(json!({
+                        "id": row.get::<_, String>(0)?,
+                        "title": row.get::<_, String>(1)?,
+                        "project": row.get::<_, String>(2)?,
+                        "source_type": row.get::<_, String>(3)?,
+                        "kind": row.get::<_, String>(4)?,
+                    }))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            duplicate_bodies.push(json!({
+                "count": count,
+                "bytes": bytes,
+                "preview": bounded_snippet(preview),
+                "records": samples,
+            }));
+        }
+        drop(sample_stmt);
+        tx.commit()?;
+
+        Ok(json!({
+            "summary": summary,
+            "project_fragmentation": {
+                "total_project_names": total_project_names,
+                "canonical_roots": canonical_root_count,
+                "fragmented_roots": fragmented_roots,
+                "groups": fragmented_groups,
+            },
+            "unverified_high_leverage": unverified_high_leverage,
+            "contested_and_superseded": contested_and_superseded,
+            "duplicate_bodies": duplicate_bodies,
+        }))
+    }
+
+    pub fn knowledge_graph(
+        &self,
+        source: Option<&str>,
+        project: Option<&str>,
+        limit: usize,
+    ) -> Result<Value> {
+        let cap = if limit == 0 { 180 } else { limit.clamp(20, 400) };
+        let src = source.unwrap_or("curated");
+        let tx = self.connection.unchecked_transaction()?;
+
+        let mut clauses: Vec<String> = Vec::new();
+        let mut args: Vec<SqlValue> = Vec::new();
+        match src {
+            "curated" => clauses.push("r.source_type IN ('markdown', 'iron')".to_owned()),
+            "all" => clauses.push("(r.source_type IN ('markdown', 'iron') OR r.kind = 'summary')".to_owned()),
+            "markdown" | "iron" | "cavemem" => {
+                clauses.push("r.source_type = ?".to_owned());
+                args.push(SqlValue::Text(src.to_owned()));
+            }
+            _ => bail!("invalid graph source filter: {src}"),
+        }
+        if let Some(proj) = project.map(str::trim).filter(|s| !s.is_empty()) {
+            clauses.push("r.project = ?".to_owned());
+            args.push(SqlValue::Text(proj.to_owned()));
+        }
+        let where_sql = if clauses.is_empty() {
+            String::new()
+        } else {
+            format!("WHERE {}", clauses.join(" AND "))
+        };
+
+        let total_matching: i64 = tx.query_row(
+            &format!("SELECT COUNT(*) FROM records r {where_sql}"),
+            params_from_iter(args.iter().cloned()),
+            |row| row.get(0),
+        )?;
+
+        let node_sql = format!(
+            "SELECT r.id, r.title, r.project, r.kind, r.source_type, r.updated_at,
+                    date(CASE WHEN r.updated_at > 1000000000000 THEN r.updated_at / 1000 ELSE r.updated_at END, 'unixepoch', 'localtime') AS updated_day,
+                    COALESCE(s.use_count, 0), COALESCE(s.confirm_count, 0),
+                    COALESCE(s.contradict_count, 0), COALESCE(s.status, 'active'),
+                    s.superseded_by,
+                    (SELECT COUNT(*) FROM memory_links l WHERE l.from_id = r.id) AS out_deg
+             FROM records r
+             LEFT JOIN record_stats s ON s.record_id = r.id
+             {where_sql}
+             ORDER BY
+                CASE WHEN COALESCE(s.contradict_count, 0) > 0 THEN 0
+                     WHEN COALESCE(s.confirm_count, 0) > 0 OR COALESCE(s.use_count, 0) > 0 THEN 1
+                     WHEN r.source_type = 'iron' THEN 2
+                     ELSE 3 END ASC,
+                out_deg DESC,
+                r.updated_at DESC,
+                r.id ASC
+             LIMIT ?"
+        );
+        let mut node_args = args;
+        node_args.push(SqlValue::Integer(cap as i64));
+
+        struct RawNode {
+            id: String,
+            title: String,
+            project: String,
+            canonical_root: String,
+            kind: String,
+            source_type: String,
+            updated_at: i64,
+            updated_day: String,
+            use_count: i64,
+            confirm_count: i64,
+            contradict_count: i64,
+            status: String,
+            superseded_by: Option<String>,
+            out_deg: i64,
+        }
+
+        let mut stmt = tx.prepare(&node_sql)?;
+        let raw_nodes: Vec<RawNode> = stmt
+            .query_map(params_from_iter(node_args), |row| {
+                let project: String = row.get(2)?;
+                let canonical_root = canonical_project_root(&project);
+                Ok(RawNode {
+                    id: row.get(0)?,
+                    title: row.get(1)?,
+                    project,
+                    canonical_root,
+                    kind: row.get(3)?,
+                    source_type: row.get(4)?,
+                    updated_at: row.get(5)?,
+                    updated_day: row.get::<_, Option<String>>(6)?.unwrap_or_default(),
+                    use_count: row.get(7)?,
+                    confirm_count: row.get(8)?,
+                    contradict_count: row.get(9)?,
+                    status: row.get(10)?,
+                    superseded_by: row.get(11)?,
+                    out_deg: row.get(12)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        drop(stmt);
+
+        let id_to_idx: BTreeMap<String, usize> = raw_nodes
+            .iter()
+            .enumerate()
+            .map(|(i, n)| (n.id.clone(), i))
+            .collect();
+
+        // Collect bounded high-signal edges between included nodes
+        struct RawEdge {
+            from: String,
+            to: String,
+            relation: String,
+            origin: String,
+            weight: f64,
+            evidence: Vec<String>,
+        }
+        let mut edges: Vec<RawEdge> = Vec::new();
+        let mut seen_undirected: HashSet<(usize, usize, String)> = HashSet::new();
+        let mut edge_stmt = tx.prepare(
+            "SELECT to_id, relation, origin, weight, evidence
+             FROM memory_links
+             WHERE from_id = ?
+             ORDER BY CASE origin WHEN 'feedback' THEN 0 WHEN 'explicit' THEN 1 ELSE 2 END ASC,
+                      weight DESC
+             LIMIT 24",
+        )?;
+        for (from_idx, node) in raw_nodes.iter().enumerate() {
+            let rows = edge_stmt.query_map([&node.id], |row| {
+                let ev_raw: String = row.get(4)?;
+                let evidence: Vec<String> = serde_json::from_str(&ev_raw).unwrap_or_default();
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, f64>(3)?,
+                    evidence,
+                ))
+            })?;
+            for row in rows {
+                let (to_id, relation, origin, weight, evidence) = row?;
+                let Some(&to_idx) = id_to_idx.get(&to_id) else {
+                    continue;
+                };
+                if from_idx == to_idx {
+                    continue;
+                }
+                let key = if origin == "feedback" {
+                    (from_idx, to_idx, relation.clone())
+                } else {
+                    let (a, b) = if from_idx < to_idx {
+                        (from_idx, to_idx)
+                    } else {
+                        (to_idx, from_idx)
+                    };
+                    (a, b, origin.clone())
+                };
+                if seen_undirected.insert(key) {
+                    edges.push(RawEdge {
+                        from: node.id.clone(),
+                        to: to_id,
+                        relation,
+                        origin,
+                        weight,
+                        evidence,
+                    });
+                }
+            }
+        }
+        drop(edge_stmt);
+
+        edges.sort_by(|a, b| {
+            let rank = |o: &str| match o {
+                "feedback" => 0,
+                "explicit" => 1,
+                _ => 2,
+            };
+            rank(&a.origin)
+                .cmp(&rank(&b.origin))
+                .then_with(|| b.weight.total_cmp(&a.weight))
+        });
+        edges.truncate(750);
+
+        // Union-find community clustering over included edges for "Link Clusters" zone mode
+        let mut parent: Vec<usize> = (0..raw_nodes.len()).collect();
+        fn find_root(parent: &mut [usize], mut x: usize) -> usize {
+            while parent[x] != x {
+                parent[x] = parent[parent[x]];
+                x = parent[x];
+            }
+            x
+        }
+        let mut node_degree: Vec<usize> = vec![0; raw_nodes.len()];
+        let mut comp_anchors: BTreeMap<usize, BTreeMap<String, usize>> = BTreeMap::new();
+        for e in &edges {
+            if let (Some(&ia), Some(&ib)) = (id_to_idx.get(&e.from), id_to_idx.get(&e.to)) {
+                node_degree[ia] += 1;
+                node_degree[ib] += 1;
+                let ra = find_root(&mut parent, ia);
+                let rb = find_root(&mut parent, ib);
+                if ra != rb {
+                    parent[ra] = rb;
+                }
+            }
+        }
+        for e in &edges {
+            if let Some(&ia) = id_to_idx.get(&e.from) {
+                let root = find_root(&mut parent, ia);
+                let map = comp_anchors.entry(root).or_default();
+                for ev in &e.evidence {
+                    if ev != "supersedes" && ev != "superseded_by" {
+                        *map.entry(ev.clone()).or_insert(0) += 1;
+                    }
+                }
+            }
+        }
+
+        let mut comp_counts: BTreeMap<usize, usize> = BTreeMap::new();
+        let mut comp_roots: Vec<usize> = Vec::with_capacity(raw_nodes.len());
+        for i in 0..raw_nodes.len() {
+            let r = find_root(&mut parent, i);
+            comp_roots.push(r);
+            *comp_counts.entry(r).or_insert(0) += 1;
+        }
+
+        let mut comp_label: BTreeMap<usize, String> = BTreeMap::new();
+        for (&root, &count) in &comp_counts {
+            if count <= 1 {
+                comp_label.insert(root, format!("Solo · {}", raw_nodes[root].canonical_root));
+                continue;
+            }
+            let top_anchor = comp_anchors
+                .get(&root)
+                .and_then(|m| m.iter().max_by_key(|(_, c)| *c).map(|(k, _)| k.clone()));
+            let label = match top_anchor {
+                Some(a) => a,
+                None => raw_nodes[root].canonical_root.clone(),
+            };
+            comp_label.insert(root, label);
+        }
+
+        let nodes_json: Vec<Value> = raw_nodes
+            .into_iter()
+            .enumerate()
+            .map(|(i, n)| {
+                let cluster = comp_label
+                    .get(&comp_roots[i])
+                    .cloned()
+                    .unwrap_or_else(|| n.canonical_root.clone());
+                json!({
+                    "id": n.id,
+                    "title": n.title,
+                    "project": n.project,
+                    "canonical_root": n.canonical_root,
+                    "cluster": cluster,
+                    "kind": n.kind,
+                    "source_type": n.source_type,
+                    "updated_at": n.updated_at,
+                    "updated_day": n.updated_day,
+                    "use_count": n.use_count,
+                    "confirm_count": n.confirm_count,
+                    "contradict_count": n.contradict_count,
+                    "status": n.status,
+                    "superseded_by": n.superseded_by,
+                    "degree": node_degree[i],
+                    "total_out_links": n.out_deg,
+                })
+            })
+            .collect();
+
+        let edges_json: Vec<Value> = edges
+            .into_iter()
+            .map(|e| {
+                json!({
+                    "from": e.from,
+                    "to": e.to,
+                    "relation": e.relation,
+                    "origin": e.origin,
+                    "weight": e.weight,
+                    "evidence": e.evidence,
+                })
+            })
+            .collect();
+
+        tx.commit()?;
+        Ok(json!({
+            "total_matching": total_matching,
+            "capped": (nodes_json.len() as i64) < total_matching,
+            "nodes": nodes_json,
+            "edges": edges_json,
+        }))
+    }
+
+    pub fn evolution(&self, days: usize) -> Result<Value> {
+        let span = days.clamp(7, 90) as i64;
+        let tx = self.connection.unchecked_transaction()?;
+
+        // Generate contiguous local calendar days up to today via recursive CTE
+        let mut day_stmt = tx.prepare(
+            "WITH RECURSIVE dates(d) AS (
+                SELECT date('now', 'localtime', printf('-%d days', ?1 - 1))
+                UNION ALL
+                SELECT date(d, '+1 day') FROM dates WHERE d < date('now', 'localtime')
+             ),
+             rec_daily AS (
+                SELECT date(CASE WHEN updated_at > 1000000000000 THEN updated_at / 1000 ELSE updated_at END, 'unixepoch', 'localtime') AS day,
+                       SUM(CASE WHEN source_type = 'markdown' THEN 1 ELSE 0 END) AS md,
+                       SUM(CASE WHEN source_type = 'iron' THEN 1 ELSE 0 END) AS iron,
+                       SUM(CASE WHEN source_type = 'cavemem' THEN 1 ELSE 0 END) AS cavemem,
+                       SUM(CASE WHEN kind = 'correction' THEN 1 ELSE 0 END) AS corrections
+                FROM records
+                GROUP BY day
+             ),
+             stat_daily AS (
+                SELECT date(CASE WHEN last_used_at > 1000000000000 THEN last_used_at / 1000 ELSE last_used_at END, 'unixepoch', 'localtime') AS day,
+                       COUNT(*) AS touched,
+                       SUM(use_count) AS uses,
+                       SUM(confirm_count) AS confirms,
+                       SUM(contradict_count) AS contradicts,
+                       SUM(CASE WHEN status = 'superseded' THEN 1 ELSE 0 END) AS superseded
+                FROM record_stats
+                WHERE last_used_at > 0
+                GROUP BY day
+             )
+             SELECT dates.d,
+                    COALESCE(r.md, 0),
+                    COALESCE(r.iron, 0),
+                    COALESCE(r.cavemem, 0),
+                    COALESCE(r.corrections, 0),
+                    COALESCE(s.touched, 0),
+                    COALESCE(s.uses, 0),
+                    COALESCE(s.confirms, 0),
+                    COALESCE(s.contradicts, 0),
+                    COALESCE(s.superseded, 0)
+             FROM dates
+             LEFT JOIN rec_daily r ON r.day = dates.d
+             LEFT JOIN stat_daily s ON s.day = dates.d
+             ORDER BY dates.d ASC",
+        )?;
+
+        struct DayRow {
+            day: String,
+            md: i64,
+            iron: i64,
+            cavemem: i64,
+            corrections: i64,
+            touched: i64,
+            uses: i64,
+            confirms: i64,
+            contradicts: i64,
+            superseded: i64,
+        }
+        let rows: Vec<DayRow> = day_stmt
+            .query_map([span], |row| {
+                Ok(DayRow {
+                    day: row.get(0)?,
+                    md: row.get(1)?,
+                    iron: row.get(2)?,
+                    cavemem: row.get(3)?,
+                    corrections: row.get(4)?,
+                    touched: row.get(5)?,
+                    uses: row.get(6)?,
+                    confirms: row.get(7)?,
+                    contradicts: row.get(8)?,
+                    superseded: row.get(9)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        drop(day_stmt);
+
+        let (active_curated, verified_active_curated, total_curated_links): (i64, i64, i64) = tx
+            .query_row(
+                "SELECT
+                    (SELECT COUNT(*) FROM records r LEFT JOIN record_stats s ON s.record_id = r.id
+                        WHERE r.source_type IN ('markdown', 'iron') AND COALESCE(s.status, 'active') = 'active'),
+                    (SELECT COUNT(*) FROM records r JOIN record_stats s ON s.record_id = r.id
+                        WHERE r.source_type IN ('markdown', 'iron') AND COALESCE(s.status, 'active') = 'active' AND s.confirm_count > 0),
+                    (SELECT COUNT(*) FROM memory_links l JOIN records r ON r.id = l.from_id
+                        WHERE r.source_type IN ('markdown', 'iron'))",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+        tx.commit()?;
+
+        let n = rows.len();
+        let last7 = &rows[n.saturating_sub(7)..];
+        let prev7 = if n >= 14 {
+            &rows[n - 14..n - 7]
+        } else {
+            &rows[..n.saturating_sub(7)]
+        };
+
+        let last7_cur: i64 = last7.iter().map(|d| d.md + d.iron).sum();
+        let prev7_cur: i64 = prev7.iter().map(|d| d.md + d.iron).sum();
+        let last7_raw: i64 = last7.iter().map(|d| d.cavemem).sum();
+        let prev7_raw: i64 = prev7.iter().map(|d| d.cavemem).sum();
+        let last7_iron: i64 = last7.iter().map(|d| d.iron).sum();
+        let prev7_iron: i64 = prev7.iter().map(|d| d.iron).sum();
+        let last7_confirms: i64 = last7.iter().map(|d| d.confirms).sum();
+        let last7_refined: i64 = last7.iter().map(|d| d.superseded + d.corrections).sum();
+
+        let signal_pct = |cur: i64, raw: i64| -> i64 {
+            let tot = cur + raw;
+            if tot <= 0 { 0 } else { (cur * 100) / tot }
+        };
+        let last7_signal_pct = signal_pct(last7_cur, last7_raw);
+        let prev7_signal_pct = signal_pct(prev7_cur, prev7_raw);
+        let verify_coverage_pct = if active_curated > 0 {
+            (verified_active_curated * 100) / active_curated
+        } else {
+            0
+        };
+        let avg_links_per_curated = if active_curated > 0 {
+            (total_curated_links as f64) / (active_curated as f64)
+        } else {
+            0.0
+        };
+
+        let today = rows.last().map(|d| {
+            json!({
+                "day": d.day,
+                "markdown": d.md,
+                "iron": d.iron,
+                "curated": d.md + d.iron,
+                "cavemem": d.cavemem,
+                "corrections": d.corrections,
+                "touched": d.touched,
+                "uses": d.uses,
+                "confirms": d.confirms,
+                "contradicts": d.contradicts,
+                "superseded": d.superseded,
+            })
+        }).unwrap_or_else(|| json!({}));
+
+        let timeline: Vec<Value> = rows
+            .into_iter()
+            .map(|d| {
+                json!({
+                    "day": d.day,
+                    "markdown": d.md,
+                    "iron": d.iron,
+                    "curated": d.md + d.iron,
+                    "cavemem": d.cavemem,
+                    "corrections": d.corrections,
+                    "touched": d.touched,
+                    "uses": d.uses,
+                    "confirms": d.confirms,
+                    "contradicts": d.contradicts,
+                    "superseded": d.superseded,
+                })
+            })
+            .collect();
+
+        Ok(json!({
+            "today": today,
+            "timeline": timeline,
+            "rates": {
+                "signal_pct_7d": last7_signal_pct,
+                "signal_pct_prev_7d": prev7_signal_pct,
+                "signal_lift_pp": last7_signal_pct - prev7_signal_pct,
+                "curated_7d": last7_cur,
+                "curated_prev_7d": prev7_cur,
+                "native_7d": last7_iron,
+                "native_prev_7d": prev7_iron,
+                "confirms_7d": last7_confirms,
+                "refined_7d": last7_refined,
+                "active_curated": active_curated,
+                "verified_active_curated": verified_active_curated,
+                "verification_coverage_pct": verify_coverage_pct,
+                "avg_links_per_curated": (avg_links_per_curated * 10.0).round() / 10.0,
+            }
+        }))
+    }
+}
 fn now_millis() -> Result<i64> {
     i64::try_from(
         SystemTime::now()
@@ -1080,6 +2258,75 @@ fn record_from_row(row: &Row<'_>) -> rusqlite::Result<MemoryRecord> {
         updated_at: row.get(9)?,
         metadata,
     })
+}
+
+fn escape_like(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    for ch in input.chars() {
+        match ch {
+            '\\' | '%' | '_' => {
+                out.push('\\');
+                out.push(ch);
+            }
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+fn link_peer_from_row(row: &Row<'_>) -> rusqlite::Result<Value> {
+    let evidence_raw: String = row.get(9)?;
+    let evidence: Vec<String> = serde_json::from_str(&evidence_raw).unwrap_or_default();
+    Ok(json!({
+        "id": row.get::<_, String>(0)?,
+        "title": row.get::<_, String>(1)?,
+        "project": row.get::<_, String>(2)?,
+        "kind": row.get::<_, String>(3)?,
+        "source_type": row.get::<_, String>(4)?,
+        "status": row.get::<_, String>(5)?,
+        "relation": row.get::<_, String>(6)?,
+        "origin": row.get::<_, String>(7)?,
+        "weight": row.get::<_, f64>(8)?,
+        "evidence": evidence,
+    }))
+}
+
+fn is_valid_iso_day(day: &str) -> bool {
+    let bytes = day.as_bytes();
+    bytes.len() == 10
+        && bytes[4] == b'-'
+        && bytes[7] == b'-'
+        && bytes.iter().enumerate().all(|(i, b)| i == 4 || i == 7 || b.is_ascii_digit())
+}
+
+pub fn canonical_project_root(project: &str) -> String {
+    let trimmed = project.trim();
+    if trimmed.is_empty() || trimmed == "*" {
+        return trimmed.to_owned();
+    }
+    if let Some(rest) = trimmed.strip_prefix("path:") {
+        let label = rest.split('@').next().unwrap_or(rest);
+        return format!("path:{label}");
+    }
+    let mut base = trimmed;
+    for marker in ["/.claude/worktrees/", "/.worktrees/", "/worktrees/"] {
+        if let Some((before, _)) = base.split_once(marker) {
+            base = before;
+            break;
+        }
+    }
+    if base.starts_with('/') {
+        return base
+            .rsplit('/')
+            .find(|s| !s.is_empty())
+            .unwrap_or(trimmed)
+            .to_owned();
+    }
+    let mut parts = base.split('/').filter(|p| !p.is_empty());
+    let Some(first) = parts.next() else {
+        return trimmed.to_owned();
+    };
+    first.to_owned()
 }
 
 fn grouped_counts(connection: &Connection, sql: &str) -> Result<Value> {
@@ -1731,5 +2978,138 @@ mod tests {
         symlink(&real_parent, &parent_alias).unwrap();
         let _store = Store::open(&parent_alias.join("other.db"), true).unwrap();
         assert!(real_parent.join("other.db").is_file());
+    }
+    #[test]
+    fn inspect_is_strictly_read_only_and_browse_filters_accurately() {
+        let temporary = TempDir::new().unwrap();
+        let db = temporary.path().join("iron.db");
+        let mut store = Store::open(&db, true).unwrap();
+        let mut r1 = record("rec_curated", "src", "acme-app", "shared content body alpha");
+        r1.source_type = "markdown".into();
+        r1.kind = "curated".into();
+        r1.updated_at = 200;
+        let mut r2 = record(
+            "rec_worktree",
+            "src",
+            "acme-app/.claude/worktrees/feat-x",
+            "shared content body alpha",
+        );
+        r2.source_type = "iron".into();
+        r2.kind = "decision".into();
+        r2.updated_at = 300;
+        let mut r3 = record("rec_history", "src", "other-app", "session log details beta");
+        r3.source_type = "cavemem".into();
+        r3.kind = "summary".into();
+        r3.updated_at = 400;
+        store
+            .apply(&ImportBatch {
+                groups: vec!["src".into()],
+                records: vec![r1, r2, r3],
+                links: vec![MemoryLink::explicit(
+                    "rec_curated".into(),
+                    "rec_worktree".into(),
+                    "references".into(),
+                )],
+                ..Default::default()
+            })
+            .unwrap();
+        store.record_feedback("rec_worktree", "helpful", None).unwrap();
+
+        let ro = Store::open(&db, false).unwrap();
+        let inspected = ro.inspect("rec_curated").unwrap().unwrap();
+        assert_eq!(inspected["stats"]["use_count"], 0);
+        assert_eq!(inspected["stats"]["confirm_count"], 0);
+        assert_eq!(inspected["outgoing_link_count"], 1);
+        assert_eq!(inspected["duplicate_bodies"].as_array().unwrap().len(), 1);
+        let inspected_again = ro.inspect("rec_curated").unwrap().unwrap();
+        assert_eq!(inspected_again["stats"]["use_count"], 0);
+
+        let unverified = ro
+            .browse(&BrowseOptions {
+                source: Some("curated".into()),
+                status: Some("unverified".into()),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(unverified["total"], 1);
+        assert_eq!(unverified["items"][0]["id"], "rec_curated");
+
+        let verified = ro
+            .browse(&BrowseOptions {
+                status: Some("verified".into()),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(verified["total"], 1);
+        assert_eq!(verified["items"][0]["id"], "rec_worktree");
+
+        let audit = ro.audit_health().unwrap();
+        assert_eq!(audit["summary"]["curated_total"], 2);
+        assert_eq!(audit["summary"]["curated_verified"], 1);
+        assert_eq!(audit["summary"]["curated_unverified"], 1);
+        assert_eq!(audit["summary"]["duplicate_body_records"], 1);
+        let groups = audit["project_fragmentation"]["groups"].as_array().unwrap();
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0]["canonical_root"], "acme-app");
+        assert_eq!(groups[0]["variant_count"], 2);
+    }
+
+    #[test]
+    fn canonical_project_root_groups_worktrees_and_subdirs() {
+        assert_eq!(
+            canonical_project_root("acme-app/.claude/worktrees/first-run"),
+            "acme-app"
+        );
+        assert_eq!(canonical_project_root("acme-app/frontend"), "acme-app");
+        assert_eq!(
+            canonical_project_root("org-service/app/sites/site-wrapper"),
+            "org-service"
+        );
+        assert_eq!(canonical_project_root("path:Projects@abc123"), "path:Projects");
+        assert_eq!(canonical_project_root("*"), "*");
+    }
+
+
+    #[test]
+    fn merge_projects_is_case_sensitive_for_subpaths_and_worktrees() {
+        let tmp = TempDir::new().unwrap();
+        let db = tmp.path().join("memory.db");
+        let mut store = Store::open(&db, true).unwrap();
+        let mk = |id: &str, project: &str| MemoryRecord {
+            id: id.into(),
+            source_group: "seed".into(),
+            source_key: id.into(),
+            source_type: "markdown".into(),
+            kind: "curated".into(),
+            project: project.into(),
+            title: id.into(),
+            content: "content".into(),
+            source_path: format!("/mem/{id}.md"),
+            updated_at: 1_700_000_000_000,
+            metadata: json!({}),
+        };
+        store
+            .apply(&ImportBatch {
+                groups: vec!["seed".into()],
+                records: vec![
+                    mk("r1", "app"),
+                    mk("r2", "app/sub"),
+                    mk("r3", "app-worktrees/wt1"),
+                    mk("r4", "App"),
+                    mk("r5", "App/sub"),
+                    mk("r6", "app_other"),
+                ],
+                ..Default::default()
+            })
+            .unwrap();
+
+        let updated = store.merge_projects("app", "new-app", true).unwrap();
+        assert_eq!(updated, 3);
+        assert_eq!(store.inspect("r1").unwrap().unwrap()["project"], "new-app");
+        assert_eq!(store.inspect("r2").unwrap().unwrap()["project"], "new-app");
+        assert_eq!(store.inspect("r3").unwrap().unwrap()["project"], "new-app");
+        assert_eq!(store.inspect("r4").unwrap().unwrap()["project"], "App");
+        assert_eq!(store.inspect("r5").unwrap().unwrap()["project"], "App/sub");
+        assert_eq!(store.inspect("r6").unwrap().unwrap()["project"], "app_other");
     }
 }

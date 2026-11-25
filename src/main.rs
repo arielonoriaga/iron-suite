@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
-use iron_suite::{backup, import, mcp, migrate, native, output, refresh, service, store::Store};
+use iron_suite::{backup, import, mcp, migrate, native, output, refresh, service, store::Store, ui};
 use serde_json::json;
 use std::{
     io::{self, Write},
@@ -32,6 +32,12 @@ enum Command {
         claude_root: Option<PathBuf>,
         #[arg(long)]
         cavemem_db: Option<PathBuf>,
+    },
+    Ui {
+        #[arg(long, default_value = "127.0.0.1")]
+        host: String,
+        #[arg(long, default_value_t = 7420)]
+        port: u16,
     },
 }
 
@@ -69,6 +75,16 @@ enum MemoryCommand {
         superseded_by: Option<String>,
     },
     Link,
+    MergeProject {
+        #[arg(long)]
+        from: String,
+        #[arg(long)]
+        to: String,
+        #[arg(long)]
+        exact: bool,
+        #[arg(long)]
+        no_alias: bool,
+    },
     Consolidate {
         #[arg(long)]
         project: Option<String>,
@@ -173,6 +189,9 @@ fn run(cli: Cli) -> Result<()> {
         }
         return mcp::serve(&db);
     }
+    if let Command::Ui { host, port } = &cli.command {
+        return ui::serve(&db, host, *port);
+    }
     let result = match cli.command {
         Command::Memory {
             command: MemoryCommand::Backup { output },
@@ -219,6 +238,23 @@ fn run(cli: Cli) -> Result<()> {
                 id,
                 outcome,
                 superseded_by,
+            },
+        )?,
+        Command::Memory {
+            command:
+                MemoryCommand::MergeProject {
+                    from,
+                    to,
+                    exact,
+                    no_alias,
+                },
+        } => native::merge_projects(
+            &db,
+            native::MergeProjectsRequest {
+                from,
+                to,
+                include_subpaths: !exact,
+                save_alias: !no_alias,
             },
         )?,
         Command::Memory {
@@ -288,6 +324,7 @@ fn run(cli: Cli) -> Result<()> {
                 | MemoryCommand::Remember { .. }
                 | MemoryCommand::Feedback { .. }
                 | MemoryCommand::Link
+                | MemoryCommand::MergeProject { .. }
                 | MemoryCommand::Migrate { .. }
                 | MemoryCommand::Backup { .. } => unreachable!(),
             }
@@ -297,7 +334,7 @@ fn run(cli: Cli) -> Result<()> {
                 .context("cannot open Iron index; run memory import first")?;
             service::search_with_archive(&store, Some(&db), args.search.request(Some(args.role))?)?
         }
-        Command::Mcp { .. } => unreachable!(),
+        Command::Mcp { .. } | Command::Ui { .. } => unreachable!(),
     };
     io::stdout()
         .lock()

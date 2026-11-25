@@ -32,6 +32,67 @@ pub struct FeedbackRequest {
     pub superseded_by: Option<String>,
 }
 
+
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MergeProjectsRequest {
+    pub from: String,
+    pub to: String,
+    #[serde(default = "default_true")]
+    pub include_subpaths: bool,
+    #[serde(default = "default_true")]
+    pub save_alias: bool,
+}
+
+pub fn merge_projects(db: &Path, req: MergeProjectsRequest) -> Result<Value> {
+    ensure!(
+        db != Path::new(":memory:"),
+        "merge_projects requires a durable index path"
+    );
+    let from = crate::aliases::validate_project_name("from project", &req.from)?;
+    let to = crate::aliases::validate_project_name("to project", &req.to)?;
+    ensure!(from != to, "source and target project names must differ");
+
+    let _lock = lock_native_writes(db)?;
+    let existing = crate::aliases::load(db)?;
+    let (target_project, planned_aliases) = if req.save_alias {
+        let (_, resolved_to, next) = crate::aliases::plan_alias(&existing, &from, &to)?;
+        (resolved_to, Some(next))
+    } else {
+        (to, None)
+    };
+    let mut store = Store::open(db, true)?;
+    let updated = store.merge_projects(&from, &target_project, req.include_subpaths)?;
+    let aliases = if let Some(next) = planned_aliases {
+        crate::aliases::save_atomic(db, &next)?;
+        next
+    } else {
+        existing
+    };
+    Ok(json!({
+        "from": from,
+        "to": target_project,
+        "include_subpaths": req.include_subpaths,
+        "save_alias": req.save_alias,
+        "updated_records": updated,
+        "aliases": aliases,
+    }))
+}
+
+pub fn remove_project_alias(db: &Path, from: &str) -> Result<Value> {
+    ensure!(
+        db != Path::new(":memory:"),
+        "remove_project_alias requires a durable index path"
+    );
+    let _lock = lock_native_writes(db)?;
+    let aliases = crate::aliases::remove_alias(db, from)?;
+    Ok(json!({ "aliases": aliases }))
+}
+
 pub fn feedback(db: &Path, req: FeedbackRequest) -> Result<Value> {
     ensure!(
         db != Path::new(":memory:"),
@@ -74,6 +135,8 @@ pub fn remember(db: &Path, req: RememberRequest) -> Result<Value> {
     validate_text("title", &req.title, 200)?;
     validate_text("content", &req.content, 65_536)?;
     validate_text("project", &req.project, 256)?;
+    let alias_map = crate::aliases::load(db)?;
+    let req_project = crate::aliases::resolve(&alias_map, &req.project);
     ensure!(
         req.supersedes.len() <= 16,
         "supersedes must not exceed 16 target IDs"
@@ -93,7 +156,7 @@ pub fn remember(db: &Path, req: RememberRequest) -> Result<Value> {
     ensure!(agent.len() <= 64, "agent must not exceed 64 UTF-8 bytes");
     let title = redact(&req.title);
     let content = redact(&req.content);
-    let project = redact(&req.project);
+    let project = redact(&req_project);
     let agent = redact(&agent);
     let agent = if agent.trim().is_empty() {
         "unknown".into()

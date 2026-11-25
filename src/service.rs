@@ -85,6 +85,15 @@ pub fn search_with_archive(
     {
         bail!("role must be developer, reviewer, or verifier");
     }
+    let req = if let Some(db) = db_path {
+        let alias_map = crate::aliases::load(db).unwrap_or_default();
+        SearchRequest {
+            project: req.project.map(|p| crate::aliases::resolve(&alias_map, &p)),
+            ..req
+        }
+    } else {
+        req
+    };
     let requested = limit(req.limit)?;
     let source = req.source.as_deref().unwrap_or("all");
     if req.role.as_deref() == Some("reviewer") && matches!(source, "history" | "native" | "archive") {

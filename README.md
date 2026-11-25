@@ -67,10 +67,26 @@ iron memory feedback mem_ID --outcome helpful
 
 # Cross-session anchor linking, pattern consolidation & hot/cold v2 archive split
 iron memory consolidate --min-occurrences 3
+iron memory merge-project --from legacy-shop --to commerce-core
 iron memory migrate --from ~/.local/share/iron/memory.v1.db \
   --output ~/.local/share/iron/memory.db --archive-output ~/.local/share/iron/archive.db
 iron memory backup --output ~/backups/iron-snapshot.db
+
+# Launch the zero-dependency Second Brain & Memory Verification Web UI (loopback by default)
+iron ui --port 7420
 ```
+
+#### Second Brain & Verification Web UI (`iron ui`)
+
+`iron ui` embeds a zero-dependency local HTTP/1.1 workbench directly inside the `iron` binary (pure Rust `std::net`, zero extra Cargo dependencies, `Host`-allowlisted and CSRF-protected) so you can visually inspect, verify, and curate the second brain your agents rely on:
+
+![Iron Memory Second Brain UI](docs/iron-ui-second-brain.png)
+
+- **Second Brain (Interactive Knowledge Graph):** Obsidian-style orbital knowledge bubbles grouped by **Project Zones**, **Link Clusters**, or **Trust Zones**, with explicit reference edges, cross-session auto-anchor bridges, search spotlighting, day-growth halos, and dark/light themes.
+- **Today Pulse & 14-Day Evolution Rates:** Time-travel day selector (`◀ Today ▶`) and 14-day stacked activity chart tracking curated signal-to-noise lift, human verification coverage, native rule velocity, and self-correction rate.
+- **Trust Desk (Strictly Read-Only Inspection):** Inspect full Markdown/native memory prose, exact trust multiplier (`2.0×`/`2.2×` vs `0.15×` superseded decay), supersession lineage, duplicate-body clusters, and recurring consolidation candidates without mutating `use_count` until you click **Still True**, **Update & Supersede**, **Contradicted**, or **Outdated**.
+- **Agent Lens (Retrieval Simulator):** Run exact `developer`, `reviewer`, `verifier`, or side-by-side Dev-vs-Reviewer retrieval queries with live byte-budget rulers and truncation visibility.
+- **Project Merge, Rename & Persistent Aliases (`aliases.json`):** Consolidate fragmented or renamed projects directly from the UI (`⇄ Merge / Rename`) or CLI (`iron memory merge-project --from <OLD> --to <NEW>`). Saving a permanent alias writes a private `0600` `aliases.json` sibling file next to `memory.db` (zero schema changes) so future imports, `memory_remember`, and searches transparently resolve old names and subpaths/worktrees to the canonical project.
 
 #### MCP Server (`iron mcp`)
 Exposes 5 tools over newline-delimited JSON-RPC `stdio` (`2025-06-18` / `2025-03-26` / `2024-11-05`):

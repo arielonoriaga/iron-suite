@@ -1,0 +1,2730 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Iron Memory — Second Brain Workbench</title>
+<style>
+/* Celestial OKLCH Dual-Theme System */
+:root {
+  color-scheme: dark light;
+  --void: #060b13;
+  --deep: #0b1320;
+  --surface: rgba(15, 24, 38, 0.86);
+  --raised: #111c2d;
+  --raised-hover: #17253b;
+  --input-bg: #08101c;
+  --border: rgba(114, 150, 194, 0.20);
+  --border-strong: rgba(132, 174, 224, 0.36);
+  --text: #edf2f8;
+  --text-bright: #dce6f2;
+  --text-mid: #9cb0c9;
+  --text-muted: #7086a3;
+
+  /* Celestial Accent Spectrum */
+  --c-coral: #E8622C;
+  --c-teal: #14B8A6;
+  --c-emerald: #019F68;
+  --c-blue: #3B82F6;
+  --c-gold: #F7BF2E;
+  --c-violet: #8B5CF6;
+  --c-slate: #9DBBD6;
+
+  --accent: #3B82F6;
+  --accent-soft: rgba(59, 130, 246, 0.16);
+  --accent-border: rgba(59, 130, 246, 0.44);
+  --ok: #34D399;
+  --ok-soft: rgba(1, 159, 104, 0.17);
+  --ok-border: rgba(52, 211, 153, 0.36);
+  --warn: #F7BF2E;
+  --warn-soft: rgba(247, 191, 46, 0.15);
+  --warn-border: rgba(247, 191, 46, 0.38);
+  --bad: #F87171;
+  --bad-soft: rgba(239, 68, 68, 0.16);
+  --bad-border: rgba(248, 113, 113, 0.38);
+  --warm: #E8622C;
+  --warm-soft: rgba(232, 98, 44, 0.16);
+  --warm-border: rgba(232, 98, 44, 0.40);
+  --violet: #A78BFA;
+  --violet-soft: rgba(139, 92, 246, 0.17);
+  --teal: #2DD4BF;
+  --teal-soft: rgba(20, 184, 166, 0.16);
+
+  --shadow-lg: 0 18px 48px rgba(2, 6, 14, 0.56);
+  --font-sans: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, Consolas, monospace;
+  --ease: cubic-bezier(0.25, 1, 0.5, 1);
+  --r: 12px;
+  --r-sm: 8px;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --void: #f5f7fb;
+  --deep: #ebf0f6;
+  --surface: rgba(255, 255, 255, 0.90);
+  --raised: #ffffff;
+  --raised-hover: #f0f4fa;
+  --input-bg: #f8fafc;
+  --border: rgba(45, 72, 108, 0.16);
+  --border-strong: rgba(45, 72, 108, 0.32);
+  --text: #111827;
+  --text-bright: #1e293b;
+  --text-mid: #475569;
+  --text-muted: #64748b;
+  --c-slate: #3A5A78;
+
+  --accent: #1D4ED8;
+  --accent-soft: rgba(29, 78, 216, 0.10);
+  --accent-border: rgba(29, 78, 216, 0.36);
+  --ok: #047857;
+  --ok-soft: rgba(4, 120, 87, 0.11);
+  --ok-border: rgba(4, 120, 87, 0.32);
+  --warn: #B45309;
+  --warn-soft: rgba(180, 83, 9, 0.11);
+  --warn-border: rgba(180, 83, 9, 0.34);
+  --bad: #B91C1C;
+  --bad-soft: rgba(185, 28, 28, 0.11);
+  --bad-border: rgba(185, 28, 28, 0.32);
+  --warm: #C2410C;
+  --warm-soft: rgba(194, 65, 12, 0.11);
+  --warm-border: rgba(194, 65, 12, 0.34);
+  --violet: #6D28D9;
+  --violet-soft: rgba(109, 40, 217, 0.11);
+  --teal: #0F766E;
+  --teal-soft: rgba(15, 118, 110, 0.11);
+  --shadow-lg: 0 18px 48px rgba(15, 23, 42, 0.14);
+}
+
+* { box-sizing: border-box; }
+html, body {
+  margin: 0; padding: 0;
+  background: var(--void);
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+}
+button, input, select, textarea { font-family: inherit; font-size: inherit; color: inherit; }
+.mono { font-family: var(--font-mono); }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition: none !important; animation: none !important; }
+}
+
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  min-height: 40px; padding: 0 13px;
+  border-radius: var(--r-sm); border: 1px solid var(--border-strong);
+  background: var(--raised); color: var(--text); font-weight: 600; font-size: 13px;
+  cursor: pointer; transition: background 150ms var(--ease), border-color 150ms var(--ease), transform 80ms ease;
+}
+.btn:hover:not(:disabled) { background: var(--raised-hover); border-color: var(--accent-border); }
+.btn:active:not(:disabled) { transform: translateY(1px); }
+.btn:disabled { opacity: 0.42; cursor: not-allowed; }
+.btn-sm { min-height: 34px; padding: 0 10px; font-size: 12px; }
+.btn-accent { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn-accent:hover:not(:disabled) { filter: brightness(1.1); }
+.btn-ok { background: var(--ok-soft); border-color: var(--ok-border); color: var(--ok); }
+.btn-ok:hover:not(:disabled) { filter: brightness(1.12); }
+.btn-warm { background: var(--warm-soft); border-color: var(--warm-border); color: var(--warm); }
+.btn-warn { background: var(--warn-soft); border-color: var(--warn-border); color: var(--warn); }
+.btn-bad { background: var(--bad-soft); border-color: var(--bad-border); color: var(--bad); }
+.btn-ghost { background: transparent; border-color: transparent; color: var(--text-mid); }
+.btn-ghost:hover:not(:disabled) { background: var(--raised-hover); color: var(--text); border-color: var(--border); }
+
+.input, select.input, textarea.input {
+  width: 100%; min-height: 40px; padding: 8px 11px;
+  background: var(--input-bg); border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm); color: var(--text); outline: none;
+}
+.input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+
+.pill {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 2px 8px; border-radius: 999px;
+  font-size: 11px; font-weight: 600; font-family: var(--font-mono);
+  white-space: nowrap; border: 1px solid transparent;
+}
+.p-ok { background: var(--ok-soft); color: var(--ok); border-color: var(--ok-border); }
+.p-warn { background: var(--warn-soft); color: var(--warn); border-color: var(--warn-border); }
+.p-bad { background: var(--bad-soft); color: var(--bad); border-color: var(--bad-border); }
+.p-warm { background: var(--warm-soft); color: var(--warm); border-color: var(--warm-border); }
+.p-explicit { background: var(--accent-soft); color: var(--accent); border-color: var(--accent-border); }
+.p-auto { background: var(--teal-soft); color: var(--teal); }
+.p-violet { background: var(--violet-soft); color: var(--violet); }
+.p-neutral { background: var(--deep); color: var(--text-mid); border-color: var(--border); }
+.p-sup { background: var(--deep); color: var(--text-muted); border-color: var(--border); text-decoration: line-through; }
+
+.topbar {
+  position: sticky; top: 0; z-index: 40;
+  display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+  padding: 10px 18px;
+  background: var(--surface);
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--border);
+}
+.brand { display: flex; align-items: center; gap: 10px; }
+.brand-orb {
+  width: 30px; height: 30px; border-radius: 50%;
+  background: radial-gradient(circle at 32% 30%, #93c5fd 0%, #3b82f6 42%, #1e3a8a 82%, #0b1320 100%);
+  box-shadow: 0 0 14px rgba(59, 130, 246, 0.45);
+  display: grid; place-items: center; font-family: var(--font-mono); font-size: 11px; font-weight: 800; color: #fff;
+}
+.brand-title { font-weight: 700; font-size: 14px; letter-spacing: 0.04em; }
+.brand-sub { font-size: 11px; color: var(--text-muted); font-family: var(--font-mono); }
+
+.mode-nav {
+  display: inline-flex; gap: 3px; padding: 3px;
+  background: var(--deep); border: 1px solid var(--border); border-radius: 10px;
+  overflow-x: auto; max-width: 100%;
+}
+.mode-btn {
+  border: none; background: transparent; color: var(--text-mid);
+  min-height: 34px; padding: 0 13px; border-radius: 7px;
+  font-weight: 600; font-size: 13px; cursor: pointer; white-space: nowrap;
+  display: inline-flex; align-items: center; gap: 6px;
+  transition: background 150ms var(--ease), color 150ms var(--ease);
+}
+.mode-btn:hover { color: var(--text); background: var(--raised-hover); }
+.mode-btn.active {
+  background: var(--raised); color: var(--text);
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+}
+.mode-dot { width: 7px; height: 7px; border-radius: 50%; }
+.topbar-right { display: flex; align-items: center; gap: 7px; }
+
+.pulse-strip {
+  background: var(--deep);
+  border-bottom: 1px solid var(--border);
+  padding: 9px 18px;
+}
+.pulse-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap;
+}
+.time-travel {
+  display: inline-flex; align-items: center; gap: 3px;
+  background: var(--raised); border: 1px solid var(--border-strong); border-radius: 999px;
+  padding: 2px 4px;
+}
+.time-travel button {
+  border: none; background: transparent; color: var(--text-mid); border-radius: 999px;
+  min-width: 28px; min-height: 28px; cursor: pointer; font-weight: 700;
+}
+.time-travel button:hover:not(:disabled) { background: var(--raised-hover); color: var(--text); }
+.time-travel button:disabled { opacity: 0.35; cursor: not-allowed; }
+.tt-label { font-family: var(--font-mono); font-size: 12px; font-weight: 700; padding: 0 8px; }
+.pulse-stats {
+  display: flex; align-items: center; gap: 13px; flex-wrap: wrap; font-size: 12.5px; color: var(--text-mid);
+}
+.pulse-stats strong { font-family: var(--font-mono); color: var(--text); }
+
+.evo-panel {
+  margin-top: 10px; padding-top: 12px; border-top: 1px solid var(--border);
+  display: grid; grid-template-columns: 1.45fr 1fr; gap: 14px;
+}
+.evo-box {
+  background: var(--raised); border: 1px solid var(--border); border-radius: var(--r);
+  padding: 11px 14px;
+}
+.evo-bars {
+  display: grid; grid-template-columns: repeat(14, 1fr); gap: 5px; align-items: end;
+  height: 86px; margin-top: 10px; padding-bottom: 4px; border-bottom: 1px solid var(--border);
+}
+.evo-col {
+  display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%;
+  cursor: pointer; border-radius: 5px 5px 0 0; padding: 2px 0 0;
+}
+.evo-col:hover { background: var(--accent-soft); }
+.evo-col.active { background: var(--accent-soft); outline: 1.5px solid var(--accent); }
+.evo-stack { width: 72%; display: flex; flex-direction: column-reverse; border-radius: 3px 3px 0 0; overflow: hidden; }
+.b-md { background: #3B82F6; }
+.b-iron { background: #E8622C; }
+.b-ver { background: #019F68; }
+.evo-days {
+  display: grid; grid-template-columns: repeat(14, 1fr); gap: 5px; margin-top: 4px;
+  font-family: var(--font-mono); font-size: 9.5px; color: var(--text-muted); text-align: center;
+}
+.rates-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.rate-card {
+  background: var(--raised); border: 1px solid var(--border); border-left: 3px solid var(--rate-accent, var(--accent));
+  border-radius: var(--r-sm); padding: 9px 11px;
+}
+.rate-lbl { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-muted); font-weight: 700; }
+.rate-val { font-family: var(--font-mono); font-size: 19px; font-weight: 800; margin: 2px 0; }
+.rate-sub { font-size: 11.5px; color: var(--text-mid); }
+
+.view { display: none; }
+.view.active { display: block; }
+
+.brain-toolbar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  padding: 9px 18px; background: var(--surface); border-bottom: 1px solid var(--border);
+}
+.seg {
+  display: inline-flex; padding: 2px; gap: 2px;
+  background: var(--deep); border: 1px solid var(--border); border-radius: 8px;
+}
+.seg button {
+  border: none; background: transparent; color: var(--text-mid);
+  min-height: 30px; padding: 0 10px; border-radius: 6px; font-size: 12px; font-weight: 600; cursor: pointer;
+}
+.seg button.active { background: var(--raised); color: var(--text); box-shadow: inset 0 0 0 1px var(--border-strong); }
+
+.brain-stage {
+  position: relative;
+  height: calc(100vh - 178px);
+  min-height: 540px;
+  overflow: hidden;
+  cursor: grab;
+  touch-action: none;
+}
+.brain-stage:active { cursor: grabbing; }
+.brain-canvas { width: 100%; height: 100%; display: block; }
+.brain-tooltip {
+  position: absolute; pointer-events: none; z-index: 20; display: none;
+  background: var(--surface); backdrop-filter: blur(10px);
+  border: 1px solid var(--border-strong); border-left: 3px solid var(--accent);
+  border-radius: 10px; padding: 9px 12px; max-width: 290px;
+  box-shadow: var(--shadow-lg); font-size: 12px;
+}
+.brain-hud {
+  position: absolute; left: 16px; bottom: 16px; z-index: 10;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 11px;
+  padding: 7px 14px; border-radius: 999px;
+  background: var(--surface); backdrop-filter: blur(10px);
+  border: 1px solid var(--border-strong); font-size: 11.5px; color: var(--text-mid);
+}
+.hud-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 4px; vertical-align: middle; }
+.brain-zoom {
+  position: absolute; right: 16px; bottom: 16px; z-index: 10;
+  display: flex; gap: 4px; padding: 4px; border-radius: 10px;
+  background: var(--surface); backdrop-filter: blur(10px);
+  border: 1px solid var(--border-strong);
+}
+
+.desk-wrap { max-width: 1420px; margin: 0 auto; padding: 14px 18px 80px; }
+.story-card {
+  background: linear-gradient(125deg, var(--accent-soft) 0%, transparent 48%), var(--raised);
+  border: 1px solid var(--border); border-left: 3px solid var(--accent);
+  border-radius: var(--r); padding: 14px 16px; margin-bottom: 12px;
+}
+.story-text { margin: 0; font-size: 14.5px; line-height: 1.55; }
+.radar-row { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 10px; }
+.radar-pill {
+  display: inline-flex; align-items: center; gap: 6px; min-height: 34px; padding: 0 11px;
+  border-radius: 999px; border: 1px solid var(--border-strong); background: var(--deep);
+  font-size: 12px; font-weight: 600; color: var(--text-bright); cursor: pointer;
+}
+.radar-pill:hover { border-color: var(--accent); background: var(--accent-soft); }
+.radar-pill.warn { border-color: var(--warn-border); background: var(--warn-soft); color: var(--warn); }
+.radar-pill.bad { border-color: var(--bad-border); background: var(--bad-soft); color: var(--bad); }
+.radar-pill.ok { border-color: var(--ok-border); background: var(--ok-soft); color: var(--ok); }
+
+.quick-add {
+  border: 1.5px dashed var(--border-strong); border-radius: var(--r);
+  background: var(--raised); padding: 8px 12px; margin-bottom: 12px;
+}
+.quick-add input { border: none; background: transparent; width: 100%; outline: none; min-height: 32px; }
+.quick-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; align-items: center; }
+
+.deck-layout {
+  display: grid; grid-template-columns: minmax(340px, 430px) 1fr; gap: 14px; align-items: start;
+}
+.deck-pane {
+  background: var(--raised); border: 1px solid var(--border); border-radius: var(--r); overflow: hidden;
+}
+.deck-filters { padding: 11px; border-bottom: 1px solid var(--border); display: flex; flex-direction: column; gap: 7px; }
+.chip-bar { display: flex; flex-wrap: wrap; gap: 5px; }
+.chip {
+  min-height: 30px; padding: 0 9px; font-size: 11.5px; font-weight: 600;
+  border-radius: 999px; border: 1px solid var(--border); background: var(--deep); color: var(--text-mid); cursor: pointer;
+}
+.chip.active { border-color: var(--accent); background: var(--accent-soft); color: var(--text); }
+.filter-grid { display: grid; grid-template-columns: 1.2fr 1fr 1fr; gap: 6px; }
+.deck-list { max-height: 62vh; overflow-y: auto; padding: 8px; display: flex; flex-direction: column; gap: 6px; }
+.deck-item {
+  width: 100%; text-align: left; padding: 10px 11px; border-radius: var(--r-sm);
+  border: 1px solid var(--border); background: var(--deep); cursor: pointer;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+.deck-item:hover { background: var(--raised-hover); border-color: var(--border-strong); }
+.deck-item.selected {
+  border-color: var(--accent); border-left: 3px solid var(--accent);
+  background: linear-gradient(125deg, var(--accent-soft) 0%, transparent 55%), var(--raised-hover);
+}
+.deck-foot {
+  padding: 8px 11px; border-top: 1px solid var(--border);
+  display: flex; align-items: center; justify-content: space-between; font-size: 12px; color: var(--text-muted);
+}
+
+.reading-pane {
+  background: var(--raised); border: 1px solid var(--border); border-radius: var(--r);
+  padding: 18px 22px 28px; min-height: 460px;
+}
+.reading-title { margin: 0 0 8px; font-size: 20px; font-weight: 700; line-height: 1.25; }
+.trust-sentence {
+  padding: 10px 13px; border-radius: var(--r-sm); background: var(--deep);
+  border-left: 3px solid var(--accent); font-size: 13px; color: var(--text-bright); margin: 12px 0;
+}
+.verdict-bar { display: flex; flex-wrap: wrap; gap: 7px; margin: 12px 0 16px; }
+.prose-box {
+  background: var(--deep); border: 1px solid var(--border); border-radius: var(--r-sm);
+  padding: 14px 16px; margin: 12px 0;
+}
+.content-raw { margin: 0; white-space: pre-wrap; word-break: break-word; font-family: var(--font-mono); font-size: 12.5px; line-height: 1.55; }
+.content-md h1, .content-md h2, .content-md h3 { margin: 10px 0 5px; }
+.content-md h1 { font-size: 17px; } .content-md h2 { font-size: 15px; } .content-md h3 { font-size: 13.5px; color: var(--accent); }
+.content-md p { margin: 5px 0; } .content-md ul { margin: 5px 0; padding-left: 19px; }
+.content-md code { font-family: var(--font-mono); font-size: 12px; background: var(--raised); padding: 1px 5px; border-radius: 4px; border: 1px solid var(--border); }
+.content-md pre { background: var(--input-bg); border: 1px solid var(--border); border-radius: 6px; padding: 10px; overflow-x: auto; font-family: var(--font-mono); font-size: 12px; }
+.content-md pre code { background: none; border: none; padding: 0; }
+
+.lineage-strip {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+  padding: 9px 12px; border-radius: var(--r-sm); background: var(--deep); border: 1px solid var(--border); margin: 10px 0;
+}
+.section-kicker {
+  font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em;
+  color: var(--text-muted); margin: 16px 0 7px; display: flex; justify-content: space-between; align-items: center;
+}
+.anchor-group {
+  padding: 9px 11px; border-radius: var(--r-sm); background: var(--deep); border: 1px solid var(--border); margin-bottom: 7px;
+}
+.meta-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.meta-table td { padding: 5px 6px; border-bottom: 1px solid var(--border); vertical-align: top; word-break: break-all; }
+.meta-table td:first-child { width: 120px; color: var(--text-muted); font-family: var(--font-mono); }
+
+.lens-wrap { max-width: 1280px; margin: 0 auto; padding: 16px 18px 80px; }
+.choice-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 9px; margin: 12px 0; }
+.choice-card {
+  text-align: left; padding: 11px 13px; border-radius: var(--r-sm);
+  background: var(--raised); border: 1.5px solid var(--border); cursor: pointer;
+}
+.choice-card.active {
+  border-color: var(--accent);
+  background: linear-gradient(125deg, var(--accent-soft) 0%, transparent 55%), var(--raised);
+}
+.budget-ruler {
+  background: var(--raised); border: 1px solid var(--border); border-radius: var(--r-sm);
+  padding: 10px 13px; margin: 10px 0 14px;
+}
+.ruler-track { height: 8px; border-radius: 99px; background: var(--deep); overflow: hidden; margin-top: 6px; }
+.ruler-fill { height: 100%; background: linear-gradient(90deg, var(--c-emerald), var(--c-blue)); }
+.ruler-fill.tight { background: linear-gradient(90deg, var(--c-gold), var(--c-coral)); }
+.sim-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 9px; margin-top: 10px; align-items: end; }
+.hit-card {
+  background: var(--raised); border: 1px solid var(--border); border-left: 3px solid var(--hit-accent, var(--accent));
+  border-radius: var(--r); padding: 12px 14px; margin-bottom: 9px;
+}
+.compare-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+
+.sheet-backdrop {
+  position: fixed; inset: 0; z-index: 70;
+  background: rgba(3, 7, 15, 0.56); backdrop-filter: blur(4px);
+  display: none;
+}
+.sheet-backdrop.open { display: block; }
+.sidesheet {
+  position: fixed; top: 0; right: 0; bottom: 0;
+  width: min(560px, 100vw);
+  background: var(--raised);
+  border-left: 1px solid var(--border-strong);
+  box-shadow: var(--shadow-lg);
+  display: flex; flex-direction: column;
+}
+.sheet-head {
+  padding: 13px 16px; border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+}
+.sheet-body { flex: 1; overflow-y: auto; padding: 16px; }
+.sheet-foot {
+  padding: 11px 16px; border-top: 1px solid var(--border); background: var(--deep);
+  display: flex; gap: 8px; flex-wrap: wrap;
+}
+
+.mobile-bar {
+  display: none; position: fixed; left: 0; right: 0; bottom: 0; z-index: 45;
+  background: var(--surface); backdrop-filter: blur(12px);
+  border-top: 1px solid var(--border-strong); padding: 8px 10px; gap: 6px;
+}
+
+.toast {
+  position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%) translateY(14px);
+  z-index: 95; background: var(--raised); color: var(--text);
+  border: 1px solid var(--border-strong); border-radius: 999px;
+  padding: 9px 15px; font-size: 13px; font-weight: 600; box-shadow: var(--shadow-lg);
+  opacity: 0; pointer-events: none; transition: opacity 160ms var(--ease), transform 160ms var(--ease);
+}
+.toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+.toast.ok { border-color: var(--ok-border); }
+.toast.err { border-color: var(--bad-border); color: var(--bad); }
+
+.kbd {
+  display: inline-block; padding: 1px 5px; font-family: var(--font-mono); font-size: 11px;
+  border: 1px solid var(--border-strong); border-radius: 4px; background: var(--deep); color: var(--text-mid);
+}
+.empty-state { padding: 36px 20px; text-align: center; color: var(--text-muted); }
+
+@media (max-width: 960px) {
+  .evo-panel, .deck-layout, .choice-grid, .compare-cols { grid-template-columns: 1fr; }
+  .reading-pane { display: none; }
+  .brain-stage { height: calc(100vh - 230px); min-height: 430px; }
+  .brain-hud { left: 10px; right: 10px; bottom: 68px; border-radius: 12px; }
+  .brain-zoom { right: 10px; bottom: 118px; }
+  .sidesheet {
+    top: auto; left: 0; right: 0; bottom: 0; width: 100vw; height: 90vh;
+    border-left: none; border-top: 1px solid var(--border-strong); border-radius: 18px 18px 0 0;
+  }
+  .mobile-bar { display: grid; grid-template-columns: 1fr 1fr 1fr; }
+}
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <div class="brand-orb">Fe</div>
+    <div>
+      <div class="brand-title">IRON // SECOND BRAIN</div>
+      <div class="brand-sub" id="dbBadge">Connecting to memory index…</div>
+    </div>
+  </div>
+
+  <nav class="mode-nav" role="tablist">
+    <button class="mode-btn active" data-view="brain" role="tab">
+      <span class="mode-dot" style="background:var(--c-teal)"></span> Second Brain
+    </button>
+    <button class="mode-btn" data-view="desk" role="tab">
+      <span class="mode-dot" style="background:var(--c-coral)"></span> Trust Desk
+    </button>
+    <button class="mode-btn" data-view="lens" role="tab">
+      <span class="mode-dot" style="background:var(--c-blue)"></span> Agent Lens
+    </button>
+  </nav>
+
+  <div class="topbar-right">
+    <button class="btn btn-sm btn-accent" id="btnNewMemory">+ Remember</button>
+    <button class="btn btn-sm btn-ghost" id="btnTheme" title="Toggle light / dark theme">☀</button>
+    <button class="btn btn-sm btn-ghost" id="btnHelp" title="Keyboard shortcuts">?</button>
+  </div>
+</header>
+
+<section class="pulse-strip" id="pulseStrip"></section>
+
+<main id="view-brain" class="view active">
+  <div class="brain-toolbar">
+    <div class="seg" id="brainGroupSeg">
+      <button class="active" data-bgroup="project">Project Zones</button>
+      <button data-bgroup="cluster">Link Clusters</button>
+      <button data-bgroup="trust">Trust Zones</button>
+    </div>
+    <input id="brainSearch" class="input" style="max-width:220px;min-height:34px;padding:4px 10px;" placeholder="Spotlight node or anchor…">
+    <select id="brainSource" class="input" style="width:auto;min-height:34px;padding:4px 9px;">
+      <option value="curated">Curated + Iron (default)</option>
+      <option value="iron">Iron Native only</option>
+      <option value="markdown">Markdown only</option>
+      <option value="all">Curated + Top Summaries</option>
+    </select>
+    <select id="brainLimit" class="input" style="width:auto;min-height:34px;padding:4px 9px;">
+      <option value="120">120 nodes</option>
+      <option value="180" selected>180 nodes</option>
+      <option value="300">300 nodes</option>
+    </select>
+    <button class="btn btn-sm btn-ok" data-btoggle="showExplicit">Explicit</button>
+    <button class="btn btn-sm btn-ok" data-btoggle="showAuto">Auto Anchors</button>
+    <button class="btn btn-sm" data-btoggle="bridgesOnly">Cross-Zone Bridges</button>
+    <button class="btn btn-sm btn-warn" data-btoggle="highlightDay">✦ Day Growth Halo</button>
+    <button class="btn btn-sm" data-open-merge="">⇄ Merge / Rename</button>
+    <span class="mono" id="brainCountBadge" style="margin-left:auto;font-size:11.5px;color:var(--text-muted);"></span>
+  </div>
+
+  <div class="brain-stage" id="brainStage">
+    <canvas id="brainCanvas" class="brain-canvas"></canvas>
+    <div id="brainTooltip" class="brain-tooltip"></div>
+    <div class="brain-hud">
+      <span><span class="hud-dot" style="background:#019F68"></span>Verified</span>
+      <span><span class="hud-dot" style="background:#E8622C"></span>Unverified</span>
+      <span><span class="hud-dot" style="background:#F87171"></span>Contested</span>
+      <span><span class="hud-dot" style="background:#64748B"></span>Superseded</span>
+      <span style="color:var(--text-muted);">· Drag orbs · Scroll zoom · Click to verify</span>
+    </div>
+    <div class="brain-zoom">
+      <button class="btn btn-sm btn-ghost" id="btnZoomIn" title="Zoom in">+</button>
+      <button class="btn btn-sm btn-ghost" id="btnZoomOut" title="Zoom out">-</button>
+      <button class="btn btn-sm btn-ghost" id="btnZoomFit" title="Fit all zones">Fit</button>
+    </div>
+  </div>
+</main>
+
+<main id="view-desk" class="view">
+  <div class="desk-wrap">
+    <div class="story-card" id="deskStory"></div>
+
+    <div class="quick-add">
+      <input id="quickAddInput" placeholder="Smart quick capture — e.g. gotcha #commerce-core: always acquire advisory locks in ascending id order (Enter to save)">
+      <div class="quick-chips" id="quickAddChips"></div>
+    </div>
+
+    <div class="deck-layout">
+      <section class="deck-pane">
+        <div class="deck-filters">
+          <input id="qSearch" class="input" type="search" placeholder="Search memories or paste ID… (press /)">
+          <div class="chip-bar" id="sourceChips">
+            <button class="chip active" data-source="curated">Curated</button>
+            <button class="chip" data-source="markdown">Markdown</button>
+            <button class="chip" data-source="iron">Iron Native</button>
+            <button class="chip" data-source="all">All (+26k archive)</button>
+            <button class="chip" data-source="cavemem">Cavemem</button>
+          </div>
+          <div class="chip-bar" id="statusChips">
+            <button class="chip active" data-status="all">Any</button>
+            <button class="chip" data-status="unverified">Unverified</button>
+            <button class="chip" data-status="verified">Verified</button>
+            <button class="chip" data-status="contested">Contested</button>
+            <button class="chip" data-status="superseded">Superseded</button>
+            <button class="chip" data-status="reinforced">Reinforced</button>
+          </div>
+          <div class="filter-grid">
+            <select id="qProject" class="input" style="min-height:34px;padding:4px 8px;"><option value="">All projects</option></select>
+            <select id="qKind" class="input" style="min-height:34px;padding:4px 8px;"><option value="">All kinds</option></select>
+            <select id="qSort" class="input" style="min-height:34px;padding:4px 8px;">
+              <option value="updated">Sort: Updated</option>
+              <option value="use_count">Sort: Most Used</option>
+              <option value="confirm_count">Sort: Verified</option>
+              <option value="contradict_count">Sort: Contested</option>
+              <option value="links">Sort: Most Linked</option>
+              <option value="title">Sort: Title A–Z</option>
+            </select>
+          </div>
+        </div>
+        <div class="deck-list" id="deckList"><div class="empty-state">Loading curated memories…</div></div>
+        <div class="deck-foot">
+          <span id="deckRange">0 results</span>
+          <div style="display:flex;gap:6px;">
+            <button class="btn btn-sm" id="btnPrevPage">← Prev</button>
+            <button class="btn btn-sm" id="btnNextPage">Next →</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="reading-pane" id="readingPane">
+        <div class="empty-state">Select a memory from the deck to inspect its prose, trust multiplier, lineage, and links (strictly read-only).</div>
+      </section>
+    </div>
+  </div>
+</main>
+
+<main id="view-lens" class="view">
+  <div class="lens-wrap">
+    <div class="story-card" style="margin-bottom:14px;">
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <input id="simQuery" class="input" style="flex:1;min-width:220px;" placeholder="Ask what an agent would query (e.g. stock_reservation, advisory lock, migration)…">
+        <button class="btn btn-accent" id="btnSimRun">Run Retrieval</button>
+      </div>
+
+      <div class="choice-grid" id="simModeCards">
+        <button class="choice-card active" data-sim-mode="developer">
+          <strong>Developer Context</strong>
+          <div style="font-size:12px;color:var(--text-mid);margin-top:2px;">Exact <code class="mono">developer</code> role · curated Markdown + Iron native + Cavemem</div>
+        </button>
+        <button class="choice-card" data-sim-mode="reviewer">
+          <strong>Reviewer Context</strong>
+          <div style="font-size:12px;color:var(--text-mid);margin-top:2px;">Curated Markdown ONLY (excludes session logs &amp; native notes)</div>
+        </button>
+        <button class="choice-card" data-sim-mode="verifier">
+          <strong>Verifier Context</strong>
+          <div style="font-size:12px;color:var(--text-mid);margin-top:2px;">Exact <code class="mono">verifier</code> role · full retrieval with source filter</div>
+        </button>
+        <button class="choice-card" data-sim-mode="compare">
+          <strong>Compare Dev vs Reviewer</strong>
+          <div style="font-size:12px;color:var(--text-mid);margin-top:2px;">Side-by-side diff highlighting memories hidden from reviewers</div>
+        </button>
+      </div>
+
+      <div class="sim-grid">
+        <div>
+          <label class="section-kicker" style="margin:0 0 4px;">Source</label>
+          <select id="simSource" class="input" style="min-height:36px;">
+            <option value="all">all</option>
+            <option value="curated">curated (markdown + iron)</option>
+            <option value="history">history (cavemem)</option>
+            <option value="native">native (iron)</option>
+            <option value="archive">archive (archive.db)</option>
+          </select>
+        </div>
+        <div>
+          <label class="section-kicker" style="margin:0 0 4px;">Project Scope</label>
+          <select id="simProject" class="input" style="min-height:36px;"><option value="">Any project (*)</option></select>
+        </div>
+        <div>
+          <label class="section-kicker" style="margin:0 0 4px;">Limit (1–50)</label>
+          <input id="simLimit" class="input" type="number" min="1" max="50" value="10" style="min-height:36px;">
+        </div>
+        <div>
+          <label class="section-kicker" style="margin:0 0 4px;">Budget: <span id="simBudgetLbl" class="mono">4000</span> B</label>
+          <input id="simBudget" type="range" min="256" max="32768" step="256" value="4000" style="width:100%;">
+        </div>
+        <label style="display:flex;align-items:center;gap:6px;font-size:12.5px;padding-bottom:8px;cursor:pointer;">
+          <input id="simStrict" type="checkbox"> Strict project (exclude *)
+        </label>
+      </div>
+    </div>
+
+    <div id="simResults">
+      <div class="empty-state">Run a query to inspect exact <code class="mono">service::search_with_archive</code> scores, role exclusions, and byte-budget cutoffs.</div>
+    </div>
+  </div>
+</main>
+
+<div class="sheet-backdrop" id="sheetBackdrop">
+  <aside class="sidesheet" id="sideSheet" role="dialog" aria-modal="true">
+    <div class="sheet-head" id="sheetHead"></div>
+    <div class="sheet-body" id="sheetBody"></div>
+    <div class="sheet-foot" id="sheetFoot"></div>
+  </aside>
+</div>
+
+<div class="mobile-bar">
+  <button class="btn btn-sm" data-view="brain">Second Brain</button>
+  <button class="btn btn-sm" data-view="desk">Trust Desk</button>
+  <button class="btn btn-sm btn-accent" data-open-remember="1">+ Remember</button>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+(() => {
+  'use strict';
+
+  const CELESTIAL_PALETTE = [
+    '#E8622C', '#14B8A6', '#3B82F6', '#F7BF2E', '#8B5CF6', '#019F68', '#9DBBD6', '#EC4899',
+  ];
+
+  const state = {
+    view: 'brain',
+    theme: localStorage.getItem('iron_ui_theme') || 'dark',
+    stats: null,
+    facets: null,
+    audit: null,
+    evolution: null,
+    aliases: {},
+    dayIndex: 13,
+    showEvolution: false,
+    queue: {
+      source: 'curated', status: 'all', project: '', kind: '', sort: 'updated', q: '',
+      limit: 30, offset: 0, total: 0, items: [], seq: 0,
+    },
+    selectedId: null,
+    inspected: null,
+    inspectSeq: 0,
+    bodyMode: 'rendered',
+    brain: {
+      groupBy: 'project',
+      source: 'curated',
+      limit: 180,
+      showExplicit: true,
+      showAuto: true,
+      bridgesOnly: false,
+      highlightDay: true,
+      search: '',
+      data: null,
+      seq: 0,
+    },
+    simMode: 'developer',
+    sheetStack: [],
+  };
+
+  const $ = (s) => document.querySelector(s);
+  const $$ = (s) => Array.from(document.querySelectorAll(s));
+  const isMobile = () => window.matchMedia('(max-width: 960px)').matches;
+
+  function esc(v) {
+    if (v === null || v === undefined) return '';
+    return String(v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+  }
+
+  function fmtNum(n) { return Number(n || 0).toLocaleString('en-US'); }
+  function fmtBytes(b) {
+    const n = Number(b || 0);
+    if (n < 1024) return `${n} B`;
+    if (n < 1048576) return `${(n / 1024).toFixed(1)} KB`;
+    return `${(n / 1048576).toFixed(2)} MB`;
+  }
+  function fmtTime(ms) {
+    if (!ms || ms <= 0) return '—';
+    const d = new Date(ms > 1e12 ? ms : ms * 1000);
+    return Number.isNaN(d.getTime()) ? String(ms) : d.toISOString().replace('T', ' ').slice(0, 16) + ' UTC';
+  }
+
+  let toastTimer = null;
+  function toast(msg, kind = 'ok') {
+    const el = $('#toast');
+    el.textContent = msg;
+    el.className = `toast show ${kind}`;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { el.className = 'toast'; }, 3200);
+  }
+
+  async function apiGet(url) {
+    const res = await fetch(url, { headers: { Accept: 'application/json' } });
+    const data = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
+    if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
+    return data;
+  }
+
+  async function apiPost(url, payload) {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
+    if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
+    return data;
+  }
+
+  function applyTheme() {
+    document.documentElement.setAttribute('data-theme', state.theme);
+    $('#btnTheme').textContent = state.theme === 'dark' ? '☀' : '☾';
+    localStorage.setItem('iron_ui_theme', state.theme);
+  }
+
+  function renderMarkdown(raw) {
+    const text = String(raw || '');
+    const blocks = text.split(/(```[\s\S]*?```)/g);
+    let html = '';
+    for (const block of blocks) {
+      if (block.startsWith('```') && block.endsWith('```')) {
+        const inner = block.slice(3, -3).replace(/^[a-zA-Z0-9_-]*\n/, '');
+        html += `<pre><code>${esc(inner)}</code></pre>`;
+        continue;
+      }
+      const lines = block.split('\n');
+      let inList = false;
+      for (const line of lines) {
+        const t = line.trim();
+        if (!t) { if (inList) { html += '</ul>'; inList = false; } continue; }
+        const inline = (s) => esc(s).replace(/`([^`]+)`/g, '<code>$1</code>').replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+        if (/^###\s+/.test(t)) { if (inList) { html += '</ul>'; inList = false; } html += `<h3>${inline(t.replace(/^###\s+/, ''))}</h3>`; }
+        else if (/^##\s+/.test(t)) { if (inList) { html += '</ul>'; inList = false; } html += `<h2>${inline(t.replace(/^##\s+/, ''))}</h2>`; }
+        else if (/^#\s+/.test(t)) { if (inList) { html += '</ul>'; inList = false; } html += `<h1>${inline(t.replace(/^#\s+/, ''))}</h1>`; }
+        else if (/^[-*]\s+/.test(t)) { if (!inList) { html += '<ul>'; inList = true; } html += `<li>${inline(t.replace(/^[-*]\s+/, ''))}</li>`; }
+        else { if (inList) { html += '</ul>'; inList = false; } html += `<p>${inline(line)}</p>`; }
+      }
+      if (inList) html += '</ul>';
+    }
+    return html || '<p class="mono" style="color:var(--text-muted);">(empty body)</p>';
+  }
+
+  function statusPill(rec) {
+    const st = rec.status || rec.stats?.status || 'active';
+    const conf = Number(rec.confirm_count ?? rec.stats?.confirm_count ?? 0);
+    const contra = Number(rec.contradict_count ?? rec.stats?.contradict_count ?? 0);
+    if (st === 'superseded') return '<span class="pill p-sup">superseded</span>';
+    if (contra > 0) return `<span class="pill p-bad">contested ×${contra}</span>`;
+    if (conf > 0) return `<span class="pill p-ok">verified ×${conf}</span>`;
+    return '<span class="pill p-warn">unverified</span>';
+  }
+
+  function computeMultiplier(rec) {
+    const s = rec.stats || rec;
+    const base = rec.kind === 'correction' ? 2.2 : (rec.source_type === 'markdown' || rec.source_type === 'iron' ? 2.0 : 1.0);
+    const sig = Number(s.use_count || 0) + 2.0 * Number(s.confirm_count || 0);
+    const heb = 1.0 + 0.45 * (sig / (4.0 + sig));
+    const st = s.status === 'superseded' ? 0.15 : 1.0;
+    const cnt = 1.0 / (1.0 + 0.4 * Number(s.contradict_count || 0));
+    return base * heb * st * cnt;
+  }
+
+  function displayTitle(r) {
+    const title = r.title || r.id;
+    if (title.toLowerCase() === 'memory' || title.toLowerCase() === 'memory index' || title.toLowerCase() === 'project memory') {
+      return `${title} · ${r.project}`;
+    }
+    return title;
+  }
+
+  function switchView(v) {
+    state.view = v;
+    $$('.mode-btn').forEach((b) => b.classList.toggle('active', b.dataset.view === v));
+    $$('.view').forEach((el) => el.classList.toggle('active', el.id === `view-${v}`));
+    if (v === 'brain') {
+      if (!state.brain.data) loadBrainGraph();
+      else initBrainCanvas();
+    } else {
+      stopBrainLoop();
+    }
+    if (v === 'desk' && state.queue.items.length === 0) {
+      loadQueue(true);
+    }
+  }
+
+  async function loadCoreData() {
+    const [statsData, auditData, evoData, aliasData] = await Promise.all([
+      apiGet('/api/stats'),
+      apiGet('/api/audit'),
+      apiGet('/api/evolution?days=14'),
+      apiGet('/api/aliases').catch(() => ({ aliases: {} })),
+    ]);
+    state.stats = statsData.stats;
+    state.facets = statsData.facets;
+    state.audit = auditData;
+    state.evolution = evoData;
+    state.aliases = aliasData.aliases || {};
+    state.dayIndex = Math.max(0, (evoData.timeline?.length || 1) - 1);
+
+    const s = auditData.summary;
+    $('#dbBadge').textContent = `${fmtNum(s.records)} memories · ${fmtNum(s.curated_total)} curated · ${fmtNum(s.links_total)} links`;
+
+    const projects = statsData.facets.projects || [];
+    const fillProj = (sel, allLabel) => {
+      const prev = sel.value;
+      sel.innerHTML = `<option value="">${allLabel}</option>` + projects
+        .map((p) => `<option value="${esc(p.project)}">${esc(p.project)} (${fmtNum(p.curated)} cur / ${fmtNum(p.total)})</option>`).join('');
+      if (prev) sel.value = prev;
+    };
+    fillProj($('#qProject'), 'All projects');
+    fillProj($('#simProject'), 'Any project (*)');
+
+    const kinds = Object.entries(statsData.facets.by_kind || {});
+    const prevK = $('#qKind').value;
+    $('#qKind').innerHTML = `<option value="">All kinds</option>` + kinds
+      .map(([k, c]) => `<option value="${esc(k)}">${esc(k)} (${fmtNum(c)})</option>`).join('');
+    if (prevK) $('#qKind').value = prevK;
+
+    renderPulseStrip();
+    renderDeskStory();
+  }
+
+  function renderPulseStrip() {
+    const evo = state.evolution;
+    if (!evo || !evo.timeline || evo.timeline.length === 0) return;
+    const tl = evo.timeline;
+    const idx = Math.max(0, Math.min(tl.length - 1, state.dayIndex));
+    const d = tl[idx];
+    const isToday = idx === tl.length - 1;
+    const r = evo.rates;
+    const barScale = (v) => v <= 0 ? 0 : Math.min(64, Math.max(5, Math.round(Math.sqrt(v) * 7.8)));
+
+    $('#pulseStrip').innerHTML = `
+      <div class="pulse-row">
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+          <div class="time-travel">
+            <button data-day-step="-1" ${idx <= 0 ? 'disabled' : ''} title="Previous day">◀</button>
+            <span class="tt-label">${isToday ? `Today · ${esc(d.day)}` : esc(d.day)}</span>
+            <button data-day-step="1" ${isToday ? 'disabled' : ''} title="Next day">▶</button>
+          </div>
+          ${!isToday ? `<button class="btn btn-sm btn-ghost" data-day-jump="${tl.length - 1}">Today</button>` : ''}
+          <div class="pulse-stats">
+            <span><strong>+${fmtNum(d.curated)}</strong> curated <span style="color:var(--text-muted);">(${fmtNum(d.iron)} native)</span></span>
+            <span><strong style="color:var(--ok);">${fmtNum(d.confirms)}</strong> verified</span>
+            <span><strong>${fmtNum(d.uses)}</strong> uses</span>
+            <span><strong>${fmtNum(d.superseded + d.corrections)}</strong> refined</span>
+            <span class="pill ${r.signal_lift_pp >= 0 ? 'p-ok' : 'p-warn'}">Signal ${r.signal_pct_7d}% (${r.signal_lift_pp >= 0 ? '+' : ''}${r.signal_lift_pp}pp vs prior 7d)</span>
+          </div>
+        </div>
+        <div style="display:flex;gap:6px;align-items:center;">
+          <button class="btn btn-sm btn-ghost" data-open-day="${esc(d.day)}">Inspect day (${fmtNum(d.curated)}) ›</button>
+          <button class="btn btn-sm ${state.showEvolution ? 'btn-accent' : ''}" data-action="toggle-evo">
+            ${state.showEvolution ? '▾ Evolution & Rates' : '▸ 14d Evolution & Rates'}
+          </button>
+        </div>
+      </div>
+
+      ${state.showEvolution ? `
+        <div class="evo-panel">
+          <div class="evo-box">
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;">
+              <span class="mono" style="font-size:11px;font-weight:700;color:var(--text-mid);">14-DAY KNOWLEDGE EVOLUTION (click any day)</span>
+              <span style="font-size:11px;color:var(--text-muted);">
+                <span class="hud-dot" style="background:#3B82F6"></span>Markdown
+                <span class="hud-dot" style="background:#E8622C;margin-left:6px;"></span>Iron Native
+                <span class="hud-dot" style="background:#019F68;margin-left:6px;"></span>Verified
+              </span>
+            </div>
+            <div class="evo-bars">
+              ${tl.map((item, i) => {
+                const mdH = barScale(item.markdown);
+                const irH = barScale(item.iron);
+                const veH = item.confirms > 0 ? Math.min(24, Math.max(4, item.confirms * 5)) : 0;
+                return `
+                  <div class="evo-col ${i === idx ? 'active' : ''}" data-day-jump="${i}" title="${esc(item.day)}: ${item.markdown} markdown, ${item.iron} iron native, ${item.confirms} verified, ${item.superseded} superseded, ${item.cavemem} raw cavemem">
+                    <div class="evo-stack">
+                      ${mdH ? `<div class="b-md" style="height:${mdH}px;"></div>` : ''}
+                      ${irH ? `<div class="b-iron" style="height:${irH}px;"></div>` : ''}
+                      ${veH ? `<div class="b-ver" style="height:${veH}px;"></div>` : ''}
+                    </div>
+                  </div>
+                `;
+              }).join('')}
+            </div>
+            <div class="evo-days">
+              ${tl.map((item, i) => `<span style="${i === idx ? 'color:var(--accent);font-weight:800;' : ''}">${esc(item.day.slice(8))}</span>`).join('')}
+            </div>
+          </div>
+
+          <div class="rates-grid">
+            <div class="rate-card" style="--rate-accent:var(--c-emerald);">
+              <div class="rate-lbl">Signal-to-Noise (7d)</div>
+              <div class="rate-val" style="color:var(--ok);">${r.signal_pct_7d}%</div>
+              <div class="rate-sub">curated share (was ${r.signal_pct_prev_7d}% prior 7d · ${r.signal_lift_pp >= 0 ? '+' : ''}${r.signal_lift_pp}pp)</div>
+            </div>
+            <div class="rate-card" style="--rate-accent:var(--c-gold);">
+              <div class="rate-lbl">Verification Coverage</div>
+              <div class="rate-val" style="color:${r.verification_coverage_pct > 0 ? 'var(--ok)' : 'var(--warn)'};">${r.verification_coverage_pct}%</div>
+              <div class="rate-sub">${fmtNum(r.verified_active_curated)} / ${fmtNum(r.active_curated)} active curated (+${fmtNum(r.confirms_7d)} in 7d)</div>
+            </div>
+            <div class="rate-card" style="--rate-accent:var(--c-coral);">
+              <div class="rate-lbl">Native Velocity (7d)</div>
+              <div class="rate-val" style="color:var(--warm);">+${fmtNum(r.native_7d)}</div>
+              <div class="rate-sub">Iron rules (prior 7d: ${fmtNum(r.native_prev_7d)}) · ${r.avg_links_per_curated} links/rule</div>
+            </div>
+            <div class="rate-card" style="--rate-accent:var(--c-violet);">
+              <div class="rate-lbl">Self-Correction (7d)</div>
+              <div class="rate-val" style="color:var(--violet);">${fmtNum(r.refined_7d)}</div>
+              <div class="rate-sub">supersessions &amp; corrections pruning stale beliefs</div>
+            </div>
+          </div>
+        </div>
+      ` : ''}
+    `;
+  }
+
+  function renderDeskStory() {
+    if (!state.audit) return;
+    const s = state.audit.summary;
+    const pf = state.audit.project_fragmentation;
+    const rawArchive = Number(s.by_source_type?.cavemem || 0);
+    $('#deskStory').innerHTML = `
+      <p class="story-text">
+        Your agents currently trust <strong>${fmtNum(s.curated_total)} curated rules</strong> across <strong>${fmtNum(pf.canonical_roots)} canonical projects</strong> —
+        <strong style="color:${s.curated_verified > 0 ? 'var(--ok)' : 'var(--warn)'};">${fmtNum(s.curated_verified)} verified</strong> by you,
+        ${s.contested > 0 ? `<strong style="color:var(--bad);">${fmtNum(s.contested)} contested</strong>, ` : ''}
+        <strong>${fmtNum(s.superseded)} superseded</strong>.
+        <span style="color:var(--text-muted);font-size:12.5px;">(${fmtNum(rawArchive)} raw cavemem session records stay out of your way unless selected.)</span>
+      </p>
+      <div class="radar-row">
+        ${s.contested > 0 ? `<button class="radar-pill bad" data-open-sheet="contested">⚠ ${fmtNum(s.contested)} contested · review first ›</button>` : ''}
+        <button class="radar-pill warn" data-open-sheet="consolidate">⚡ Recurring patterns to promote ›</button>
+        <button class="radar-pill" data-open-sheet="fragmentation">⇄ ${fmtNum(pf.total_project_names)} → ${fmtNum(pf.canonical_roots)} fragmented project names (${fmtNum(pf.fragmented_roots)} roots) ›</button>
+        <button class="radar-pill" data-open-merge="">⇄ Merge / Rename Projects${Object.keys(state.aliases || {}).length > 0 ? ` (${Object.keys(state.aliases).length} aliases)` : ''} ›</button>
+        ${s.superseded > 0 ? `<button class="radar-pill" data-open-sheet="contested">↺ ${fmtNum(s.superseded)} superseded records ›</button>` : ''}
+        ${s.duplicate_body_records > 0 ? `<button class="radar-pill" data-open-sheet="duplicates">⧉ ${fmtNum(s.duplicate_body_records)} deduped body rows ›</button>` : ''}
+        <button class="radar-pill" id="btnDeskRelink" style="margin-left:auto;">↻ Rebuild Auto-Links</button>
+      </div>
+    `;
+  }
+
+  let brainAnim = null;
+  let brainState = null;
+
+  function stopBrainLoop() {
+    if (brainAnim) { cancelAnimationFrame(brainAnim); brainAnim = null; }
+  }
+
+  async function loadBrainGraph() {
+    const seq = ++state.brain.seq;
+    const params = new URLSearchParams();
+    params.set('source', state.brain.source);
+    params.set('limit', String(state.brain.limit));
+    $('#brainCountBadge').textContent = 'Loading constellation…';
+    try {
+      const data = await apiGet(`/api/graph?${params.toString()}`);
+      if (seq !== state.brain.seq) return;
+      state.brain.data = data;
+      $('#brainCountBadge').textContent = `${fmtNum(data.nodes.length)} of ${fmtNum(data.total_matching)} nodes · ${fmtNum(data.edges.length)} links`;
+      if (state.view === 'brain') initBrainCanvas();
+    } catch (err) {
+      toast(err.message, 'err');
+    }
+  }
+
+  function hexRgb(hex) {
+    const h = hex.replace('#', '');
+    return [parseInt(h.slice(0,2), 16), parseInt(h.slice(2,4), 16), parseInt(h.slice(4,6), 16)];
+  }
+
+  function nodeZone(n) {
+    if (state.brain.groupBy === 'cluster') return n.cluster || n.canonical_root;
+    if (state.brain.groupBy === 'trust') {
+      if (n.status === 'superseded') return 'Superseded Lineage';
+      if (n.contradict_count > 0) return 'Contested';
+      if (n.confirm_count > 0) return 'Verified Truth';
+      if (n.source_type === 'iron') return 'Iron Native (Unverified)';
+      if (n.source_type === 'cavemem') return 'Session Archive';
+      return 'Markdown (Unverified)';
+    }
+    return n.canonical_root || n.project;
+  }
+
+  function initBrainCanvas() {
+    stopBrainLoop();
+    const wrap = $('#brainStage');
+    const canvas = $('#brainCanvas');
+    const tip = $('#brainTooltip');
+    const data = state.brain.data;
+    if (!wrap || !canvas || !data) return;
+
+    const ctx = canvas.getContext('2d');
+    const dpr = Math.min(1.8, window.devicePixelRatio || 1);
+    const W = Math.max(320, wrap.clientWidth);
+    const H = Math.max(430, wrap.clientHeight);
+    canvas.width = W * dpr;
+    canvas.height = H * dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+    const rawZoneCounts = new Map();
+    for (const n of data.nodes) {
+      const z = nodeZone(n);
+      rawZoneCounts.set(z, (rawZoneCounts.get(z) || 0) + 1);
+    }
+    const sortedZones = Array.from(rawZoneCounts.entries()).sort((a, b) => b[1] - a[1]);
+    const topZones = new Set(sortedZones.slice(0, 12).map((x) => x[0]));
+
+    const nodes = data.nodes.map((n) => {
+      const rawZ = nodeZone(n);
+      const zone = sortedZones.length > 14 && !topZones.has(rawZ) ? 'Other Zones' : rawZ;
+      return {
+        ...n,
+        zone,
+        r: 6.5 + Math.min(14, Math.sqrt(Math.max(0, n.degree || 0)) * 3.1),
+        x: 0, y: 0, vx: 0, vy: 0,
+      };
+    });
+
+    const zones = Array.from(new Set(nodes.map((n) => n.zone)));
+    const zoneIndex = new Map(zones.map((z, i) => [z, i]));
+    const zoneTopHubs = new Set();
+    for (const z of zones) {
+      nodes
+        .filter((n) => n.zone === z)
+        .sort((a, b) => (b.degree || 0) - (a.degree || 0))
+        .slice(0, 2)
+        .forEach((n) => {
+          if ((n.degree || 0) >= 2) zoneTopHubs.add(n.id);
+        });
+    }
+    const zoneCenters = new Map();
+    const ringR = Math.min(W, H) * 0.40;
+    zones.forEach((z, i) => {
+      if (zones.length === 1) {
+        zoneCenters.set(z, { x: W / 2, y: H / 2 });
+      } else if (i === 0 && zones.length >= 5) {
+        zoneCenters.set(z, { x: W / 2, y: H / 2 });
+      } else {
+        const ringIdx = zones.length >= 5 ? i - 1 : i;
+        const ringCount = zones.length >= 5 ? zones.length - 1 : zones.length;
+        const ang = (Math.PI * 2 * ringIdx) / Math.max(1, ringCount) - Math.PI / 2;
+        zoneCenters.set(z, { x: W / 2 + Math.cos(ang) * ringR * 1.18, y: H / 2 + Math.sin(ang) * ringR * 0.85 });
+      }
+    });
+
+    const prevPos = new Map((brainState?.nodes || []).map((n) => [n.id, { x: n.x, y: n.y }]));
+    nodes.forEach((n, idx) => {
+      const zc = zoneCenters.get(n.zone);
+      const old = prevPos.get(n.id);
+      const a = (idx * 2.39996) % (Math.PI * 2);
+      const rad = 16 + ((idx * 17) % 42);
+      n.x = old ? old.x : zc.x + Math.cos(a) * rad;
+      n.y = old ? old.y : zc.y + Math.sin(a) * rad;
+    });
+
+    const nodeMap = new Map(nodes.map((n) => [n.id, n]));
+    const edges = data.edges.filter((e) => nodeMap.has(e.from) && nodeMap.has(e.to));
+
+    const stars = [];
+    for (let i = 0; i < 95; i++) {
+      const h1 = Math.abs(Math.sin(i * 127.1 + 311.7) * 43758.5453) % 1;
+      const h2 = Math.abs(Math.sin(i * 269.5 + 183.3) * 43758.5453) % 1;
+      const h3 = Math.abs(Math.sin(i * 419.2 + 71.9) * 43758.5453) % 1;
+      stars.push({ x: h1 * W, y: h2 * H, r: 0.6 + h3 * 1.1, phase: h3 * 40, speed: 1.0 + h3 * 2.0 });
+    }
+
+    const cam = { x: 0, y: 0, zoom: isMobile() ? 0.66 : 0.94 };
+    let hovered = null;
+    let dragged = null;
+    let panning = false;
+    let panStart = { x: 0, y: 0, cx: 0, cy: 0 };
+    let downPos = { x: 0, y: 0 };
+    const t0 = performance.now();
+    let frameCount = 0;
+    const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+    brainState = { nodes, edges, cam };
+
+    const screenToWorld = (sx, sy) => ({
+      x: (sx - W / 2) / cam.zoom + W / 2 - cam.x,
+      y: (sy - H / 2) / cam.zoom + H / 2 - cam.y,
+    });
+
+    const hitNode = (wx, wy) => {
+      for (let i = nodes.length - 1; i >= 0; i--) {
+        const n = nodes[i];
+        const dx = wx - n.x, dy = wy - n.y;
+        if (dx * dx + dy * dy <= (n.r + 7) * (n.r + 7)) return n;
+      }
+      return null;
+    };
+
+    const activeEdges = () => edges.filter((e) => {
+      if (e.origin === 'explicit' && !state.brain.showExplicit) return false;
+      if (e.origin === 'auto' && !state.brain.showAuto) return false;
+      if (state.brain.bridgesOnly) {
+        const a = nodeMap.get(e.from), b = nodeMap.get(e.to);
+        if (a && b && a.zone === b.zone) return false;
+      }
+      return true;
+    });
+
+    canvas.onpointerdown = (ev) => {
+      const rect = canvas.getBoundingClientRect();
+      const sx = ev.clientX - rect.left, sy = ev.clientY - rect.top;
+      downPos = { x: sx, y: sy };
+      const w = screenToWorld(sx, sy);
+      const hit = hitNode(w.x, w.y);
+      if (hit) { dragged = hit; canvas.setPointerCapture(ev.pointerId); }
+      else { panning = true; panStart = { x: sx, y: sy, cx: cam.x, cy: cam.y }; canvas.setPointerCapture(ev.pointerId); }
+    };
+
+    canvas.onpointermove = (ev) => {
+      const rect = canvas.getBoundingClientRect();
+      const sx = ev.clientX - rect.left, sy = ev.clientY - rect.top;
+      const w = screenToWorld(sx, sy);
+      if (dragged) { dragged.x = w.x; dragged.y = w.y; dragged.vx = 0; dragged.vy = 0; return; }
+      if (panning) { cam.x = panStart.cx + (sx - panStart.x) / cam.zoom; cam.y = panStart.cy + (sy - panStart.y) / cam.zoom; return; }
+      const hit = hitNode(w.x, w.y);
+      hovered = hit;
+      canvas.style.cursor = hit ? 'pointer' : 'grab';
+      if (hit) {
+        tip.style.display = 'block';
+        tip.style.left = Math.min(rect.width - 300, sx + 16) + 'px';
+        tip.style.top = Math.max(8, sy - 14) + 'px';
+        tip.innerHTML = `
+          <div style="font-weight:700;margin-bottom:3px;">${esc(displayTitle(hit))}</div>
+          <div class="mono" style="font-size:11px;color:var(--text-mid);">${esc(hit.zone)} · ${esc(hit.source_type)}/${esc(hit.kind)} · ${hit.degree} links</div>
+          <div style="margin-top:4px;display:flex;gap:5px;align-items:center;">${statusPill(hit)} <span style="font-size:11px;color:var(--text-muted);">Click to verify (read-only)</span></div>
+        `;
+      } else {
+        tip.style.display = 'none';
+      }
+    };
+
+    canvas.onpointerup = (ev) => {
+      const rect = canvas.getBoundingClientRect();
+      const sx = ev.clientX - rect.left, sy = ev.clientY - rect.top;
+      if (dragged && Math.hypot(sx - downPos.x, sy - downPos.y) < 6) {
+        openMemorySheet(dragged.id, true);
+      }
+      dragged = null;
+      panning = false;
+    };
+
+    canvas.onpointercancel = () => {
+      dragged = null;
+      panning = false;
+    };
+
+    canvas.onwheel = (ev) => {
+      ev.preventDefault();
+      cam.zoom = Math.max(0.35, Math.min(2.8, cam.zoom * (ev.deltaY < 0 ? 1.12 : 0.89)));
+    };
+
+    $('#btnZoomIn').onclick = () => { cam.zoom = Math.min(2.8, cam.zoom * 1.2); };
+    $('#btnZoomOut').onclick = () => { cam.zoom = Math.max(0.35, cam.zoom * 0.82); };
+    $('#btnZoomFit').onclick = () => { cam.x = 0; cam.y = 0; cam.zoom = isMobile() ? 0.66 : 0.94; };
+
+    function nodeHex(n) {
+      if (n.status === 'superseded') return '#64748B';
+      if (n.contradict_count > 0) return '#F87171';
+      if (n.confirm_count > 0) return '#019F68';
+      return CELESTIAL_PALETTE[zoneIndex.get(n.zone) % CELESTIAL_PALETTE.length];
+    }
+
+    function drawCelestialOrb(x, y, r, hex, hi, isLight, isSuperseded) {
+      const [cr, cg, cb] = hexRgb(hex);
+      const haloR = r * (2.5 + hi * 0.9);
+      const haloGrad = ctx.createRadialGradient(x, y, r * 0.4, x, y, haloR);
+      haloGrad.addColorStop(0, `rgba(${cr},${cg},${cb},${isLight ? 0.26 + hi * 0.16 : 0.36 + hi * 0.24})`);
+      haloGrad.addColorStop(0.55, `rgba(${cr},${cg},${cb},${isLight ? 0.08 : 0.11})`);
+      haloGrad.addColorStop(1, `rgba(${cr},${cg},${cb},0)`);
+      ctx.beginPath();
+      ctx.arc(x, y, haloR, 0, Math.PI * 2);
+      ctx.fillStyle = haloGrad;
+      ctx.fill();
+
+      const sphGrad = ctx.createRadialGradient(x - r * 0.36, y - r * 0.36, r * 0.12, x, y, r);
+      sphGrad.addColorStop(0, `rgba(${Math.min(255, cr + 95)},${Math.min(255, cg + 95)},${Math.min(255, cb + 95)},${isSuperseded ? 0.55 : 0.98})`);
+      sphGrad.addColorStop(0.58, `rgba(${cr},${cg},${cb},${isSuperseded ? 0.45 : 0.95})`);
+      sphGrad.addColorStop(1, `rgba(${Math.round(cr * 0.28)},${Math.round(cg * 0.28)},${Math.round(cb * 0.36)},${isSuperseded ? 0.5 : 0.98})`);
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.fillStyle = sphGrad;
+      ctx.fill();
+
+      ctx.beginPath();
+      ctx.arc(x - r * 0.32, y - r * 0.34, Math.max(1.2, r * 0.22), 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(255,255,255,${isSuperseded ? 0.18 : 0.48 + hi * 0.25})`;
+      ctx.fill();
+
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.lineWidth = hi > 0.1 ? 1.8 : 0.9;
+      ctx.strokeStyle = hi > 0.1
+        ? `rgba(255,255,255,${isLight ? 0.85 : 0.92})`
+        : `rgba(${Math.min(255, cr + 70)},${Math.min(255, cg + 70)},${Math.min(255, cb + 70)},0.45)`;
+      ctx.stroke();
+    }
+
+    function drawTiltedOrbitRing(x, y, r, hex, t) {
+      const [cr, cg, cb] = hexRgb(hex);
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.rotate(-0.42);
+      ctx.scale(1, 0.42);
+      ctx.beginPath();
+      ctx.arc(0, 0, r * 1.72, 0, Math.PI * 2);
+      ctx.strokeStyle = `rgba(${Math.min(255, cr + 60)},${Math.min(255, cg + 60)},${Math.min(255, cb + 60)},0.82)`;
+      ctx.lineWidth = 2.2;
+      ctx.setLineDash([7, 5]);
+      ctx.lineDashOffset = -t * 18;
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    function tick(now) {
+      const t = reducedMotion ? 0 : (now - t0) / 1000;
+      frameCount += 1;
+      const isLight = state.theme === 'light';
+      const visEdges = activeEdges();
+
+      const cooling = dragged ? 1.0 : Math.max(0.08, 1.0 - frameCount / 220);
+      if (cooling > 0.085 || dragged) {
+        for (const n of nodes) {
+          if (n === dragged) continue;
+          const zc = zoneCenters.get(n.zone);
+          n.vx += (zc.x - n.x) * 0.016 * cooling;
+          n.vy += (zc.y - n.y) * 0.016 * cooling;
+        }
+        for (let i = 0; i < nodes.length; i++) {
+          const a = nodes[i];
+          for (let j = i + 1; j < nodes.length; j++) {
+            const b = nodes[j];
+            const dx = b.x - a.x, dy = b.y - a.y;
+            const minSep = a.zone === b.zone ? 42 : 118;
+            if (Math.abs(dx) > minSep || Math.abs(dy) > minSep) continue;
+            const d2 = dx * dx + dy * dy;
+            if (d2 < minSep * minSep) {
+              const dist = Math.sqrt(d2) || 0.01;
+              const push = (minSep - dist) * 0.028 * cooling;
+              const fx = (dx / dist) * push, fy = (dy / dist) * push;
+              if (a !== dragged) { a.vx -= fx; a.vy -= fy; }
+              if (b !== dragged) { b.vx += fx; b.vy += fy; }
+            }
+          }
+        }
+        for (const e of visEdges) {
+          const a = nodeMap.get(e.from), b = nodeMap.get(e.to);
+          const dx = b.x - a.x, dy = b.y - a.y;
+          const dist = Math.hypot(dx, dy) || 0.01;
+          const target = a.zone === b.zone ? 48 : 190;
+          const k = (a.zone === b.zone ? 0.010 : 0.0018) * cooling;
+          const f = (dist - target) * k;
+          const fx = (dx / dist) * f, fy = (dy / dist) * f;
+          if (a !== dragged) { a.vx += fx; a.vy += fy; }
+          if (b !== dragged) { b.vx -= fx; b.vy -= fy; }
+        }
+        for (const n of nodes) {
+          if (n === dragged) continue;
+          n.vx *= 0.80; n.vy *= 0.80;
+          n.x += n.vx; n.y += n.vy;
+        }
+      }
+
+      ctx.fillStyle = isLight ? '#f5f7fb' : '#060b13';
+      ctx.fillRect(0, 0, W, H);
+
+      const dustGrad = ctx.createRadialGradient(W * 0.54, H * 0.48, 20, W * 0.52, H * 0.50, Math.max(W, H) * 0.62);
+      if (isLight) {
+        dustGrad.addColorStop(0, 'rgba(59, 130, 246, 0.07)');
+        dustGrad.addColorStop(0.55, 'rgba(20, 184, 166, 0.04)');
+        dustGrad.addColorStop(1, 'rgba(245, 247, 251, 0)');
+      } else {
+        dustGrad.addColorStop(0, 'rgba(28, 74, 128, 0.24)');
+        dustGrad.addColorStop(0.5, 'rgba(14, 42, 74, 0.12)');
+        dustGrad.addColorStop(1, 'rgba(6, 11, 19, 0)');
+      }
+      ctx.fillStyle = dustGrad;
+      ctx.fillRect(0, 0, W, H);
+
+      for (const st of stars) {
+        const tw = 0.55 + 0.45 * Math.sin(t * st.speed + st.phase);
+        ctx.fillStyle = isLight ? `rgba(58, 90, 120, ${0.14 * tw})` : `rgba(170, 205, 248, ${0.42 * tw})`;
+        ctx.beginPath();
+        ctx.arc(st.x, st.y, st.r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      ctx.save();
+      ctx.strokeStyle = isLight ? 'rgba(58, 90, 120, 0.08)' : 'rgba(92, 152, 224, 0.10)';
+      ctx.lineWidth = 1;
+      for (const mult of [0.24, 0.40]) {
+        ctx.beginPath();
+        ctx.ellipse(W / 2, H / 2, Math.min(W, H) * mult * 1.25, Math.min(W, H) * mult * 0.92, -0.18, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      ctx.restore();
+
+      ctx.save();
+      ctx.translate(W / 2, H / 2);
+      ctx.scale(cam.zoom, cam.zoom);
+      ctx.translate(-W / 2 + cam.x, -H / 2 + cam.y);
+
+      const q = (state.brain.search || '').trim().toLowerCase();
+      const searchHits = q ? new Set(nodes.filter((n) => `${n.title} ${n.project} ${n.canonical_root} ${n.cluster} ${n.id}`.toLowerCase().includes(q)).map((n) => n.id)) : null;
+      const hoverSet = hovered ? new Set([hovered.id]) : null;
+      if (hovered) {
+        for (const e of visEdges) {
+          if (e.from === hovered.id) hoverSet.add(e.to);
+          if (e.to === hovered.id) hoverSet.add(e.from);
+        }
+      }
+
+      for (const z of zones) {
+        const zn = nodes.filter((n) => n.zone === z);
+        if (zn.length === 0) continue;
+        const hex = CELESTIAL_PALETTE[zoneIndex.get(z) % CELESTIAL_PALETTE.length];
+        const [cr, cg, cb] = hexRgb(hex);
+        const cx = zn.reduce((s, n) => s + n.x, 0) / zn.length;
+        const cy = zn.reduce((s, n) => s + n.y, 0) / zn.length;
+        const maxDist = Math.max(46, ...zn.map((n) => Math.hypot(n.x - cx, n.y - cy) + n.r + 30));
+
+        const neb = ctx.createRadialGradient(cx, cy, maxDist * 0.12, cx, cy, maxDist * 1.15);
+        neb.addColorStop(0, `rgba(${cr},${cg},${cb},${isLight ? 0.11 : 0.16})`);
+        neb.addColorStop(0.68, `rgba(${cr},${cg},${cb},${isLight ? 0.05 : 0.07})`);
+        neb.addColorStop(1, `rgba(${cr},${cg},${cb},0)`);
+        ctx.beginPath();
+        ctx.arc(cx, cy, maxDist * 1.15, 0, Math.PI * 2);
+        ctx.fillStyle = neb;
+        ctx.fill();
+
+        ctx.beginPath();
+        ctx.arc(cx, cy, maxDist * 0.94, 0, Math.PI * 2);
+        ctx.strokeStyle = `rgba(${cr},${cg},${cb},${isLight ? 0.26 : 0.28})`;
+        ctx.lineWidth = 1.1;
+        ctx.stroke();
+
+        ctx.font = '700 10.5px ui-monospace, SFMono-Regular, monospace';
+        ctx.textAlign = 'center';
+        ctx.lineWidth = 3.2;
+        ctx.lineJoin = 'round';
+        ctx.strokeStyle = isLight ? 'rgba(245, 247, 251, 0.92)' : 'rgba(6, 11, 19, 0.92)';
+        const zoneLbl = `${z.toUpperCase()} · ${zn.length}`;
+        ctx.strokeText(zoneLbl, cx, cy - maxDist * 0.94 - 8);
+        ctx.fillStyle = isLight ? `rgba(${Math.round(cr*0.72)},${Math.round(cg*0.72)},${Math.round(cb*0.72)},0.95)` : `rgba(${Math.min(255,cr+65)},${Math.min(255,cg+65)},${Math.min(255,cb+65)},0.92)`;
+        ctx.fillText(zoneLbl, cx, cy - maxDist * 0.94 - 8);
+      }
+
+      for (let i = 0; i < visEdges.length; i++) {
+        const e = visEdges[i];
+        const a = nodeMap.get(e.from), b = nodeMap.get(e.to);
+        const isLit = hovered && (e.from === hovered.id || e.to === hovered.id);
+        const dim = (hovered && !isLit) || (searchHits && !searchHits.has(e.from) && !searchHits.has(e.to));
+        const dx = b.x - a.x, dy = b.y - a.y;
+        const len = Math.hypot(dx, dy) || 1;
+        const arch = Math.min(24, len * 0.11) * (i % 2 === 0 ? 1 : -1);
+        const mx = (a.x + b.x) / 2 - (dy / len) * arch;
+        const my = (a.y + b.y) / 2 + (dx / len) * arch;
+
+        const cA = nodeHex(a), cB = nodeHex(b);
+        const grad = ctx.createLinearGradient(a.x, a.y, b.x, b.y);
+        grad.addColorStop(0, cA);
+        grad.addColorStop(1, cB);
+
+        ctx.save();
+        ctx.globalAlpha = dim ? 0.06 : (isLit ? 0.90 : (e.origin === 'explicit' ? 0.36 : 0.18));
+        ctx.strokeStyle = grad;
+        ctx.lineWidth = isLit ? 2.2 : (e.origin === 'explicit' ? 1.35 : 0.85);
+        ctx.beginPath();
+        ctx.moveTo(a.x, a.y);
+        ctx.quadraticCurveTo(mx, my, b.x, b.y);
+        ctx.stroke();
+
+        if (!reducedMotion && !dim && (isLit || (e.origin !== 'auto' && i % 2 === 0))) {
+          const p = (t * 0.18 + i * 0.27) % 1;
+          const inv = 1 - p;
+          const sx = inv * inv * a.x + 2 * inv * p * mx + p * p * b.x;
+          const sy = inv * inv * a.y + 2 * inv * p * my + p * p * b.y;
+          ctx.globalAlpha = isLit ? 0.95 : 0.65;
+          ctx.beginPath();
+          ctx.arc(sx, sy, isLit ? 2.8 : 2.0, 0, Math.PI * 2);
+          ctx.fillStyle = isLight ? cB : '#ffffff';
+          ctx.fill();
+        }
+
+        if (isLit) {
+          const evLbl = (e.evidence && e.evidence[0]) ? e.evidence[0] : e.relation;
+          ctx.globalAlpha = 0.95;
+          ctx.font = '600 9.5px ui-monospace, monospace';
+          ctx.fillStyle = isLight ? '#111827' : '#edf2f8';
+          ctx.textAlign = 'center';
+          ctx.fillText(evLbl.slice(0, 26), mx, my - 4);
+        }
+        ctx.restore();
+      }
+
+      const selectedDay = state.evolution?.timeline?.[state.dayIndex]?.day || '';
+      for (const n of nodes) {
+        const isDim = (hoverSet && !hoverSet.has(n.id)) || (searchHits && !searchHits.has(n.id));
+        const isMatch = searchHits && searchHits.has(n.id);
+        const isSel = n.id === state.selectedId || n === hovered;
+        const isDayActive = state.brain.highlightDay && selectedDay && n.updated_day === selectedDay;
+        const hex = nodeHex(n);
+
+        ctx.save();
+        ctx.globalAlpha = isDim ? 0.14 : 1.0;
+
+        if (isDayActive) {
+          ctx.beginPath();
+          ctx.arc(n.x, n.y, n.r + 8 + Math.sin(t * 2.5) * 1.8, 0, Math.PI * 2);
+          ctx.strokeStyle = 'rgba(247, 191, 46, 0.78)';
+          ctx.lineWidth = 1.8;
+          ctx.stroke();
+        }
+
+        if (isSel || isMatch) {
+          drawTiltedOrbitRing(n.x, n.y, n.r, hex, t);
+        }
+
+        drawCelestialOrb(n.x, n.y, n.r * (isSel ? 1.15 : 1.0), hex, isSel || isMatch ? 1.0 : 0.0, isLight, n.status === 'superseded');
+
+        if (cam.zoom >= 1.25 || zoneTopHubs.has(n.id) || isSel || isMatch) {
+          ctx.font = isSel ? '700 11px ui-sans-serif, sans-serif' : '600 10px ui-sans-serif, sans-serif';
+          ctx.textAlign = 'center';
+          const lbl = displayTitle(n);
+          const shortLbl = lbl.slice(0, 24) + (lbl.length > 24 ? '…' : '');
+          ctx.lineWidth = 3.4;
+          ctx.lineJoin = 'round';
+          ctx.strokeStyle = isLight ? 'rgba(245, 247, 251, 0.92)' : 'rgba(6, 11, 19, 0.92)';
+          ctx.strokeText(shortLbl, n.x, n.y + n.r + 14);
+          ctx.fillStyle = isLight ? '#111827' : '#edf2f8';
+          ctx.fillText(shortLbl, n.x, n.y + n.r + 14);
+        }
+        ctx.restore();
+      }
+
+      ctx.restore();
+      brainAnim = requestAnimationFrame(tick);
+    }
+
+    brainAnim = requestAnimationFrame(tick);
+  }
+
+  async function loadQueue(selectFirst = false) {
+    const seq = ++state.queue.seq;
+    const q = state.queue;
+    const params = new URLSearchParams({
+      source: q.source, status: q.status, sort: q.sort,
+      limit: String(q.limit), offset: String(q.offset),
+    });
+    if (q.project) params.set('project', q.project);
+    if (q.kind) params.set('kind', q.kind);
+    if (q.q) params.set('q', q.q);
+
+    try {
+      const data = await apiGet(`/api/records?${params.toString()}`);
+      if (seq !== state.queue.seq) return;
+      q.total = data.total;
+      q.items = data.items || [];
+      renderDeck();
+      if (selectFirst && q.items.length > 0) {
+        inspectInDesk(q.items[0].id);
+      }
+    } catch (err) {
+      if (seq === state.queue.seq) {
+        $('#deckList').innerHTML = `<div class="empty-state" style="color:var(--bad);">${esc(err.message)}</div>`;
+      }
+    }
+  }
+
+  function renderDeck() {
+    const q = state.queue;
+    if (q.items.length === 0) {
+      $('#deckList').innerHTML = '<div class="empty-state">No memories match these filters.</div>';
+    } else {
+      $('#deckList').innerHTML = q.items.map((it) => `
+        <button class="deck-item ${it.id === state.selectedId ? 'selected' : ''}" data-deck-id="${esc(it.id)}">
+          <div style="display:flex;justify-content:space-between;gap:6px;align-items:flex-start;">
+            <strong style="font-size:13px;">${esc(displayTitle(it))}</strong>
+            ${statusPill(it)}
+          </div>
+          <div style="display:flex;flex-wrap:wrap;gap:4px;margin:5px 0;">
+            <span class="pill p-neutral">${esc(it.source_type)}/${esc(it.kind)}</span>
+            <span class="pill p-neutral">${esc(it.project)}</span>
+          </div>
+          <div style="font-size:12px;color:var(--text-mid);overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;">${esc(it.snippet)}</div>
+          <div class="mono" style="margin-top:5px;font-size:11px;color:var(--text-muted);display:flex;gap:10px;">
+            <span>u:${it.use_count}</span><span style="color:var(--ok);">✓${it.confirm_count}</span><span>✗${it.contradict_count}</span><span>⛓${it.link_count}</span>
+            <span style="margin-left:auto;">${fmtBytes(it.body_bytes)}</span>
+          </div>
+        </button>
+      `).join('');
+    }
+    const start = q.total === 0 ? 0 : q.offset + 1;
+    const end = Math.min(q.offset + q.items.length, q.total);
+    $('#deckRange').textContent = `${fmtNum(start)}–${fmtNum(end)} of ${fmtNum(q.total)}`;
+    $('#btnPrevPage').disabled = q.offset <= 0;
+    $('#btnNextPage').disabled = q.offset + q.limit >= q.total;
+  }
+
+  async function inspectInDesk(id) {
+    state.selectedId = id;
+    renderDeck();
+    if (isMobile()) {
+      openMemorySheet(id, true);
+      return;
+    }
+    const seq = ++state.inspectSeq;
+    try {
+      const rec = await apiGet(`/api/records/${encodeURIComponent(id)}`);
+      if (seq !== state.inspectSeq || state.selectedId !== id) return;
+      state.inspected = rec;
+      $('#readingPane').innerHTML = renderRecordBodyHtml(rec, false);
+    } catch (err) {
+      if (seq === state.inspectSeq) {
+        $('#readingPane').innerHTML = `<div class="empty-state" style="color:var(--bad);">${esc(err.message)}</div>`;
+      }
+    }
+  }
+
+  function renderRecordBodyHtml(rec, inSheet) {
+    const s = rec.stats || {};
+    const mult = computeMultiplier(rec);
+    const archived = Boolean(rec.archived);
+    const outLinks = rec.outgoing_links || [];
+    const inLinks = rec.incoming_links || [];
+
+    const explicitPeers = [...outLinks, ...inLinks].filter((l) => l.origin === 'explicit');
+    const byAnchor = new Map();
+    for (const l of [...outLinks, ...inLinks]) {
+      if (l.origin !== 'auto') continue;
+      const anchor = (l.evidence && l.evidence[0]) || l.relation;
+      if (!byAnchor.has(anchor)) byAnchor.set(anchor, []);
+      const arr = byAnchor.get(anchor);
+      if (!arr.some((x) => x.id === l.id)) arr.push(l);
+    }
+
+    const navAttr = inSheet ? 'data-push-mem' : 'data-desk-jump';
+
+    return `
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px;">
+        <div style="display:flex;gap:5px;flex-wrap:wrap;align-items:center;">
+          ${archived ? '<span class="pill p-neutral">archived (archive.db)</span>' : statusPill(rec)}
+          <span class="pill p-explicit">${esc(rec.source_type)} · ${esc(rec.kind)}</span>
+          <span class="pill p-neutral">${esc(rec.project)}</span>
+        </div>
+        <span class="pill p-ok">Read-only · use_count stays ${fmtNum(s.use_count)}</span>
+      </div>
+
+      <h2 class="reading-title">${esc(displayTitle(rec))}</h2>
+
+      <div class="trust-sentence">
+        ${archived
+          ? '<strong>Cold Archive Record</strong> — read-only historical entry from <code class="mono">archive.db</code>.'
+          : (s.status === 'superseded'
+            ? `<strong>Superseded</strong> (penalized to <strong>0.15×</strong>). ${rec.superseded_by_record ? `Replaced by <button class="btn btn-sm" ${navAttr}="${esc(rec.superseded_by_record.id)}">${esc(displayTitle(rec.superseded_by_record))} ›</button>` : 'Marked outdated.'}`
+            : `Ranked at <strong>${mult.toFixed(2)}×</strong> for <code class="mono">developer</code>${rec.source_type === 'markdown' ? ' &amp; <code class="mono">reviewer</code>' : ' only (excluded from <code class="mono">reviewer</code>)'} · ${s.confirm_count > 0 ? `<strong style="color:var(--ok);">confirmed ${s.confirm_count}×</strong>` : '<strong style="color:var(--warn);">never human-verified</strong>'} · ${fmtNum(rec.outgoing_link_count)} out / ${fmtNum(rec.incoming_link_count)} in links.`)}
+      </div>
+
+      ${!inSheet && !archived ? `
+        <div class="verdict-bar">
+          <button class="btn btn-ok" data-fb="helpful" data-id="${esc(rec.id)}">✓ Still True <span class="kbd">h</span></button>
+          <button class="btn btn-accent" data-open-supersede="${esc(rec.id)}">⇄ Update &amp; Supersede</button>
+          <button class="btn btn-bad" data-fb="contradicted" data-id="${esc(rec.id)}">✗ Contradicted <span class="kbd">c</span></button>
+          <button class="btn btn-ghost" data-fb="outdated" data-id="${esc(rec.id)}">⊘ Mark Outdated <span class="kbd">o</span></button>
+        </div>
+      ` : ''}
+
+      ${(rec.duplicate_bodies && rec.duplicate_bodies.length > 0) ? `
+        <div class="lineage-strip">
+          <span class="mono" style="font-size:11px;color:var(--text-muted);">DUPLICATE BODY (${rec.duplicate_bodies.length}):</span>
+          ${rec.duplicate_bodies.slice(0, 5).map((d) => `<button class="btn btn-sm btn-ghost" ${navAttr}="${esc(d.id)}">${esc(d.project)} · ${esc(displayTitle(d).slice(0,22))}</button>`).join('')}
+        </div>
+      ` : ''}
+
+            ${(rec.superseded_by_record || (rec.supersedes && rec.supersedes.length > 0)) ? `
+        <div class="lineage-strip">
+          <span class="mono" style="font-size:11px;color:var(--text-muted);">LINEAGE:</span>
+          ${(rec.supersedes || []).map((old) => `<button class="btn btn-sm btn-ghost" ${navAttr}="${esc(old.id)}">↺ ${esc(displayTitle(old).slice(0,26))}</button> <span>→</span>`).join('')}
+          <span class="pill p-warm">Current</span>
+          ${rec.superseded_by_record ? `<span>→</span> <button class="btn btn-sm btn-ok" ${navAttr}="${esc(rec.superseded_by_record.id)}">${esc(displayTitle(rec.superseded_by_record).slice(0,28))} ›</button>` : ''}
+        </div>
+      ` : ''}
+
+      <div class="section-kicker">
+        <span>Content (${fmtBytes(rec.body_bytes)})</span>
+        <div style="display:flex;gap:5px;">
+          <button class="btn btn-sm ${state.bodyMode === 'rendered' ? 'btn-accent' : 'btn-ghost'}" data-body-mode="rendered">Rendered</button>
+          <button class="btn btn-sm ${state.bodyMode === 'raw' ? 'btn-accent' : 'btn-ghost'}" data-body-mode="raw">Raw</button>
+          <button class="btn btn-sm btn-ghost" data-copy-id="${esc(rec.id)}">Copy ID</button>
+        </div>
+      </div>
+
+      <div class="prose-box">
+        ${state.bodyMode === 'rendered'
+          ? `<div class="content-md">${renderMarkdown(rec.content)}</div>`
+          : `<pre class="content-raw">${esc(rec.content)}</pre>`}
+      </div>
+
+      <div class="section-kicker"><span>Connected Memories</span><span class="mono">${fmtNum(rec.outgoing_link_count)} out · ${fmtNum(rec.incoming_link_count)} in</span></div>
+      ${explicitPeers.length === 0 && byAnchor.size === 0
+        ? '<div style="font-size:12.5px;color:var(--text-muted);">No links recorded for this memory.</div>'
+        : `
+          ${explicitPeers.length > 0 ? `
+            <div class="anchor-group">
+              <div style="margin-bottom:6px;"><span class="pill p-explicit">explicit references (${explicitPeers.length})</span></div>
+              <div style="display:flex;flex-wrap:wrap;gap:6px;">
+                ${explicitPeers.slice(0, 14).map((p) => `<button class="btn btn-sm" ${navAttr}="${esc(p.id)}">${esc(displayTitle(p).slice(0, 34))} ›</button>`).join('')}
+              </div>
+            </div>` : ''}
+          ${Array.from(byAnchor.entries()).slice(0, 10).map(([anchor, peers]) => `
+            <div class="anchor-group">
+              <div style="margin-bottom:6px;"><span class="pill p-auto">anchor · ${esc(anchor)} (${peers.length})</span></div>
+              <div style="display:flex;flex-wrap:wrap;gap:6px;">
+                ${peers.slice(0, 8).map((p) => `<button class="btn btn-sm" ${navAttr}="${esc(p.id)}">${esc(displayTitle(p).slice(0, 32))} ›</button>`).join('')}
+              </div>
+            </div>
+          `).join('')}
+        `}
+
+      <div class="section-kicker"><span>Provenance</span></div>
+      <table class="meta-table">
+        <tr><td>id</td><td class="mono">${esc(rec.id)}</td></tr>
+        <tr><td>source_path</td><td class="mono">${esc(rec.source_path)}</td></tr>
+        <tr><td>source_group</td><td class="mono">${esc(rec.source_group)}</td></tr>
+        <tr><td>updated_at</td><td class="mono">${fmtTime(rec.updated_at)}</td></tr>
+      </table>
+    `;
+  }
+
+  function parseQuickAdd(raw) {
+    const text = (raw || '').trim();
+    if (!text) return null;
+    let kind = 'note';
+    const km = text.match(/^(decision|gotcha|correction|preference|note)\b[:\s]*/i);
+    let rest = text;
+    if (km) { kind = km[1].toLowerCase(); rest = rest.slice(km[0].length); }
+    let project = state.queue.project || '*';
+    const pm = rest.match(/#([a-zA-Z0-9_./-]+)/);
+    if (pm) { project = pm[1]; rest = rest.replace(pm[0], '').trim(); }
+    rest = rest.replace(/^[:\-\s]+/, '').trim();
+    return { kind, project, title: rest.slice(0, 120), content: rest };
+  }
+
+  function renderQuickAddChips() {
+    const parsed = parseQuickAdd($('#quickAddInput')?.value || '');
+    const el = $('#quickAddChips');
+    if (!el) return;
+    if (!parsed || !parsed.content) { el.innerHTML = ''; return; }
+    el.innerHTML = `
+      <span class="pill p-warm">${esc(parsed.kind)}</span>
+      <span class="pill p-neutral">project: ${esc(parsed.project)}</span>
+      <button class="btn btn-sm btn-accent" style="margin-left:auto;" data-action="submit-quick-add">Save Rule ↵</button>
+    `;
+  }
+
+  async function submitQuickAdd() {
+    const parsed = parseQuickAdd($('#quickAddInput')?.value || '');
+    if (!parsed || !parsed.content) return;
+    try {
+      const res = await apiPost('/api/remember', {
+        title: parsed.title, content: parsed.content, project: parsed.project,
+        kind: parsed.kind, agent: 'human-ui', supersedes: [],
+      });
+      $('#quickAddInput').value = '';
+      renderQuickAddChips();
+      toast(`Saved ${parsed.kind} (${res.remember?.id || ''})`, 'ok');
+      await Promise.all([loadCoreData(), loadQueue(false), state.brain.data ? loadBrainGraph() : Promise.resolve()]);
+      if (res.remember?.id) inspectInDesk(res.remember.id);
+    } catch (err) {
+      toast(err.message, 'err');
+    }
+  }
+
+  async function sendFeedback(targetId, outcome, supersededBy = null) {
+    if (!targetId) return;
+    const payload = { id: targetId, outcome };
+    if (supersededBy) payload.superseded_by = supersededBy;
+    try {
+      const res = await apiPost('/api/feedback', payload);
+      toast(`Marked ${targetId.slice(0, 14)}… as ${outcome}`, 'ok');
+      if (res.record && state.selectedId === targetId) {
+        state.inspected = res.record;
+        if (state.view === 'desk' && !isMobile()) {
+          $('#readingPane').innerHTML = renderRecordBodyHtml(res.record, false);
+        }
+      }
+      const top = state.sheetStack[state.sheetStack.length - 1];
+      if (top && top.type === 'memory' && top.id === targetId && res.record) {
+        top.record = res.record;
+        renderSheet();
+      }
+      await Promise.all([loadCoreData(), loadQueue(false), state.brain.data ? loadBrainGraph() : Promise.resolve()]);
+    } catch (err) {
+      toast(err.message, 'err');
+    }
+  }
+
+  function syncSimSourceLocks() {
+    const isRev = state.simMode === 'reviewer';
+    Array.from($('#simSource').options).forEach((o) => {
+      if (['history', 'native', 'archive'].includes(o.value)) o.disabled = isRev;
+    });
+    if (isRev && ['history', 'native', 'archive'].includes($('#simSource').value)) {
+      $('#simSource').value = 'curated';
+    }
+  }
+
+  async function runSimulation() {
+    const q = $('#simQuery').value.trim();
+    if (!q) { toast('Enter a query to simulate retrieval', 'err'); return; }
+    const base = {
+      q,
+      project: $('#simProject').value,
+      strict_project: $('#simStrict').checked ? 'true' : '',
+      limit: $('#simLimit').value,
+      max_bytes: $('#simBudget').value,
+    };
+    $('#simResults').innerHTML = '<div class="empty-state">Running exact retrieval pipeline…</div>';
+    try {
+      if (state.simMode === 'compare') {
+        const pDev = new URLSearchParams({ ...base, role: 'developer', source: $('#simSource').value });
+        const pRev = new URLSearchParams({ ...base, role: 'reviewer', source: 'curated' });
+        if (!base.project) { pDev.delete('project'); pRev.delete('project'); }
+        if (!base.strict_project) { pDev.delete('strict_project'); pRev.delete('strict_project'); }
+        const [devRes, revRes] = await Promise.all([
+          apiGet(`/api/context?${pDev.toString()}`),
+          apiGet(`/api/context?${pRev.toString()}`),
+        ]);
+        const revIds = new Set((revRes.results || []).map((h) => h.id));
+        const devLabel = `developer · source=${$('#simSource').value}`;
+        const devIsArchive = $('#simSource').value === 'archive';
+        $('#simResults').innerHTML = `
+          <div class="compare-cols">
+            ${renderSimCol(devLabel, devRes, (h) => !revIds.has(h.id) ? '<span class="pill p-warn">hidden from reviewer</span>' : '', devIsArchive)}
+            ${renderSimCol('reviewer · curated Markdown only', revRes, () => '', false)}
+          </div>
+        `;
+      } else {
+        const srcVal = $('#simSource').value;
+        const params = new URLSearchParams({ ...base, role: state.simMode, source: srcVal });
+        if (!base.project) params.delete('project');
+        if (!base.strict_project) params.delete('strict_project');
+        const res = await apiGet(`/api/context?${params.toString()}`);
+        $('#simResults').innerHTML = renderSimCol(`${state.simMode} · source=${srcVal}`, res, () => '', srcVal === 'archive');
+      }
+    } catch (err) {
+      $('#simResults').innerHTML = `<div class="empty-state" style="color:var(--bad);">${esc(err.message)}</div>`;
+    }
+  }
+
+  function renderSimCol(title, res, extraBadge, isArchive = false) {
+    const hits = res.results || [];
+    const used = Number(res.budget_used_bytes || 0);
+    const max = Number(res.budget_max_bytes || 4000);
+    const pct = Math.min(100, Math.round((used / Math.max(1, max)) * 100));
+    return `
+      <div>
+        <div class="budget-ruler">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;">
+            <strong class="mono" style="font-size:12px;">${esc(title)}</strong>
+            <span class="pill ${res.truncated ? 'p-warn' : 'p-ok'}">${hits.length} hits · ${fmtNum(used)}/${fmtNum(max)} B (${pct}%) · truncated: ${res.truncated ? 'true' : 'false'}</span>
+          </div>
+          <div class="ruler-track"><div class="ruler-fill ${res.truncated || pct > 85 ? 'tight' : ''}" style="width:${pct}%"></div></div>
+        </div>
+        ${hits.length === 0
+          ? '<div class="empty-state">No matches returned within this role/scope/budget.</div>'
+          : hits.map((h, i) => `
+            <div class="hit-card" style="--hit-accent:${h.source_type === 'markdown' ? 'var(--c-blue)' : h.source_type === 'iron' ? 'var(--c-coral)' : 'var(--text-muted)'};">
+              <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;">
+                <div>
+                  <span class="mono" style="color:var(--accent);font-weight:800;margin-right:6px;">#${i + 1}</span>
+                  <button class="btn-ghost" style="padding:0;min-height:auto;font-weight:700;font-size:14px;" data-open-mem-sheet="${esc(h.id)}">${esc(displayTitle(h))}</button>
+                </div>
+                <div style="display:flex;gap:5px;flex-wrap:wrap;align-items:center;">
+                  ${extraBadge(h)}
+                  ${h.status === 'superseded' ? '<span class="pill p-sup">superseded</span>' : ''}
+                  <span class="pill p-neutral">${esc(h.source_type)}/${esc(h.kind)}</span>
+                  <span class="pill p-neutral">${esc(h.project)}</span>
+                  <span class="pill p-ok">${Number(h.score || 0).toFixed(2)}</span>
+                </div>
+              </div>
+              <div style="font-size:12.5px;color:var(--text-mid);margin:7px 0;">${esc(h.snippet)}</div>
+              <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
+                ${isArchive
+                  ? '<span class="pill p-neutral">archived · read-only</span>'
+                  : `<button class="btn btn-sm btn-ok" data-fb="helpful" data-id="${esc(h.id)}">✓ Still True</button>
+                     <button class="btn btn-sm" data-open-supersede="${esc(h.id)}">⇄ Supersede</button>
+                     <button class="btn btn-sm btn-bad" data-fb="contradicted" data-id="${esc(h.id)}">✗ Wrong</button>`}
+                <button class="btn btn-sm btn-ghost" style="margin-left:auto;" data-open-mem-sheet="${esc(h.id)}">Inspect ›</button>
+              </div>
+            </div>
+          `).join('')}
+      </div>
+    `;
+  }
+
+  async function openMemorySheet(id, reset = true) {
+    if (reset) state.sheetStack = [];
+    const entry = { type: 'memory', id, label: id.slice(0, 16), loading: true, record: null };
+    state.sheetStack.push(entry);
+    renderSheet();
+    try {
+      const rec = await apiGet(`/api/records/${encodeURIComponent(id)}`);
+      entry.loading = false;
+      entry.record = rec;
+      entry.label = displayTitle(rec).slice(0, 26);
+      if (state.sheetStack[state.sheetStack.length - 1] === entry) renderSheet();
+    } catch (err) {
+      entry.loading = false;
+      entry.error = err.message;
+      if (state.sheetStack[state.sheetStack.length - 1] === entry) renderSheet();
+    }
+  }
+
+  async function openDaySheet(day) {
+    state.sheetStack = [{ type: 'day', day, label: day, loading: true, items: [] }];
+    renderSheet();
+    try {
+      const res = await apiGet(`/api/records?day=${encodeURIComponent(day)}&source=curated&limit=50`);
+      const top = state.sheetStack[state.sheetStack.length - 1];
+      if (top && top.type === 'day' && top.day === day) {
+        top.loading = false;
+        top.items = res.items || [];
+        top.total = res.total || 0;
+        renderSheet();
+      }
+    } catch (err) {
+      const top = state.sheetStack[state.sheetStack.length - 1];
+      if (top && top.type === 'day' && top.day === day) {
+        top.loading = false;
+        top.error = err.message;
+        renderSheet();
+      }
+      toast(err.message, 'err');
+    }
+  }
+
+  async function openConsolidateSheet() {
+    state.sheetStack = [{ type: 'consolidate', label: 'Consolidate', loading: true, clusters: [] }];
+    renderSheet();
+    try {
+      const res = await apiGet('/api/consolidate?min_occurrences=3&limit=20');
+      const top = state.sheetStack[state.sheetStack.length - 1];
+      if (top && top.type === 'consolidate') {
+        top.loading = false;
+        top.clusters = res.clusters || [];
+        renderSheet();
+      }
+    } catch (err) {
+      const top = state.sheetStack[state.sheetStack.length - 1];
+      if (top && top.type === 'consolidate') {
+        top.loading = false;
+        top.error = err.message;
+        renderSheet();
+      }
+      toast(err.message, 'err');
+    }
+  }
+
+  function pushRememberSheet(prefill = {}) {
+    state.sheetStack.push({ type: 'remember', label: 'Remember', prefill });
+    renderSheet();
+  }
+
+  function pushSupersedeSheet(id, rec) {
+    state.sheetStack.push({ type: 'supersede', id, rec, mode: 'create', label: 'Supersede' });
+    renderSheet();
+  }
+
+  function pushMergeSheet(prefillFrom = '', prefillTo = '', reset = true) {
+    if (reset) state.sheetStack = [];
+    state.sheetStack.push({
+      type: 'merge',
+      label: 'Merge / Rename',
+      from: prefillFrom || '',
+      to: prefillTo || '',
+      includeSubpaths: true,
+      saveAlias: true,
+    });
+    renderSheet();
+  }
+
+  function allProjectCandidates() {
+    const map = new Map();
+    for (const p of (state.facets?.projects || [])) {
+      if (!p.project || p.project === '*') continue;
+      map.set(p.project, (map.get(p.project) || 0) + Number(p.total || 0));
+    }
+    for (const g of (state.audit?.project_fragmentation?.groups || [])) {
+      if (g.canonical_root && g.canonical_root !== '*' && !map.has(g.canonical_root)) {
+        map.set(g.canonical_root, Number(g.total_records || 0));
+      }
+    }
+    return Array.from(map.entries()).sort((a, b) => b[1] - a[1]);
+  }
+
+  function countMatchingForMerge(from, includeSubpaths) {
+    if (!from) return 0;
+    let total = 0;
+    for (const p of (state.facets?.projects || [])) {
+      const name = p.project || '';
+      if (name === from || (includeSubpaths && (name.startsWith(`${from}/`) || name.startsWith(`${from}-worktrees/`)))) {
+        total += Number(p.total || 0);
+      }
+    }
+    return total;
+  }
+
+  function updateMergePreview() {
+    const el = $('#mergePreview');
+    if (!el) return;
+    const from = ($('#mergeFrom')?.value || '').trim();
+    const to = ($('#mergeTo')?.value || '').trim();
+    const inc = Boolean($('#mergeSubpaths')?.checked);
+    if (!from) {
+      el.innerHTML = 'Select a source project to merge or rename.';
+      return;
+    }
+    const count = countMatchingForMerge(from, inc);
+    el.innerHTML = to
+      ? `Will move <strong>${fmtNum(count)}</strong> record${count === 1 ? '' : 's'} from <code class="mono">${esc(from)}</code>${inc ? ' (+ subpaths/worktrees)' : ''} into <code class="mono">${esc(to)}</code>.`
+      : `<strong>${fmtNum(count)}</strong> record${count === 1 ? '' : 's'} match <code class="mono">${esc(from)}</code>${inc ? ' (+ subpaths/worktrees)' : ''}. Enter an existing or new target project name.`;
+  }
+
+  async function submitMergeSheet() {
+    const form = $('#sheetMergeForm');
+    if (form && !form.reportValidity()) return;
+    const from = ($('#mergeFrom')?.value || '').trim();
+    const to = ($('#mergeTo')?.value || '').trim();
+    const include_subpaths = Boolean($('#mergeSubpaths')?.checked);
+    const save_alias = Boolean($('#mergeSaveAlias')?.checked);
+    if (!from || !to) { toast('Both source and target project names are required', 'err'); return; }
+    if (from === to) { toast('Source and target project names must differ', 'err'); return; }
+    const btn = $('#btnSubmitMerge');
+    if (btn) { btn.disabled = true; btn.textContent = 'Merging…'; }
+    try {
+      const res = await apiPost('/api/projects/merge', { from, to, include_subpaths, save_alias });
+      state.aliases = res.aliases || state.aliases;
+      const finalTo = res.to || to;
+      toast(`Merged ${fmtNum(res.updated_records)} records: ${from} → ${finalTo}`, 'ok');
+      if (state.queue.project === from || (include_subpaths && (state.queue.project.startsWith(`${from}/`) || state.queue.project.startsWith(`${from}-worktrees/`)))) {
+        state.queue.project = finalTo;
+      }
+      const top = state.sheetStack[state.sheetStack.length - 1];
+      if (top && top.type === 'merge') { top.from = ''; top.to = ''; }
+      await loadCoreData();
+      if ($('#qProject')) $('#qProject').value = state.queue.project;
+      await Promise.all([loadQueue(false), state.brain.data ? loadBrainGraph() : Promise.resolve()]);
+      renderSheet();
+    } catch (err) {
+      toast(err.message, 'err');
+      if (btn) { btn.disabled = false; btn.textContent = 'Merge / Rename Project'; }
+    }
+  }
+
+  async function deleteProjectAlias(from) {
+    if (!from) return;
+    try {
+      const res = await apiPost('/api/aliases/delete', { from });
+      state.aliases = res.aliases || {};
+      toast(`Removed alias ${from}`, 'ok');
+      renderDeskStory();
+      renderSheet();
+    } catch (err) {
+      toast(err.message, 'err');
+    }
+  }
+
+  async function submitRememberSheet() {
+    const form = $('#sheetRememberForm');
+    if (form && !form.reportValidity()) return;
+    const supersedes = ($('#remSupersedes')?.value || '').split(',').map((s) => s.trim()).filter(Boolean);
+    try {
+      const res = await apiPost('/api/remember', {
+        title: $('#remTitle').value.trim(),
+        project: $('#remProject').value.trim(),
+        kind: $('#remKind').value,
+        agent: 'human-ui',
+        content: $('#remContent').value,
+        supersedes,
+      });
+      const newId = res.remember?.id;
+      toast(`Saved native memory ${newId || ''}`, 'ok');
+      closeSheet();
+      await Promise.all([loadCoreData(), loadQueue(false), state.brain.data ? loadBrainGraph() : Promise.resolve()]);
+      if (newId) openMemorySheet(newId, true);
+    } catch (err) { toast(err.message, 'err'); }
+  }
+
+  document.addEventListener('submit', (e) => {
+    if (e.target && e.target.id === 'sheetRememberForm') {
+      e.preventDefault();
+      submitRememberSheet();
+    } else if (e.target && e.target.id === 'sheetMergeForm') {
+      e.preventDefault();
+      submitMergeSheet();
+    }
+  });
+
+  function closeSheet() {
+    state.sheetStack = [];
+    renderSheet();
+  }
+
+  function renderSheet() {
+    const bd = $('#sheetBackdrop');
+    if (state.sheetStack.length === 0) {
+      bd.classList.remove('open');
+      return;
+    }
+    bd.classList.add('open');
+    const top = state.sheetStack[state.sheetStack.length - 1];
+    const prev = state.sheetStack.length > 1 ? state.sheetStack[state.sheetStack.length - 2] : null;
+    const backBtn = prev ? `<button class="btn btn-sm btn-ghost" data-sheet-pop="1">← Back to ${esc(prev.label || prev.type)}</button>` : '';
+    const head = $('#sheetHead'), body = $('#sheetBody'), foot = $('#sheetFoot');
+
+    if (top.type === 'memory') {
+      head.innerHTML = `<div>${backBtn || '<strong>Memory Inspector</strong>'}</div><button class="btn btn-sm btn-ghost" data-sheet-close="1">Close ✕</button>`;
+      if (top.loading) {
+        body.innerHTML = '<div class="empty-state">Loading memory…</div>';
+        foot.innerHTML = '';
+        return;
+      }
+      if (top.error || !top.record) {
+        body.innerHTML = `<div class="empty-state" style="color:var(--bad);">${esc(top.error || 'Not found')}</div>`;
+        foot.innerHTML = '<button class="btn" data-sheet-close="1" style="width:100%;">Close</button>';
+        return;
+      }
+      const r = top.record;
+      body.innerHTML = renderRecordBodyHtml(r, true);
+      foot.innerHTML = r.archived
+        ? '<span class="mono" style="font-size:12px;color:var(--text-muted);padding:6px 0;">Archived records are read-only.</span>'
+        : `
+          <button class="btn btn-ok" style="flex:1;" data-fb="helpful" data-id="${esc(r.id)}">✓ Still True</button>
+          <button class="btn btn-accent" style="flex:1;" data-push-supersede="${esc(r.id)}">⇄ Supersede</button>
+          <button class="btn btn-bad" data-fb="contradicted" data-id="${esc(r.id)}" title="Mark contradicted">✗</button>
+          <button class="btn btn-ghost" data-fb="outdated" data-id="${esc(r.id)}" title="Mark outdated">⊘</button>
+        `;
+    } else if (top.type === 'remember') {
+      const p = top.prefill || {};
+      head.innerHTML = `<div>${backBtn || `<strong>${esc(p.modalTitle || 'Save Native Curated Memory')}</strong>`}</div><button class="btn btn-sm btn-ghost" data-sheet-close="1">Close ✕</button>`;
+      body.innerHTML = `
+        <form id="sheetRememberForm" style="display:flex;flex-direction:column;gap:11px;">
+          <div>
+            <label class="section-kicker" style="margin:0 0 4px;">Title (max 200 bytes)</label>
+            <input id="remTitle" class="input" required maxlength="200" value="${esc(p.title || '')}" placeholder="Concise, searchable summary of the rule">
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+            <div>
+              <label class="section-kicker" style="margin:0 0 4px;">Project</label>
+              <input id="remProject" class="input" required value="${esc(p.project || state.queue.project || '*')}" placeholder="e.g. commerce-core or *">
+            </div>
+            <div>
+              <label class="section-kicker" style="margin:0 0 4px;">Kind</label>
+              <select id="remKind" class="input">
+                <option value="decision" ${p.kind === 'decision' ? 'selected' : ''}>decision</option>
+                <option value="gotcha" ${p.kind === 'gotcha' ? 'selected' : ''}>gotcha</option>
+                <option value="correction" ${p.kind === 'correction' ? 'selected' : ''}>correction</option>
+                <option value="preference" ${p.kind === 'preference' ? 'selected' : ''}>preference</option>
+                <option value="note" ${p.kind === 'note' ? 'selected' : ''}>note</option>
+              </select>
+            </div>
+          </div>
+          <div>
+            <label class="section-kicker" style="margin:0 0 4px;">Supersedes IDs (comma-separated, optional)</label>
+            <input id="remSupersedes" class="input mono" value="${esc(p.supersedes || '')}" placeholder="Optional old memory IDs">
+          </div>
+          <div>
+            <label class="section-kicker" style="margin:0 0 4px;">Content (Markdown · secrets auto-redacted)</label>
+            <textarea id="remContent" class="input" required rows="8" placeholder="Write the verified invariant, fix, or architectural decision…">${esc(p.content || '')}</textarea>
+          </div>
+        </form>
+      `;
+      foot.innerHTML = `
+        <button class="btn" data-sheet-pop-or-close="1">Cancel</button>
+        <button class="btn btn-accent" style="flex:1;" id="btnSubmitRemember">Save Memory</button>
+      `;
+    } else if (top.type === 'supersede') {
+      const r = top.rec || { id: top.id, title: top.id, project: '*', content: '' };
+      head.innerHTML = `<div>${backBtn || '<strong>Update &amp; Supersede</strong>'}</div><button class="btn btn-sm btn-ghost" data-sheet-close="1">Close ✕</button>`;
+      body.innerHTML = `
+        <div class="trust-sentence">Replacing <strong>${esc(displayTitle(r))}</strong> (<code class="mono">${esc(r.id)}</code>). Old memory drops to <strong>0.15×</strong> and links cleanly into lineage.</div>
+        <div class="chip-bar" style="margin-bottom:12px;">
+          <button class="chip ${top.mode === 'create' ? 'active' : ''}" data-sup-mode="create">Write New Replacement</button>
+          <button class="chip ${top.mode === 'link' ? 'active' : ''}" data-sup-mode="link">Link Existing ID</button>
+        </div>
+        ${top.mode === 'create' ? `
+          <div style="display:flex;flex-direction:column;gap:10px;">
+            <div><label class="section-kicker" style="margin:0 0 4px;">New Title</label><input id="supNewTitle" class="input" value="${esc(r.title || '')}"></div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+              <div><label class="section-kicker" style="margin:0 0 4px;">Project</label><input id="supNewProj" class="input" value="${esc(r.project || '*')}"></div>
+              <div><label class="section-kicker" style="margin:0 0 4px;">Kind</label>
+                <select id="supNewKind" class="input">
+                  <option value="correction">correction (2.2×)</option>
+                  <option value="decision">decision (2.0×)</option>
+                  <option value="gotcha">gotcha (2.0×)</option>
+                  <option value="note">note (2.0×)</option>
+                  <option value="preference">preference (2.0×)</option>
+                </select>
+              </div>
+            </div>
+            <div><label class="section-kicker" style="margin:0 0 4px;">Updated Content</label><textarea id="supNewContent" class="input" rows="7">${esc(r.content || '')}</textarea></div>
+          </div>
+        ` : `
+          <div style="display:flex;flex-direction:column;gap:10px;">
+            <div><label class="section-kicker" style="margin:0 0 4px;">Search Replacement</label><input id="supSearch" class="input" placeholder="Search keyword or paste ID…"></div>
+            <div id="supSearchHits" style="display:flex;flex-direction:column;gap:5px;max-height:190px;overflow-y:auto;"></div>
+            <div><label class="section-kicker" style="margin:0 0 4px;">Replacement ID</label><input id="supRepId" class="input mono" placeholder="Click a hit above or paste memory ID"></div>
+          </div>
+        `}
+      `;
+      foot.innerHTML = `
+        <button class="btn" data-sheet-pop-or-close="1">Cancel</button>
+        <button class="btn btn-accent" style="flex:1;" id="btnConfirmSupersede">${top.mode === 'create' ? 'Save Replacement & Supersede Old' : 'Mark Superseded'}</button>
+      `;
+    } else if (top.type === 'consolidate') {
+      head.innerHTML = `<div>${backBtn || '<strong>Consolidation Candidates</strong>'}</div><button class="btn btn-sm btn-ghost" data-sheet-close="1">Close ✕</button>`;
+      body.innerHTML = top.loading
+        ? '<div class="empty-state">Scanning cross-session code anchors…</div>'
+        : top.error ? `<div class="empty-state" style="color:var(--bad);">${esc(top.error)}</div>`
+        : (top.clusters.length === 0
+          ? '<div class="empty-state">No recurring clusters above threshold (3+ sessions).</div>'
+          : top.clusters.map((c, i) => `
+            <div class="anchor-group" style="padding:12px;">
+              <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;flex-wrap:wrap;">
+                <span class="pill p-auto">${esc(c.anchor_kind)}:${esc(c.anchor)}</span>
+                <span class="mono" style="font-size:11px;color:var(--text-muted);">${c.distinct_conversations} sessions · ${c.high_signal_records} high-signal</span>
+              </div>
+              <div style="display:flex;flex-wrap:wrap;gap:5px;margin:8px 0;">
+                ${(c.records || []).map((r) => `<button class="btn btn-sm" data-push-mem="${esc(r.id)}">${esc(displayTitle(r).slice(0, 32))} ›</button>`).join('')}
+              </div>
+              <button class="btn btn-sm btn-accent" data-promote-idx="${i}">Promote to Curated Rule →</button>
+            </div>
+          `).join(''));
+      foot.innerHTML = '<button class="btn" data-sheet-close="1" style="width:100%;">Done</button>';
+    } else if (top.type === 'fragmentation') {
+      const pf = state.audit?.project_fragmentation || { total_project_names: 0, canonical_roots: 0, fragmented_roots: 0, groups: [] };
+      head.innerHTML = `<div>${backBtn || '<strong>Worktree &amp; Project Fragmentation</strong>'}</div><button class="btn btn-sm btn-ghost" data-sheet-close="1">Close ✕</button>`;
+      body.innerHTML = `
+        <div class="trust-sentence"><strong>${fmtNum(pf.total_project_names)}</strong> raw project names collapse into <strong>${fmtNum(pf.canonical_roots)}</strong> canonical roots (<strong>${fmtNum(pf.fragmented_roots)}</strong> fragmented).</div>
+        ${(pf.groups || []).map((g) => `
+          <div class="anchor-group" style="padding:11px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;">
+              <strong class="mono">${esc(g.canonical_root)}</strong>
+              <div style="display:flex;gap:6px;align-items:center;">
+                <span class="pill p-neutral">${g.variant_count} variants · ${fmtNum(g.total_records)} recs</span>
+                <button class="btn btn-sm" data-push-merge="${esc(g.canonical_root)}">⇄ Merge / Rename</button>
+              </div>
+            </div>
+            <div style="display:flex;flex-wrap:wrap;gap:5px;margin-top:8px;">
+              ${g.variants.map((v) => `<button class="btn btn-sm" data-filter-proj="${esc(v.project)}">${esc(v.project)} (${fmtNum(v.records)})</button>`).join('')}
+            </div>
+          </div>
+        `).join('')}
+      `;
+      foot.innerHTML = '<button class="btn" data-sheet-close="1" style="width:100%;">Close</button>';
+    } else if (top.type === 'merge') {
+      const candidates = allProjectCandidates();
+      const aliasEntries = Object.entries(state.aliases || {});
+      const selectedFrom = top.from || (candidates[0]?.[0] || '');
+      head.innerHTML = `<div>${backBtn || '<strong>Merge &amp; Rename Projects</strong>'}</div><button class="btn btn-sm btn-ghost" data-sheet-close="1">Close ✕</button>`;
+      body.innerHTML = `
+        <div class="trust-sentence">Reassign all records from one project into another (or rename to a brand-new project). Saving a permanent alias writes <code class="mono">aliases.json</code> next to <code class="mono">memory.db</code> so future imports, <code class="mono">remember</code>, and searches stay unified automatically.</div>
+        <form id="sheetMergeForm" style="display:flex;flex-direction:column;gap:11px;">
+          <div>
+            <label class="section-kicker" style="margin:0 0 4px;">From Project (source)</label>
+            <select id="mergeFrom" class="input" required>
+              <option value="">Select source project…</option>
+              ${candidates.map(([name, cnt]) => `<option value="${esc(name)}" ${name === selectedFrom ? 'selected' : ''}>${esc(name)} (${fmtNum(cnt)} records)</option>`).join('')}
+              ${selectedFrom && !candidates.some(([n]) => n === selectedFrom) ? `<option value="${esc(selectedFrom)}" selected>${esc(selectedFrom)}</option>` : ''}
+            </select>
+          </div>
+          <div>
+            <label class="section-kicker" style="margin:0 0 4px;">To Project (existing target or new name)</label>
+            <input id="mergeTo" class="input" list="mergeTargetList" required maxlength="256" value="${esc(top.to || '')}" placeholder="e.g. my-project">
+            <datalist id="mergeTargetList">
+              ${candidates.map(([name]) => `<option value="${esc(name)}"></option>`).join('')}
+            </datalist>
+          </div>
+          <label style="display:flex;align-items:center;gap:8px;font-size:12.5px;cursor:pointer;">
+            <input id="mergeSubpaths" type="checkbox" ${top.includeSubpaths !== false ? 'checked' : ''}>
+            Include subpaths &amp; worktrees (<code class="mono">from/*</code>, <code class="mono">from-worktrees/*</code>)
+          </label>
+          <label style="display:flex;align-items:center;gap:8px;font-size:12.5px;cursor:pointer;">
+            <input id="mergeSaveAlias" type="checkbox" ${top.saveAlias !== false ? 'checked' : ''}>
+            Save permanent alias in <code class="mono">aliases.json</code>
+          </label>
+          <div id="mergePreview" class="anchor-group" style="font-size:12.5px;color:var(--text-bright);"></div>
+        </form>
+
+        <div class="section-kicker"><span>Active Permanent Aliases</span><span class="mono">${aliasEntries.length}</span></div>
+        ${aliasEntries.length === 0
+          ? '<div style="font-size:12.5px;color:var(--text-muted);">No permanent project aliases configured yet.</div>'
+          : aliasEntries.map(([fromKey, toVal]) => `
+            <div class="anchor-group" style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
+              <div class="mono" style="font-size:12px;"><strong>${esc(fromKey)}</strong> <span style="color:var(--accent);">→</span> <strong>${esc(toVal)}</strong></div>
+              <button class="btn btn-sm btn-bad" data-delete-alias="${esc(fromKey)}" title="Remove permanent alias">× Remove</button>
+            </div>
+          `).join('')}
+      `;
+      foot.innerHTML = `
+        <button class="btn" data-sheet-pop-or-close="1">Cancel</button>
+        <button class="btn btn-accent" style="flex:1;" id="btnSubmitMerge">Merge / Rename Project</button>
+      `;
+      updateMergePreview();
+    } else if (top.type === 'duplicates') {
+      const dups = state.audit?.duplicate_bodies || [];
+      const totalDup = state.audit?.summary?.duplicate_body_records || 0;
+      head.innerHTML = `<div>${backBtn || '<strong>Duplicate Body Clusters</strong>'}</div><button class="btn btn-sm btn-ghost" data-sheet-close="1">Close ✕</button>`;
+      body.innerHTML = dups.length === 0
+        ? '<div class="empty-state">No duplicate body clusters found.</div>'
+        : `<div class="trust-sentence"><strong>${fmtNum(totalDup)}</strong> records share an existing SHA-256 content body (storage deduplicated automatically in <code class="mono">bodies</code>).</div>` +
+          dups.map((d) => `
+            <div class="anchor-group" style="padding:11px;">
+              <div style="display:flex;justify-content:space-between;gap:8px;margin-bottom:5px;">
+                <span class="pill p-warn">×${fmtNum(d.count)} copies</span>
+                <span class="mono" style="font-size:11px;color:var(--text-muted);">${fmtBytes(d.bytes)}</span>
+              </div>
+              <div style="font-size:12px;color:var(--text-mid);margin-bottom:7px;">${esc(d.preview || '(empty session body)')}</div>
+              <div style="display:flex;flex-wrap:wrap;gap:5px;">
+                ${(d.records || []).map((r) => `<button class="btn btn-sm" data-push-mem="${esc(r.id)}">${esc(r.project)} · ${esc(displayTitle(r).slice(0,26))} ›</button>`).join('')}
+              </div>
+            </div>
+          `).join('');
+      foot.innerHTML = '<button class="btn" data-sheet-close="1" style="width:100%;">Close</button>';
+    } else if (top.type === 'contested') {
+      const list = state.audit?.contested_and_superseded || [];
+      head.innerHTML = `<div>${backBtn || '<strong>Contested &amp; Superseded Queue</strong>'}</div><button class="btn btn-sm btn-ghost" data-sheet-close="1">Close ✕</button>`;
+      body.innerHTML = list.length === 0
+        ? '<div class="empty-state">Zero contested or superseded records.</div>'
+        : list.map((c) => `
+          <div class="anchor-group" style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
+            <div>
+              <button class="btn-ghost" style="padding:0;min-height:auto;font-weight:700;text-align:left;" data-push-mem="${esc(c.id)}">${esc(displayTitle(c))}</button>
+              <div class="mono" style="font-size:11px;color:var(--text-muted);">${esc(c.project)} · ✓${c.confirm_count} ✗${c.contradict_count}</div>
+            </div>
+            ${statusPill(c)}
+          </div>
+        `).join('');
+      foot.innerHTML = '<button class="btn" data-sheet-close="1" style="width:100%;">Close</button>';
+    } else if (top.type === 'day') {
+      head.innerHTML = `<div>${backBtn || `<strong>Curated Activity · ${esc(top.day)}</strong>`}</div><button class="btn btn-sm btn-ghost" data-sheet-close="1">Close ✕</button>`;
+      body.innerHTML = top.loading
+        ? '<div class="empty-state">Loading records for this day…</div>'
+        : top.error ? `<div class="empty-state" style="color:var(--bad);">${esc(top.error)}</div>`
+        : (top.items.length === 0
+          ? `<div class="empty-state">No curated memories updated on ${esc(top.day)}.</div>`
+          : `<div style="margin-bottom:10px;font-size:12.5px;color:var(--text-mid);">${fmtNum(top.total)} curated memories captured or updated on <code class="mono">${esc(top.day)}</code>.</div>` +
+            top.items.map((it) => `
+              <div class="anchor-group" style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
+                <div>
+                  <button class="btn-ghost" style="padding:0;min-height:auto;font-weight:700;text-align:left;" data-push-mem="${esc(it.id)}">${esc(displayTitle(it))}</button>
+                  <div class="mono" style="font-size:11px;color:var(--text-muted);">${esc(it.project)} · ${esc(it.source_type)}/${esc(it.kind)}</div>
+                </div>
+                ${statusPill(it)}
+              </div>
+            `).join(''));
+      foot.innerHTML = '<button class="btn" data-sheet-close="1" style="width:100%;">Close</button>';
+    } else if (top.type === 'shortcuts') {
+      head.innerHTML = '<strong>Keyboard Shortcuts</strong><button class="btn btn-sm btn-ghost" data-sheet-close="1">Close ✕</button>';
+      body.innerHTML = `
+        <table class="meta-table">
+          <tr><td><span class="kbd">1</span> <span class="kbd">2</span> <span class="kbd">3</span></td><td>Switch views (Second Brain / Trust Desk / Agent Lens)</td></tr>
+          <tr><td><span class="kbd">/</span></td><td>Focus search in Trust Desk</td></tr>
+          <tr><td><span class="kbd">j</span> / <span class="kbd">k</span></td><td>Next / previous memory in Trust Desk</td></tr>
+          <tr><td><span class="kbd">h</span> / <span class="kbd">o</span> / <span class="kbd">c</span></td><td>Helpful / Outdated / Contradicted (disabled while SideSheet is open)</td></tr>
+          <tr><td><span class="kbd">Esc</span></td><td>Step back or close SideSheet</td></tr>
+        </table>
+      `;
+      foot.innerHTML = '<button class="btn" data-sheet-close="1" style="width:100%;">Close</button>';
+    }
+  }
+
+  document.addEventListener('click', async (e) => {
+    if (e.target.id === 'sheetBackdrop') { closeSheet(); return; }
+    if (e.target.closest('[data-sheet-close]')) { closeSheet(); return; }
+    if (e.target.closest('[data-sheet-pop]')) { state.sheetStack.pop(); renderSheet(); return; }
+    if (e.target.closest('[data-sheet-pop-or-close]')) {
+      if (state.sheetStack.length > 1) state.sheetStack.pop(); else state.sheetStack = [];
+      renderSheet();
+      return;
+    }
+
+    const vBtn = e.target.closest('[data-view]');
+    if (vBtn) { switchView(vBtn.dataset.view); return; }
+
+    if (e.target.closest('#btnTheme')) {
+      state.theme = state.theme === 'dark' ? 'light' : 'dark';
+      applyTheme();
+      return;
+    }
+    if (e.target.closest('#btnHelp')) {
+      state.sheetStack = [{ type: 'shortcuts', label: 'Shortcuts' }];
+      renderSheet();
+      return;
+    }
+    if (e.target.closest('#btnNewMemory') || e.target.closest('[data-open-remember]')) {
+      state.sheetStack = [];
+      pushRememberSheet();
+      return;
+    }
+
+    const ds = e.target.closest('[data-day-step]');
+    if (ds && state.evolution?.timeline) {
+      state.dayIndex = Math.max(0, Math.min(state.evolution.timeline.length - 1, state.dayIndex + Number(ds.dataset.dayStep)));
+      renderPulseStrip();
+      return;
+    }
+    const dj = e.target.closest('[data-day-jump]');
+    if (dj) { state.dayIndex = Number(dj.dataset.dayJump); renderPulseStrip(); return; }
+
+    const openDay = e.target.closest('[data-open-day]');
+    if (openDay) { openDaySheet(openDay.dataset.openDay); return; }
+
+    const bg = e.target.closest('[data-bgroup]');
+    if (bg) {
+      state.brain.groupBy = bg.dataset.bgroup;
+      $$('#brainGroupSeg button').forEach((b) => b.classList.toggle('active', b === bg));
+      initBrainCanvas();
+      return;
+    }
+    const bt = e.target.closest('[data-btoggle]');
+    if (bt) {
+      const k = bt.dataset.btoggle;
+      state.brain[k] = !state.brain[k];
+      bt.classList.toggle('btn-ok', state.brain[k] && (k === 'showExplicit' || k === 'showAuto'));
+      bt.classList.toggle('btn-accent', state.brain[k] && k === 'bridgesOnly');
+      bt.classList.toggle('btn-warn', state.brain[k] && k === 'highlightDay');
+      return;
+    }
+
+    const srcChip = e.target.closest('#sourceChips [data-source]');
+    if (srcChip) {
+      state.queue.source = srcChip.dataset.source;
+      state.queue.offset = 0;
+      $$('#sourceChips .chip').forEach((c) => c.classList.toggle('active', c === srcChip));
+      loadQueue(false);
+      return;
+    }
+    const stChip = e.target.closest('#statusChips [data-status]');
+    if (stChip) {
+      state.queue.status = stChip.dataset.status;
+      state.queue.offset = 0;
+      $$('#statusChips .chip').forEach((c) => c.classList.toggle('active', c === stChip));
+      loadQueue(false);
+      return;
+    }
+
+    const deckItem = e.target.closest('[data-deck-id]');
+    if (deckItem) { inspectInDesk(deckItem.dataset.deckId); return; }
+
+    const deskJump = e.target.closest('[data-desk-jump]');
+    if (deskJump) { inspectInDesk(deskJump.dataset.deskJump); return; }
+
+    const openMemSheet = e.target.closest('[data-open-mem-sheet]');
+    if (openMemSheet) { openMemorySheet(openMemSheet.dataset.openMemSheet, true); return; }
+
+    const pushMem = e.target.closest('[data-push-mem]');
+    if (pushMem) { openMemorySheet(pushMem.dataset.pushMem, false); return; }
+
+    const openSheet = e.target.closest('[data-open-sheet]');
+    if (openSheet) {
+      const t = openSheet.dataset.openSheet;
+      if (t === 'consolidate') openConsolidateSheet();
+      else { state.sheetStack = [{ type: t, label: t }]; renderSheet(); }
+      return;
+    }
+
+    const fb = e.target.closest('[data-fb]');
+    if (fb) { sendFeedback(fb.dataset.id, fb.dataset.fb); return; }
+
+    const openSup = e.target.closest('[data-open-supersede]');
+    if (openSup) {
+      const id = openSup.dataset.openSupersede;
+      const rec = state.inspected?.id === id ? state.inspected : await apiGet(`/api/records/${encodeURIComponent(id)}`).catch(() => null);
+      state.sheetStack = [];
+      pushSupersedeSheet(id, rec);
+      return;
+    }
+    const pushSup = e.target.closest('[data-push-supersede]');
+    if (pushSup) {
+      const top = state.sheetStack[state.sheetStack.length - 1];
+      pushSupersedeSheet(pushSup.dataset.pushSupersede, top?.record || null);
+      return;
+    }
+
+    const supMode = e.target.closest('[data-sup-mode]');
+    if (supMode) {
+      const top = state.sheetStack[state.sheetStack.length - 1];
+      if (top && top.type === 'supersede') { top.mode = supMode.dataset.supMode; renderSheet(); }
+      return;
+    }
+
+    const pickRep = e.target.closest('[data-pick-rep]');
+    if (pickRep && $('#supRepId')) { $('#supRepId').value = pickRep.dataset.pickRep; return; }
+
+    if (e.target.closest('#btnConfirmSupersede')) {
+      const top = state.sheetStack[state.sheetStack.length - 1];
+      if (!top || top.type !== 'supersede') return;
+      const oldId = top.id;
+      if (top.mode === 'link') {
+        const repId = ($('#supRepId')?.value || '').trim();
+        if (!repId) { toast('Select or paste a replacement ID', 'err'); return; }
+        try {
+          await apiPost('/api/feedback', { id: oldId, outcome: 'outdated', superseded_by: repId });
+          toast(`Marked ${oldId.slice(0,14)}… superseded by ${repId.slice(0,14)}…`, 'ok');
+          state.sheetStack = [];
+          renderSheet();
+          await Promise.all([loadCoreData(), loadQueue(false), state.brain.data ? loadBrainGraph() : Promise.resolve()]);
+          if (state.selectedId === oldId) inspectInDesk(oldId);
+        } catch (err) { toast(err.message, 'err'); }
+      } else {
+        try {
+          const res = await apiPost('/api/remember', {
+            title: $('#supNewTitle').value.trim(),
+            project: $('#supNewProj').value.trim(),
+            kind: $('#supNewKind').value,
+            agent: 'human-ui',
+            content: $('#supNewContent').value,
+            supersedes: [oldId],
+          });
+          const newId = res.remember?.id;
+          toast(`Saved replacement ${newId || ''} & superseded old rule`, 'ok');
+          state.sheetStack = [];
+          renderSheet();
+          await Promise.all([loadCoreData(), loadQueue(false), state.brain.data ? loadBrainGraph() : Promise.resolve()]);
+          if (newId) openMemorySheet(newId, true);
+        } catch (err) { toast(err.message, 'err'); }
+      }
+      return;
+    }
+
+    if (e.target.closest('#btnSubmitRemember')) {
+      await submitRememberSheet();
+      return;
+    }
+
+    if (e.target.closest('#btnSubmitMerge')) {
+      await submitMergeSheet();
+      return;
+    }
+
+    const openMerge = e.target.closest('[data-open-merge]');
+    if (openMerge) {
+      pushMergeSheet(openMerge.dataset.openMerge || '', '', true);
+      return;
+    }
+    const pushMerge = e.target.closest('[data-push-merge]');
+    if (pushMerge) {
+      pushMergeSheet(pushMerge.dataset.pushMerge || '', '', false);
+      return;
+    }
+    const delAlias = e.target.closest('[data-delete-alias]');
+    if (delAlias) {
+      await deleteProjectAlias(delAlias.dataset.deleteAlias);
+      return;
+    }
+
+    const promote = e.target.closest('[data-promote-idx]');
+    if (promote) {
+      const top = state.sheetStack[state.sheetStack.length - 1];
+      const c = top?.clusters?.[Number(promote.dataset.promoteIdx)];
+      if (!c) return;
+      const samples = (c.records || []).map((r) => `- ${r.title} (${r.id}, ${r.kind})`).join('\n');
+      pushRememberSheet({
+        modalTitle: `Promote Anchor: ${c.anchor}`,
+        title: `Rule for ${c.anchor}`,
+        project: (c.projects && c.projects.length === 1) ? c.projects[0] : '*',
+        kind: 'decision',
+        content: `Consolidated from ${c.distinct_conversations} sessions (${c.high_signal_records} high-signal) referencing \`${c.anchor}\`.\n\n### Invariant / Rule\n\n\n### Evidence\n${samples}`,
+      });
+      return;
+    }
+
+    const filterProj = e.target.closest('[data-filter-proj]');
+    if (filterProj) {
+      state.queue.project = filterProj.dataset.filterProj;
+      state.queue.source = 'all';
+      state.queue.status = 'all';
+      state.queue.kind = '';
+      state.queue.q = '';
+      state.queue.offset = 0;
+      $('#qProject').value = state.queue.project;
+      $('#qKind').value = '';
+      $('#qSearch').value = '';
+      $$('#sourceChips .chip').forEach((c) => c.classList.toggle('active', c.dataset.source === 'all'));
+      $$('#statusChips .chip').forEach((c) => c.classList.toggle('active', c.dataset.status === 'all'));
+      closeSheet();
+      switchView('desk');
+      loadQueue(true);
+      return;
+    }
+
+    const bm = e.target.closest('[data-body-mode]');
+    if (bm) {
+      state.bodyMode = bm.dataset.bodyMode;
+      const top = state.sheetStack[state.sheetStack.length - 1];
+      if (top && top.type === 'memory') renderSheet();
+      else if (state.inspected) $('#readingPane').innerHTML = renderRecordBodyHtml(state.inspected, false);
+      return;
+    }
+
+    const cp = e.target.closest('[data-copy-id]');
+    if (cp) {
+      navigator.clipboard?.writeText(cp.dataset.copyId).then(() => toast('Copied ID to clipboard')).catch(() => {});
+      return;
+    }
+
+    const simMode = e.target.closest('[data-sim-mode]');
+    if (simMode) {
+      state.simMode = simMode.dataset.simMode;
+      $$('#simModeCards .choice-card').forEach((c) => c.classList.toggle('active', c === simMode));
+      syncSimSourceLocks();
+      return;
+    }
+
+    if (e.target.closest('#btnDeskRelink')) {
+      if (!confirm('Rebuild automatic cross-session links across all eligible documents?')) return;
+      const btn = $('#btnDeskRelink');
+      btn.disabled = true; btn.textContent = 'Relinking…';
+      try {
+        const res = await apiPost('/api/relink', {});
+        toast(`Rebuilt ${fmtNum(res.auto_links_built)} auto-links`, 'ok');
+        await Promise.all([loadCoreData(), state.brain.data ? loadBrainGraph() : Promise.resolve()]);
+      } catch (err) { toast(err.message, 'err'); }
+      finally { btn.disabled = false; btn.textContent = '↻ Rebuild Auto-Links'; }
+      return;
+    }
+
+    const act = e.target.closest('[data-action]');
+    if (act) {
+      if (act.dataset.action === 'toggle-evo') { state.showEvolution = !state.showEvolution; renderPulseStrip(); }
+      else if (act.dataset.action === 'submit-quick-add') { submitQuickAdd(); }
+    }
+  });
+
+  $('#brainSource').addEventListener('change', (e) => { state.brain.source = e.target.value; loadBrainGraph(); });
+  $('#brainLimit').addEventListener('change', (e) => { state.brain.limit = Number(e.target.value); loadBrainGraph(); });
+  $('#brainSearch').addEventListener('input', (e) => { state.brain.search = e.target.value; });
+
+  let qTimer = null;
+  $('#qSearch').addEventListener('input', (e) => {
+    clearTimeout(qTimer);
+    qTimer = setTimeout(() => { state.queue.q = e.target.value.trim(); state.queue.offset = 0; loadQueue(false); }, 200);
+  });
+  $('#qProject').addEventListener('change', (e) => { state.queue.project = e.target.value; state.queue.offset = 0; loadQueue(false); });
+  $('#qKind').addEventListener('change', (e) => { state.queue.kind = e.target.value; state.queue.offset = 0; loadQueue(false); });
+  $('#qSort').addEventListener('change', (e) => { state.queue.sort = e.target.value; state.queue.offset = 0; loadQueue(false); });
+  $('#btnPrevPage').addEventListener('click', () => { state.queue.offset = Math.max(0, state.queue.offset - state.queue.limit); loadQueue(false); });
+  $('#btnNextPage').addEventListener('click', () => { if (state.queue.offset + state.queue.limit < state.queue.total) { state.queue.offset += state.queue.limit; loadQueue(false); } });
+
+  $('#quickAddInput').addEventListener('input', renderQuickAddChips);
+  $('#quickAddInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); submitQuickAdd(); } });
+
+  $('#simBudget').addEventListener('input', (e) => { $('#simBudgetLbl').textContent = e.target.value; });
+  $('#btnSimRun').addEventListener('click', runSimulation);
+  $('#simQuery').addEventListener('keydown', (e) => { if (e.key === 'Enter') runSimulation(); });
+
+  let supTimer = null;
+  document.addEventListener('input', (e) => {
+    if (e.target.id === 'mergeTo') {
+      const top = state.sheetStack[state.sheetStack.length - 1];
+      if (top && top.type === 'merge') top.to = e.target.value;
+      updateMergePreview();
+      return;
+    }
+    if (e.target.id === 'supSearch') {
+      clearTimeout(supTimer);
+      const q = e.target.value.trim();
+      const top = state.sheetStack[state.sheetStack.length - 1];
+      supTimer = setTimeout(async () => {
+        const box = $('#supSearchHits');
+        if (!box || !q) { if (box) box.innerHTML = ''; return; }
+        try {
+          const data = await apiGet(`/api/records?q=${encodeURIComponent(q)}&limit=8`);
+          const items = (data.items || []).filter((i) => i.id !== top?.id);
+          box.innerHTML = items.length === 0
+            ? '<div style="font-size:12px;color:var(--text-muted);">No matches.</div>'
+            : items.map((i) => `<button type="button" class="btn btn-sm" style="justify-content:flex-start;" data-pick-rep="${esc(i.id)}">${esc(displayTitle(i).slice(0,36))} · ${esc(i.id.slice(0,14))}</button>`).join('');
+        } catch (_) {}
+      }, 200);
+    }
+  });
+
+  document.addEventListener('change', (e) => {
+    if (e.target.id === 'mergeFrom' || e.target.id === 'mergeSubpaths' || e.target.id === 'mergeSaveAlias') {
+      const top = state.sheetStack[state.sheetStack.length - 1];
+      if (top && top.type === 'merge') {
+        if (e.target.id === 'mergeFrom') top.from = e.target.value;
+        if (e.target.id === 'mergeSubpaths') top.includeSubpaths = e.target.checked;
+        if (e.target.id === 'mergeSaveAlias') top.saveAlias = e.target.checked;
+      }
+      updateMergePreview();
+    }
+  });
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && state.sheetStack.length > 0) {
+      state.sheetStack.pop();
+      renderSheet();
+      return;
+    }
+    if (state.sheetStack.length > 0) return;
+    const tag = (e.target.tagName || '').toLowerCase();
+    if (tag === 'input' || tag === 'textarea' || tag === 'select' || e.metaKey || e.ctrlKey || e.altKey) return;
+
+    if (e.key === '1') { switchView('brain'); return; }
+    if (e.key === '2') { switchView('desk'); return; }
+    if (e.key === '3') { switchView('lens'); return; }
+    if (e.key === '?') { state.sheetStack = [{ type: 'shortcuts', label: 'Shortcuts' }]; renderSheet(); return; }
+    if (e.key === '/') { e.preventDefault(); switchView('desk'); $('#qSearch').focus(); return; }
+
+    if (state.view === 'desk') {
+      const items = state.queue.items;
+      const idx = items.findIndex((i) => i.id === state.selectedId);
+      if (e.key === 'j' && items.length > 0) {
+        const next = items[Math.min(items.length - 1, idx < 0 ? 0 : idx + 1)];
+        if (next) inspectInDesk(next.id);
+      } else if (e.key === 'k' && items.length > 0) {
+        const prev = items[Math.max(0, idx <= 0 ? 0 : idx - 1)];
+        if (prev) inspectInDesk(prev.id);
+      } else if (e.key === 'h' && state.selectedId && !state.inspected?.archived) {
+        sendFeedback(state.selectedId, 'helpful');
+      } else if (e.key === 'o' && state.selectedId && !state.inspected?.archived) {
+        sendFeedback(state.selectedId, 'outdated');
+      } else if (e.key === 'c' && state.selectedId && !state.inspected?.archived) {
+        sendFeedback(state.selectedId, 'contradicted');
+      }
+    }
+  });
+
+  window.addEventListener('resize', () => {
+    if (state.view === 'brain' && state.brain.data) initBrainCanvas();
+  });
+
+  (async () => {
+    applyTheme();
+    try {
+      await loadCoreData();
+      await loadBrainGraph();
+    } catch (err) {
+      toast(`Failed to load Iron Memory index: ${err.message}`, 'err');
+    }
+  })();
+})();
+</script>
+</body>
+</html>
