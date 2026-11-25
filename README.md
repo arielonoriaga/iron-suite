@@ -15,6 +15,21 @@ Iron Suite solves two recurring failures in agentic software engineering:
 
 ---
 
+## How Iron Suite Works
+
+<p align="center">
+  <img src="assets/iron-suite-architecture.png" alt="Iron Suite Architecture — Sources & Capture, Iron Core SQLite FTS5 Engine, Native Agent Runtimes + Adversarial Harness, Human Second Brain UI, and Closed Self-Correction Loop" width="100%" />
+</p>
+
+Iron Suite is designed around a **native-runtime, closed-loop architecture** — it augments your existing coding agents (Claude Code, Codex, Cursor, Antigravity) directly over `stdio` MCP and modular skills rather than wrapping them inside a heavyweight Python orchestration framework or syncing code to a hosted vector cloud:
+
+1. **Read-Only Sources & Pre-Index Safety Gate:** Curated Markdown notes (`MEMORY.md`, project rules), optional session history (`Cavemem`), and replay-safe native notes (`memory_remember`) pass through a deterministic **Privacy Scrubber** (`<private>` spans, PEM keys, bearer tokens, credential assignments) and a private **`0600` `aliases.json`** project-normalization layer before anything is hashed or indexed. Source files on disk are never mutated by imports.
+2. **Authoritative Local Core (`memory.db` + `archive.db`):** A single local SQLite v2 WAL database indexes text with `unicode61` FTS5 and 32-byte SHA-256 deduplicated bodies, keeping hot curated rules fast while pushing older session logs into a read-only cold `archive.db` fallback. Ranking combines **BM25**, bounded **Hebbian reinforcement** (`uses + 2× confirms`), and **supersession decay (`0.15×`)** inside a hard serialized UTF-8 byte budget (`--max-bytes`) that always distinguishes `truncated: true` from `no_match: true`. Cross-session linking combines explicit Markdown `references`/`supersedes` edges with high-IDF `shares_anchor` links across shared files, symbols, and CWEs.
+3. **Native AI Runtimes & Adversarial `iron-*` Harness:** Coding agents connect via `iron mcp` (local `stdio` or plain `ssh` to a single workstation hub) with **role-scoped retrieval** (`developer` sees curated + native + history; `reviewer` sees curated Markdown only; `verifier` inspects independently). The `iron-*` skills enforce bounded implementation (`irondev`), fresh-context adversarial review (`irondev-review`), `1 -> N` vulnerability sweeps (`iron-hunt`), profiling (`iron-perf`), debugging (`iron-debug`), and audits (`iron-audit`) — backpropagating verified invariants into memory.
+4. **Human Second Brain Workbench (`iron ui`) & Closed Self-Correction Loop:** Because agent memory silently drifts if nobody inspects it, `iron ui` embeds a zero-dependency local HTTP/1.1 workbench (`Host`-allowlisted, CSRF-protected, strictly read-only on inspection) with an interactive **Second Brain** orbital graph, **Today & 14-Day Evolution Rates** (Signal-to-Noise lift, Verification Coverage, Native Velocity, Self-Correction), a **Trust Desk** (`Still True` / `Update & Supersede` / `Contradicted`), an **Agent Lens** retrieval simulator, and one-click **Project Merge / Rename (`aliases.json`)**. Every confirmation, supersession, correction, or project merge feeds directly back into the SQLite ranking engine and alias layer so your second brain compounds signal over time.
+
+---
+
 ## Quick Install
 
 ### One-Command Install (Binary + Skills + Agents + Claude MCP)

@@ -1,0 +1,258 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="860" viewBox="0 0 1440 860" role="img" aria-labelledby="title desc">
+  <title id="title">Iron Suite Architecture — Zero-Cloud Second Brain and Adversarial Engineering Harness</title>
+  <desc id="desc">System graph showing how curated Markdown, session history, and native rules flow through privacy scrubbing and project aliases into a local SQLite FTS5 store, serving native coding agents via stdio MCP and humans via the Second Brain Web UI in a closed verification loop.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="0.8">
+      <stop offset="0%" stop-color="#09101D"/>
+      <stop offset="100%" stop-color="#111C2E"/>
+    </linearGradient>
+    <linearGradient id="coreGlow" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#1D2B40"/>
+      <stop offset="100%" stop-color="#111B2B"/>
+    </linearGradient>
+    <linearGradient id="orangeLine" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#E8622C"/>
+      <stop offset="100%" stop-color="#F7BF2E"/>
+    </linearGradient>
+    <linearGradient id="feedbackGrad" x1="1" y1="0" x2="0" y2="0">
+      <stop offset="0%" stop-color="#F7BF2E"/>
+      <stop offset="50%" stop-color="#019F68"/>
+      <stop offset="100%" stop-color="#14B8A6"/>
+    </linearGradient>
+    <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse">
+      <path d="M32 0H0V32" fill="none" stroke="#70869C" stroke-opacity="0.11"/>
+    </pattern>
+    <marker id="arrowBlue" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 1 L9 5 L0 9 z" fill="#60A5FA"/>
+    </marker>
+    <marker id="arrowTeal" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 1 L9 5 L0 9 z" fill="#2DD4BF"/>
+    </marker>
+    <marker id="arrowGold" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 1 L9 5 L0 9 z" fill="#F7BF2E"/>
+    </marker>
+    <marker id="arrowGreen" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 1 L9 5 L0 9 z" fill="#34D399"/>
+    </marker>
+  </defs>
+
+  <!-- Background & Technical Grid -->
+  <rect width="1440" height="860" fill="url(#bg)"/>
+  <rect width="1440" height="860" fill="url(#grid)"/>
+  <!-- Corner Registration Marks -->
+  <path d="M22 32V20H34 M1406 20H1418V32 M22 828V840H34 M1406 840H1418V828" fill="none" stroke="#6B7E92" stroke-width="1.4"/>
+
+  <!-- Header -->
+  <g id="header">
+    <rect x="44" y="34" width="494" height="28" rx="3" fill="#162233" stroke="#3F5269"/>
+    <rect x="44" y="34" width="4" height="28" fill="#E8622C"/>
+    <text x="60" y="53" font-family="GeistMono Nerd Font Mono, monospace" font-size="12.5" font-weight="600" fill="#EDF2F8">IRON SUITE ARCHITECTURE · ZERO-CLOUD · RUST · SQLITE FTS5</text>
+
+    <text x="44" y="96" font-family="Adwaita Sans, sans-serif" font-size="32" font-weight="800" letter-spacing="-0.8" fill="#F4F5EF">From Raw Agent Work to a Verified Second Brain</text>
+    <text x="44" y="120" font-family="Adwaita Sans, sans-serif" font-size="15.5" fill="#9CB0C9">Deterministic local indexing, byte-bounded stdio MCP, interactive verification UI, and fresh-context adversarial skills.</text>
+
+    <!-- Legend pills -->
+    <g transform="translate(888, 38)">
+      <rect x="0" y="0" width="122" height="26" rx="13" fill="#132238" stroke="#3B82F6" stroke-opacity="0.6"/>
+      <circle cx="16" cy="13" r="4" fill="#3B82F6"/>
+      <text x="27" y="17.5" font-family="GeistMono Nerd Font Mono, monospace" font-size="11.5" fill="#DCE6F2">1. Ingest</text>
+
+      <rect x="132" y="0" width="122" height="26" rx="13" fill="#2A1916" stroke="#E8622C" stroke-opacity="0.7"/>
+      <circle cx="148" cy="13" r="4" fill="#E8622C"/>
+      <text x="159" y="17.5" font-family="GeistMono Nerd Font Mono, monospace" font-size="11.5" fill="#DCE6F2">2. Core DB</text>
+
+      <rect x="264" y="0" width="118" height="26" rx="13" fill="#10292B" stroke="#14B8A6" stroke-opacity="0.7"/>
+      <circle cx="280" cy="13" r="4" fill="#14B8A6"/>
+      <text x="291" y="17.5" font-family="GeistMono Nerd Font Mono, monospace" font-size="11.5" fill="#DCE6F2">3. Agents</text>
+
+      <rect x="392" y="0" width="116" height="26" rx="13" fill="#2B2414" stroke="#F7BF2E" stroke-opacity="0.7"/>
+      <circle cx="408" cy="13" r="4" fill="#F7BF2E"/>
+      <text x="419" y="17.5" font-family="GeistMono Nerd Font Mono, monospace" font-size="11.5" fill="#DCE6F2">4. Verify</text>
+    </g>
+  </g>
+
+  <!-- COLUMN 1: SOURCES & INGESTION -->
+  <g id="col-sources">
+    <rect x="44" y="144" width="308" height="532" rx="10" fill="#101B2B" stroke="#334862" stroke-width="1.3"/>
+    <path d="M45 144H142" stroke="#3B82F6" stroke-width="3.5"/>
+    <text x="62" y="174" font-family="GeistMono Nerd Font Mono, monospace" font-size="12" font-weight="700" fill="#60A5FA">01 // SOURCES &amp; CAPTURE</text>
+    <text x="62" y="194" font-family="Adwaita Sans, sans-serif" font-size="13" fill="#9CB0C9">Read-only source import + durable writes</text>
+
+    <!-- Source Card 1 -->
+    <rect x="62" y="212" width="272" height="82" rx="7" fill="#162336" stroke="#2D4461"/>
+    <circle cx="80" cy="234" r="5" fill="#3B82F6"/>
+    <text x="94" y="239" font-family="Adwaita Sans, sans-serif" font-size="15.5" font-weight="700" fill="#F4F5EF">Curated Markdown</text>
+    <text x="76" y="261" font-family="Adwaita Sans, sans-serif" font-size="12.5" fill="#B6C7DC">MEMORY.md &amp; project knowledge notes</text>
+    <text x="76" y="280" font-family="GeistMono Nerd Font Mono, monospace" font-size="11" fill="#7D96B5">2.0× base rank · explicit [[links]]</text>
+
+    <!-- Source Card 2 -->
+    <rect x="62" y="308" width="272" height="82" rx="7" fill="#162336" stroke="#2D4461"/>
+    <circle cx="80" cy="330" r="5" fill="#8B5CF6"/>
+    <text x="94" y="335" font-family="Adwaita Sans, sans-serif" font-size="15.5" font-weight="700" fill="#F4F5EF">Session History</text>
+    <text x="76" y="357" font-family="Adwaita Sans, sans-serif" font-size="12.5" fill="#B6C7DC">Read-only Cavemem &amp; session logs</text>
+    <text x="76" y="376" font-family="GeistMono Nerd Font Mono, monospace" font-size="11" fill="#7D96B5">1.0× rank · excluded from reviewers</text>
+
+    <!-- Source Card 3 -->
+    <rect x="62" y="404" width="272" height="82" rx="7" fill="#162336" stroke="#2D4461"/>
+    <circle cx="80" cy="426" r="5" fill="#E8622C"/>
+    <text x="94" y="431" font-family="Adwaita Sans, sans-serif" font-size="15.5" font-weight="700" fill="#F4F5EF">Native Rules &amp; Corrections</text>
+    <text x="76" y="453" font-family="Adwaita Sans, sans-serif" font-size="12.5" fill="#B6C7DC">memory_remember + supersedes:[...]</text>
+    <text x="76" y="472" font-family="GeistMono Nerd Font Mono, monospace" font-size="11" fill="#F19D6E">2.2× correction boost · replay-safe</text>
+
+    <!-- Security & Normalization Gate -->
+    <rect x="62" y="504" width="272" height="154" rx="8" fill="#132433" stroke="#14B8A6" stroke-opacity="0.7" stroke-dasharray="5 3"/>
+    <text x="76" y="528" font-family="GeistMono Nerd Font Mono, monospace" font-size="11.5" font-weight="700" fill="#2DD4BF">PRE-INDEX SAFETY &amp; ALIAS GATE</text>
+    <text x="76" y="553" font-family="Adwaita Sans, sans-serif" font-size="13" font-weight="700" fill="#F4F5EF">• Privacy Scrubber</text>
+    <text x="86" y="571" font-family="Adwaita Sans, sans-serif" font-size="12" fill="#9CB0C9">Strips &lt;private&gt;, PEM keys, bearer</text>
+    <text x="86" y="587" font-family="Adwaita Sans, sans-serif" font-size="12" fill="#9CB0C9">tokens &amp; secrets before hashing.</text>
+    <text x="76" y="613" font-family="Adwaita Sans, sans-serif" font-size="13" font-weight="700" fill="#F4F5EF">• Persistent aliases.json (0600)</text>
+    <text x="86" y="631" font-family="Adwaita Sans, sans-serif" font-size="12" fill="#9CB0C9">Flattens renamed projects &amp; worktrees</text>
+    <text x="86" y="647" font-family="Adwaita Sans, sans-serif" font-size="12" fill="#9CB0C9">with zero SQLite schema changes.</text>
+  </g>
+
+  <!-- COLUMN 2: AUTHORITATIVE LOCAL CORE -->
+  <g id="col-core">
+    <rect x="412" y="144" width="436" height="532" rx="10" fill="url(#coreGlow)" stroke="#E8622C" stroke-width="1.6" stroke-opacity="0.8"/>
+    <path d="M413 144H568" stroke="url(#orangeLine)" stroke-width="4"/>
+    <text x="432" y="174" font-family="GeistMono Nerd Font Mono, monospace" font-size="12" font-weight="700" fill="#FF9666">02 // IRON CORE ENGINE (ZERO-CLOUD RUST)</text>
+    <text x="432" y="194" font-family="Adwaita Sans, sans-serif" font-size="12.2" fill="#B6C7DC">Single authoritative local store — zero vector DBs, zero hosted APIs</text>
+
+    <!-- Core Sub-box 1: SQLite WAL + Archive -->
+    <rect x="432" y="212" width="396" height="106" rx="8" fill="#101A29" stroke="#425874"/>
+    <text x="448" y="236" font-family="Adwaita Sans, sans-serif" font-size="15.5" font-weight="700" fill="#F4F5EF">SQLite FTS5 + WAL Storage Tiering</text>
+    <rect x="748" y="220" width="66" height="22" rx="11" fill="#2B1C17" stroke="#E8622C" stroke-opacity="0.7"/>
+    <text x="781" y="235" text-anchor="middle" font-family="GeistMono Nerd Font Mono, monospace" font-size="10.5" fill="#FFA676">v2 WAL</text>
+    <text x="448" y="259" font-family="Adwaita Sans, sans-serif" font-size="11.6" fill="#B6C7DC">• Hot <tspan font-family="GeistMono Nerd Font Mono, monospace" fill="#EDF2F8">memory.db</tspan>: unicode61 FTS5 + SHA-256 deduped bodies</text>
+    <text x="448" y="279" font-family="Adwaita Sans, sans-serif" font-size="11.6" fill="#B6C7DC">• Cold <tspan font-family="GeistMono Nerd Font Mono, monospace" fill="#EDF2F8">archive.db</tspan>: read-only historical fallback store</text>
+    <text x="448" y="299" font-family="Adwaita Sans, sans-serif" font-size="11.6" fill="#B6C7DC">• Online <tspan font-family="GeistMono Nerd Font Mono, monospace" fill="#EDF2F8">iron memory backup</tspan> snapshots (0600, safe)</text>
+
+    <!-- Core Sub-box 2: Deterministic Ranking & Byte Budget -->
+    <rect x="432" y="332" width="396" height="112" rx="8" fill="#101A29" stroke="#425874"/>
+    <text x="448" y="356" font-family="Adwaita Sans, sans-serif" font-size="15.5" font-weight="700" fill="#F4F5EF">Deterministic Ranking &amp; Byte Budgets</text>
+    <rect x="448" y="368" width="364" height="26" rx="5" fill="#18263A" stroke="#304866"/>
+    <text x="630" y="385" text-anchor="middle" font-family="GeistMono Nerd Font Mono, monospace" font-size="11" fill="#93C5FD">BM25 × Hebbian(uses + 2·confirms) × Decay(0.15×)</text>
+    <text x="448" y="414" font-family="Adwaita Sans, sans-serif" font-size="11.6" fill="#B6C7DC">• Hard UTF-8 <tspan font-family="GeistMono Nerd Font Mono, monospace" fill="#EDF2F8">--max-bytes</tspan> ceiling on serialized JSON</text>
+    <text x="448" y="433" font-family="Adwaita Sans, sans-serif" font-size="11.6" fill="#B6C7DC">• Explicitly separates <tspan font-family="GeistMono Nerd Font Mono, monospace" fill="#F7BF2E">truncated</tspan> from <tspan font-family="GeistMono Nerd Font Mono, monospace" fill="#9CB0C9">no_match</tspan></text>
+
+    <!-- Core Sub-box 3: Auto-Linker & Consolidation -->
+    <rect x="432" y="458" width="396" height="104" rx="8" fill="#101A29" stroke="#425874"/>
+    <text x="448" y="482" font-family="Adwaita Sans, sans-serif" font-size="15.5" font-weight="700" fill="#F4F5EF">Cross-Session Knowledge Graph</text>
+    <text x="448" y="505" font-family="Adwaita Sans, sans-serif" font-size="11.6" fill="#B6C7DC">• Explicit Markdown <tspan font-family="GeistMono Nerd Font Mono, monospace" fill="#60A5FA">references</tspan> &amp; <tspan font-family="GeistMono Nerd Font Mono, monospace" fill="#FFA676">supersedes</tspan> chains</text>
+    <text x="448" y="525" font-family="Adwaita Sans, sans-serif" font-size="11.6" fill="#B6C7DC">• High-IDF <tspan font-family="GeistMono Nerd Font Mono, monospace" fill="#2DD4BF">shares_anchor</tspan> links (files, symbols, CWE)</text>
+    <text x="448" y="545" font-family="Adwaita Sans, sans-serif" font-size="11.6" fill="#B6C7DC">• <tspan font-family="GeistMono Nerd Font Mono, monospace" fill="#EDF2F8">consolidate</tspan> surfaces recurring cross-session fixes</text>
+
+    <!-- Core Sub-box 4: Multi-Machine Hub Note -->
+    <rect x="432" y="576" width="396" height="82" rx="8" fill="#142336" stroke="#3B82F6" stroke-opacity="0.55"/>
+    <text x="448" y="600" font-family="GeistMono Nerd Font Mono, monospace" font-size="11.2" font-weight="700" fill="#93C5FD">MULTI-MACHINE SHARED HUB OVER PLAIN SSH</text>
+    <text x="448" y="622" font-family="Adwaita Sans, sans-serif" font-size="11.6" fill="#CAD7E6">One workstation holds the canonical DB; laptops &amp; devboxes</text>
+    <text x="448" y="641" font-family="Adwaita Sans, sans-serif" font-size="11.6" fill="#CAD7E6">connect via <tspan font-family="GeistMono Nerd Font Mono, monospace" fill="#EDF2F8">ssh desktop .local/bin/iron mcp</tspan> — zero drift.</text>
+  </g>
+
+  <!-- COLUMN 3 TOP: NATIVE AGENTS & ADVERSARIAL HARNESS -->
+  <g id="col-agents">
+    <rect x="908" y="144" width="488" height="254" rx="10" fill="#101E2B" stroke="#14B8A6" stroke-width="1.4" stroke-opacity="0.75"/>
+    <path d="M909 144H1038" stroke="#14B8A6" stroke-width="3.5"/>
+    <text x="926" y="173" font-family="GeistMono Nerd Font Mono, monospace" font-size="12" font-weight="700" fill="#2DD4BF">03 // NATIVE AI RUNTIMES + IRON-* HARNESS</text>
+
+    <!-- Client badges -->
+    <g transform="translate(926, 188)">
+      <rect x="0" y="0" width="106" height="26" rx="13" fill="#162939" stroke="#3F5D78"/>
+      <text x="53" y="17.5" text-anchor="middle" font-family="GeistMono Nerd Font Mono, monospace" font-size="11.5" fill="#EDF2F8">Claude Code</text>
+      <rect x="114" y="0" width="70" height="26" rx="13" fill="#162939" stroke="#3F5D78"/>
+      <text x="149" y="17.5" text-anchor="middle" font-family="GeistMono Nerd Font Mono, monospace" font-size="11.5" fill="#EDF2F8">Codex</text>
+      <rect x="192" y="0" width="76" height="26" rx="13" fill="#162939" stroke="#3F5D78"/>
+      <text x="230" y="17.5" text-anchor="middle" font-family="GeistMono Nerd Font Mono, monospace" font-size="11.5" fill="#EDF2F8">Cursor</text>
+      <rect x="276" y="0" width="108" height="26" rx="13" fill="#162939" stroke="#3F5D78"/>
+      <text x="330" y="17.5" text-anchor="middle" font-family="GeistMono Nerd Font Mono, monospace" font-size="11.5" fill="#EDF2F8">Antigravity</text>
+      <text x="394" y="17" font-family="GeistMono Nerd Font Mono, monospace" font-size="10.5" fill="#2DD4BF">stdio MCP</text>
+    </g>
+
+    <!-- 5 MCP tools bar -->
+    <rect x="926" y="226" width="452" height="54" rx="7" fill="#142334" stroke="#2D445E"/>
+    <text x="940" y="247" font-family="GeistMono Nerd Font Mono, monospace" font-size="11" font-weight="700" fill="#93C5FD">5 MCP TOOLS · ROLE-SCOPED (developer / reviewer / verifier)</text>
+    <text x="940" y="268" font-family="GeistMono Nerd Font Mono, monospace" font-size="10.8" fill="#DCE6F2">memory_search · memory_get · memory_related · remember · feedback</text>
+
+    <!-- Adversarial skills pipeline -->
+    <rect x="926" y="292" width="452" height="90" rx="7" fill="#142334" stroke="#2D445E"/>
+    <text x="940" y="313" font-family="GeistMono Nerd Font Mono, monospace" font-size="11" font-weight="700" fill="#FFA676">7 ADVERSARIAL SKILLS &amp; 7 ROLE-ISOLATED SUBAGENTS</text>
+    <!-- Mini pipeline pills -->
+    <g transform="translate(940, 326)">
+      <rect x="0" y="0" width="84" height="24" rx="5" fill="#1E3048" stroke="#60A5FA"/>
+      <text x="42" y="16" text-anchor="middle" font-family="GeistMono Nerd Font Mono, monospace" font-size="11" fill="#F4F5EF">irondev</text>
+      <text x="91" y="16" font-family="Adwaita Sans, sans-serif" font-size="13" fill="#7D96B5">→</text>
+      <rect x="106" y="0" width="124" height="24" rx="5" fill="#2F1E1A" stroke="#E8622C"/>
+      <text x="168" y="16" text-anchor="middle" font-family="GeistMono Nerd Font Mono, monospace" font-size="11" fill="#F4F5EF">irondev-review</text>
+      <text x="237" y="16" font-family="Adwaita Sans, sans-serif" font-size="13" fill="#7D96B5">→</text>
+      <rect x="252" y="0" width="172" height="24" rx="5" fill="#122B24" stroke="#34D399"/>
+      <text x="338" y="16" text-anchor="middle" font-family="GeistMono Nerd Font Mono, monospace" font-size="11" fill="#F4F5EF">verify &amp; backprop</text>
+    </g>
+    <text x="940" y="370" font-family="Adwaita Sans, sans-serif" font-size="11.2" fill="#9CB0C9">Specialists: <tspan font-family="GeistMono Nerd Font Mono, monospace" fill="#DCE6F2">iron-hunt</tspan> (1→N) · <tspan font-family="GeistMono Nerd Font Mono, monospace" fill="#DCE6F2">iron-debug</tspan> · <tspan font-family="GeistMono Nerd Font Mono, monospace" fill="#DCE6F2">iron-perf</tspan> · <tspan font-family="GeistMono Nerd Font Mono, monospace" fill="#DCE6F2">iron-audit</tspan></text>
+  </g>
+
+  <!-- COLUMN 3 BOTTOM: HUMAN SECOND BRAIN UI (iron ui) -->
+  <g id="col-ui">
+    <rect x="908" y="422" width="488" height="254" rx="10" fill="#141E2E" stroke="#F7BF2E" stroke-width="1.4" stroke-opacity="0.75"/>
+    <path d="M909 422H1038" stroke="#F7BF2E" stroke-width="3.5"/>
+    <text x="926" y="451" font-family="GeistMono Nerd Font Mono, monospace" font-size="12" font-weight="700" fill="#F7BF2E">04 // HUMAN SECOND BRAIN WORKBENCH (iron ui)</text>
+    <text x="926" y="471" font-family="Adwaita Sans, sans-serif" font-size="12.5" fill="#9CB0C9">Pure-std HTTP/1.1 · Host allowlist + CSRF guard · strictly read-only inspect</text>
+
+    <!-- 2x2 feature grid -->
+    <!-- Top-Left: Second Brain Graph -->
+    <rect x="926" y="486" width="220" height="82" rx="7" fill="#111C2D" stroke="#354B66"/>
+    <circle cx="944" cy="508" r="5" fill="#14B8A6"/>
+    <text x="956" y="513" font-family="Adwaita Sans, sans-serif" font-size="14" font-weight="700" fill="#F4F5EF">Second Brain Graph</text>
+    <text x="938" y="534" font-family="Adwaita Sans, sans-serif" font-size="12" fill="#B6C7DC">Orbital Project, Link &amp; Trust</text>
+    <text x="938" y="551" font-family="Adwaita Sans, sans-serif" font-size="12" fill="#B6C7DC">zones + Day Growth Halos</text>
+
+    <!-- Top-Right: 14d Evolution -->
+    <rect x="1158" y="486" width="220" height="82" rx="7" fill="#111C2D" stroke="#354B66"/>
+    <circle cx="1176" cy="508" r="5" fill="#3B82F6"/>
+    <text x="1188" y="513" font-family="Adwaita Sans, sans-serif" font-size="14" font-weight="700" fill="#F4F5EF">14d Evolution &amp; Rates</text>
+    <text x="1170" y="534" font-family="Adwaita Sans, sans-serif" font-size="12" fill="#B6C7DC">Today time-travel, Signal lift,</text>
+    <text x="1170" y="551" font-family="Adwaita Sans, sans-serif" font-size="12" fill="#B6C7DC">Verification % &amp; Self-Correction</text>
+
+    <!-- Bottom-Left: Trust Desk -->
+    <rect x="926" y="580" width="220" height="82" rx="7" fill="#111C2D" stroke="#354B66"/>
+    <circle cx="944" cy="602" r="5" fill="#019F68"/>
+    <text x="956" y="607" font-family="Adwaita Sans, sans-serif" font-size="14" font-weight="700" fill="#F4F5EF">Trust Desk</text>
+    <text x="938" y="628" font-family="Adwaita Sans, sans-serif" font-size="12" fill="#B6C7DC">Verify Still True / Supersede /</text>
+    <text x="938" y="645" font-family="Adwaita Sans, sans-serif" font-size="12" fill="#B6C7DC">Contradicted + duplicate radar</text>
+
+    <!-- Bottom-Right: Agent Lens & Merge -->
+    <rect x="1158" y="580" width="220" height="82" rx="7" fill="#111C2D" stroke="#354B66"/>
+    <circle cx="1176" cy="602" r="5" fill="#E8622C"/>
+    <text x="1188" y="607" font-family="Adwaita Sans, sans-serif" font-size="14" font-weight="700" fill="#F4F5EF">Agent Lens &amp; Merge</text>
+    <text x="1170" y="628" font-family="Adwaita Sans, sans-serif" font-size="12" fill="#B6C7DC">Live role/byte-budget simulator</text>
+    <text x="1170" y="645" font-family="Adwaita Sans, sans-serif" font-size="12" fill="#B6C7DC">&amp; one-click project merge UI</text>
+  </g>
+
+  <!-- FORWARD DATAFLOW ARROWS -->
+  <!-- Sources -> Core -->
+  <path d="M352 408 H406" fill="none" stroke="#60A5FA" stroke-width="2.6" marker-end="url(#arrowBlue)"/>
+  <text x="382" y="397" text-anchor="middle" font-family="GeistMono Nerd Font Mono, monospace" font-size="10.5" fill="#93C5FD">import</text>
+
+  <!-- Core -> Agents (MCP) -->
+  <path d="M848 274 H902" fill="none" stroke="#2DD4BF" stroke-width="2.6" marker-end="url(#arrowTeal)"/>
+  <text x="878" y="263" text-anchor="middle" font-family="GeistMono Nerd Font Mono, monospace" font-size="10.5" fill="#2DD4BF">MCP</text>
+
+  <!-- Core -> Human UI -->
+  <path d="M848 548 H902" fill="none" stroke="#F7BF2E" stroke-width="2.6" marker-end="url(#arrowGold)"/>
+  <text x="878" y="537" text-anchor="middle" font-family="GeistMono Nerd Font Mono, monospace" font-size="10.5" fill="#F7BF2E">HTTP</text>
+
+  <!-- CLOSED FEEDBACK & SELF-CORRECTION LOOP (Bottom Bus) -->
+  <g id="feedback-loop">
+    <path d="M1152 676 V734 H198 V682" fill="none" stroke="url(#feedbackGrad)" stroke-width="2.6" stroke-dasharray="8 5" marker-end="url(#arrowGreen)"/>
+    <!-- Branch up into Core DB ranking/feedback -->
+    <path d="M630 734 V682" fill="none" stroke="#34D399" stroke-width="2.6" stroke-dasharray="6 4" marker-end="url(#arrowGreen)"/>
+
+    <rect x="266" y="714" width="844" height="38" rx="19" fill="#0F2622" stroke="#34D399" stroke-width="1.3"/>
+    <text x="688" y="738" text-anchor="middle" font-family="GeistMono Nerd Font Mono, monospace" font-size="12" font-weight="600" fill="#A7F3D0">CLOSED SELF-CORRECTION LOOP · confirms (+boost) · supersedes (0.15×) · merge-project (aliases.json) · backprop</text>
+  </g>
+
+  <!-- Footer -->
+  <g id="footer">
+    <path d="M44 794H1396" stroke="#32465D"/>
+    <text x="44" y="824" font-family="GeistMono Nerd Font Mono, monospace" font-size="13" fill="#9CB0C9">NATIVE HARNESS ARCHITECTURE · ZERO VECTOR DB · ZERO CLOUD LOCK-IN · MIT LICENSE</text>
+    <text x="1396" y="824" text-anchor="end" font-family="GeistMono Nerd Font Mono, monospace" font-size="15" font-weight="600" fill="#EDF2F8">github.com/arielonoriaga/iron-suite</text>
+  </g>
+</svg>
