@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/iron-suite-cover.png" alt="Iron Suite — Turn AI coding agents into a senior engineer you can trust" width="100%" />
+</p>
+
 # Iron Suite
 
 **Zero-cloud SQLite FTS5 + stdio MCP memory hub (`iron`) and adversarial multi-agent engineering skills (`iron-*`) for Claude Code, Codex, Cursor, and Antigravity.**

@@ -1,0 +1,87 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640" role="img" aria-labelledby="title description">
+<title id="title">Iron Suite</title><desc id="description">Ariel Onoriaga’s open-source AI engineering harness. Local memory and an adversarial review gate turn agent work into verified code.</desc>
+<defs>
+ <linearGradient id="slate" x2="1" y2="0.7" gradientUnits="objectBoundingBox"><stop stop-color="#0B1220"/><stop offset="1" stop-color="#111C2D"/></linearGradient>
+ <linearGradient id="web"><stop stop-color="#456078"/><stop offset="0.45" stop-color="#263b51"/><stop offset="1" stop-color="#465d70"/></linearGradient>
+ <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse"><path d="M32 0H0V32" fill="none" stroke="#70869c" stroke-opacity=".12"/></pattern>
+ <pattern id="ruling" width="11" height="5" patternUnits="userSpaceOnUse"><path d="M0 0v4" stroke="#8294a8"/></pattern>
+</defs>
+<rect width="1280" height="640" fill="url(#slate)"/><rect width="1280" height="640" fill="url(#grid)"/>
+<path d="M22 30v-9h9 M1249 21h9v9 M22 610v9h9 M1249 619h9v-9" fill="none" stroke="#6b7e92"/>
+<g id="identity"><rect x="48" y="47" width="334" height="30" rx="3" stroke="#485564" fill="#182331"/><rect x="48" y="47" width="4" height="30" fill="#E8622C"/>
+<text x="65" y="67" font-family="GeistMono Nerd Font Mono, monospace" font-size="13" font-weight="600" letter-spacing="0" fill="#F4F5EF">OPEN SOURCE · RUST · STDIO MCP · MIT</text>
+<text x="42" y="190" font-family="Adwaita Sans, sans-serif" font-size="112" font-weight="900" letter-spacing="-5" fill="#F4F5EF">IRON SUITE</text>
+<text x="48" y="257" font-family="Adwaita Sans, sans-serif" font-size="38" font-weight="600" letter-spacing="-1" fill="#F4F5EF">Turn AI coding agents into</text>
+<text x="48" y="306" font-family="Adwaita Sans, sans-serif" font-size="38" font-weight="600" letter-spacing="-1" fill="#F4F5EF">a senior engineer you can trust.</text>
+<path d="M48 347h56" stroke="#E8622C" stroke-width="4" fill="none" />
+<rect x="116" y="345" width="128" height="5" fill="url(#ruling)"/></g>
+<g id="architecture"><path d="M699 48v304" fill="none" stroke="#394859"/>
+<text x="738" y="73" font-family="Adwaita Sans, sans-serif" font-size="18" font-weight="550" letter-spacing="0" fill="#CDD9E7">Claude / Codex / Cursor / Antigravity</text>
+<path d="M739 89h152v24m-5 -6 5 6 5 -6" stroke="#699BEA" stroke-width="1.7" fill="none" />
+<g id="forged-i-beam" transform="translate(745 111)">
+<path d="M3 139 149 81 233 117 87 176Z" stroke="#7491a6" stroke-width="1.4" fill="#42586B" />
+<path d="M3 139 87 176v14L3 153Z" stroke="#89a0b3" stroke-width="1" fill="#5a7183" />
+<path d="M87 176 233 117v14L87 190Z" stroke="#7491a6" stroke-width="1" fill="#23374a" />
+<path d="M40 85 56 92v57l-16 -7Z" stroke="#8ea4b3" stroke-width="1" fill="#6e8594" />
+<path d="M56 92 202 34v58L56 150Z" stroke="#718a9e" stroke-width="1" fill="url(#web)" />
+<path d="M69 136l10 -18" stroke="#9bb0bf" stroke-width="1.3" fill="none" />
+<path d="M74 134l10 -18" stroke="#9bb0bf" stroke-width="1.3" fill="none" />
+<path d="M79 132l10 -18" stroke="#9bb0bf" stroke-width="1.3" fill="none" />
+<path d="M3 62 87 99v14L3 76Z" stroke="#f19d6e" stroke-width="1.2" fill="#AE4928" />
+<path d="M87 99 233 40v14L87 113Z" stroke="#e18a5a" stroke-width="1.2" fill="#773922" />
+<polygon points="3,62 149,4 233,40 87,99" fill="#e8622c" stroke="#ffa676" stroke-width="1.6"/>
+<path d="M19 62 149 10 216 39" stroke="#FFC198" stroke-width="1" fill="none" />
+<path d="M89 62l19 -22 12 -5 -19 22z M109 54l19 -22 12 -5 -19 22z" stroke="none" stroke-width="0" fill="#7b391f" />
+</g>
+<text x="1015" y="160" font-family="Adwaita Sans, sans-serif" font-size="28" font-weight="720" letter-spacing="-0.8" fill="#F4F5EF">Iron Harness</text>
+<text x="1016" y="190" font-family="Adwaita Sans, sans-serif" font-size="17" font-weight="550" letter-spacing="0" fill="#a9e8df">Memory MCP</text>
+<text x="1016" y="215" font-family="Adwaita Sans, sans-serif" font-size="17" font-weight="500" letter-spacing="0" fill="#d0dae5">+ Adversarial</text>
+<text x="1031" y="238" font-family="Adwaita Sans, sans-serif" font-size="17" font-weight="500" letter-spacing="0" fill="#d0dae5">Review Gate</text>
+<path d="M946 220l43 -17h16" stroke="#89a0b3" stroke-width="1" fill="none" />
+<path d="M850 299v26h143m-7 -5 7 5 -7 5" stroke="#F7BF2E" stroke-width="1.6" fill="none" />
+<rect x="1008" y="306" width="190" height="39" rx="3" fill="#282a27" stroke="#87713f"/>
+<path d="M1022 326l5 5 10 -12" stroke="#F7BF2E" stroke-width="2.6" fill="none" />
+<text x="1048" y="333" font-family="Adwaita Sans, sans-serif" font-size="21" font-weight="650" letter-spacing="0" fill="#FBE4A0">Verified Code</text>
+</g>
+<g id="remember-better"><rect x="48" y="384" width="384" height="170" rx="3" fill="#142132" stroke="#394859"/>
+<path d="M49 384h61" stroke="#14B8A6" stroke-width="3" fill="none" />
+<g transform="translate(67 405)">
+<path d="M0 6l12 -6 12 6 -12 6z M0 12l12 6 12 -6 M0 18l12 6 12 -6" stroke="#14B8A6" stroke-width="1.8" fill="none" />
+</g>
+<text x="105" y="428" font-family="Adwaita Sans, sans-serif" font-size="29" font-weight="700" letter-spacing="-0.9" fill="#F4F5EF">Remember Better</text>
+<text x="67" y="469" font-family="Adwaita Sans, sans-serif" font-size="19" font-weight="450" letter-spacing="-0.24" fill="#CAD5E0">Zero-cloud SQLite FTS5 + stdio MCP</text>
+<text x="67" y="498" font-family="Adwaita Sans, sans-serif" font-size="19" font-weight="450" letter-spacing="-0.24" fill="#CAD5E0">memory hub · hard byte budgets ·</text>
+<text x="67" y="527" font-family="Adwaita Sans, sans-serif" font-size="19" font-weight="450" letter-spacing="-0.24" fill="#CAD5E0">cross-session recall</text>
+</g>
+<g id="code-better"><rect x="448" y="384" width="384" height="170" rx="3" fill="#142132" stroke="#394859"/>
+<path d="M449 384h61" stroke="#E8622C" stroke-width="3" fill="none" />
+<g transform="translate(467 405)">
+<path d="M7 3l-7 8 7 8 M17 3l7 8 -7 8 M14 1l-4 21" stroke="#E8622C" stroke-width="1.8" fill="none" />
+</g>
+<text x="505" y="428" font-family="Adwaita Sans, sans-serif" font-size="29" font-weight="700" letter-spacing="-0.9" fill="#F4F5EF">Code Better</text>
+<text x="467" y="469" font-family="Adwaita Sans, sans-serif" font-size="19" font-weight="450" letter-spacing="-0.24" fill="#CAD5E0">7 role-isolated skills &amp; subagents ·</text>
+<text x="467" y="498" font-family="Adwaita Sans, sans-serif" font-size="19" font-weight="450" letter-spacing="-0.24" fill="#CAD5E0">irondev · iron-debug · iron-perf ·</text>
+<text x="467" y="527" font-family="Adwaita Sans, sans-serif" font-size="19" font-weight="450" letter-spacing="-0.24" fill="#CAD5E0">iron-hunt</text>
+</g>
+<g id="trust-the-output"><rect x="848" y="384" width="384" height="170" rx="3" fill="#142132" stroke="#394859"/>
+<path d="M849 384h61" stroke="#F7BF2E" stroke-width="3" fill="none" />
+<g transform="translate(867 405)">
+<path d="M1 3h22v11l-11 9 -11 -9z M6 10l4 4 8 -8" stroke="#F7BF2E" stroke-width="1.8" fill="none" />
+</g>
+<text x="905" y="428" font-family="Adwaita Sans, sans-serif" font-size="29" font-weight="700" letter-spacing="-0.9" fill="#F4F5EF">Trust the Output</text>
+<text x="867" y="469" font-family="Adwaita Sans, sans-serif" font-size="19" font-weight="450" letter-spacing="-0.24" fill="#CAD5E0">Fresh-context adversarial review ·</text>
+<text x="867" y="498" font-family="Adwaita Sans, sans-serif" font-size="19" font-weight="450" letter-spacing="-0.24" fill="#CAD5E0">bounded ownership ·</text>
+<text x="867" y="527" font-family="Adwaita Sans, sans-serif" font-size="19" font-weight="450" letter-spacing="-0.24" fill="#CAD5E0">zero rubber-stamping</text>
+</g>
+<g id="footer"><path d="M48 579h1184" stroke="#394859"/>
+<rect x="48" y="593" width="114" height="29" rx="14.5" fill="#142131" stroke="#435267"/>
+<text x="61" y="613" font-family="GeistMono Nerd Font Mono, monospace" font-size="14" font-weight="500" letter-spacing="0" fill="#CED8E3">Claude Code</text>
+<rect x="170" y="593" width="69" height="29" rx="14.5" fill="#142131" stroke="#435267"/>
+<text x="183" y="613" font-family="GeistMono Nerd Font Mono, monospace" font-size="14" font-weight="500" letter-spacing="0" fill="#CED8E3">Codex</text>
+<rect x="247" y="593" width="77" height="29" rx="14.5" fill="#142131" stroke="#435267"/>
+<text x="260" y="613" font-family="GeistMono Nerd Font Mono, monospace" font-size="14" font-weight="500" letter-spacing="0" fill="#CED8E3">Cursor</text>
+<rect x="332" y="593" width="118" height="29" rx="14.5" fill="#142131" stroke="#435267"/>
+<text x="345" y="613" font-family="GeistMono Nerd Font Mono, monospace" font-size="14" font-weight="500" letter-spacing="0" fill="#CED8E3">Antigravity</text>
+<g text-anchor="end">
+<text x="1231" y="615" font-family="GeistMono Nerd Font Mono, monospace" font-size="18" font-weight="550" letter-spacing="0" fill="#EEF1F3">github.com/arielonoriaga/iron-suite</text>
+</g></g></svg>
