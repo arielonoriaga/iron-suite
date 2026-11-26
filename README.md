@@ -6,7 +6,7 @@
 
 **Zero-cloud SQLite FTS5 + stdio MCP memory hub (`iron`) and adversarial multi-agent engineering skills (`iron-*`) for Claude Code, Codex, Cursor, and Antigravity.**
 
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) [![M8ven Score](https://m8ven.ai/badge/mcp/arielonoriaga-iron-suite-88adhm)](https://m8ven.ai/mcp/arielonoriaga-iron-suite-88adhm?s=readme)
+[![crates.io](https://img.shields.io/crates/v/iron-suite.svg)](https://crates.io/crates/iron-suite) [![MCP Registry](https://img.shields.io/badge/MCP%20Registry-active-brightgreen.svg)](https://registry.modelcontextprotocol.io/v0.1/servers?search=iron-suite) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) [![M8ven Score](https://m8ven.ai/badge/mcp/arielonoriaga-iron-suite-88adhm)](https://m8ven.ai/mcp/arielonoriaga-iron-suite-88adhm?s=readme)
 
 Iron Suite solves two recurring failures in agentic software engineering:
 
@@ -205,4 +205,4 @@ python3 -m unittest discover -s eval -p test_runner.py -v
 
 MIT — Copyright (c) 2026 Ariel Onoriaga.
 
-MCP Registry: `mcp-name: io.github.arielonoriaga/iron-suite`
+MCP Registry: `mcp-name: io.github.arielonoriaga/iron-suite` · Listed on [Official MCP Registry](https://registry.modelcontextprotocol.io/v0.1/servers?search=iron-suite), [crates.io](https://crates.io/crates/iron-suite), and [Glama MCP Servers](https://glama.ai/mcp/servers/arielonoriaga/iron-suite)
