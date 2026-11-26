@@ -96,6 +96,8 @@ B<n>: <date> | <cause> | <fix> | <V citation if any>
 
 V7: ∀ S0/S1 bug → ! §V invariant amendment OR documented rejection. ⊥ silent fix.
 
+Memory backprop: if a stale recalled memory misled the investigation, supersede it with `memory_remember --kind correction --supersedes <old_id>`; after the fix is verified, record `iron memory outcome --outcome pass --project <project>`.
+
 Map: root cause sat on a link or path the map lacked or got wrong → fix the area (Skill `map`, update) and add the bug as an invalid scenario with `observed @<fix sha>`.
 
 ## §8 Report

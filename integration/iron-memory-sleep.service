@@ -1,0 +1,8 @@
+[Unit]
+Description=Iron Memory Nightly Sleep Consolidation, Code-Drift Audit & Semantic Index
+
+[Service]
+Type=oneshot
+UMask=0077
+Nice=10
+ExecStart=%h/.local/bin/iron --db %h/.local/share/iron/memory.db memory sleep --repos-root %h/Projects

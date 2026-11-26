@@ -1,6 +1,6 @@
 {
   "name": "iron-suite",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "description": "Iron Memory (zero-cloud SQLite FTS5 + stdio MCP memory hub) + Iron Engineering Skills (irondev, iron-hunt, iron-audit, iron-debug, iron-perf) & adversarial review agents.",
   "author": {
     "name": "Ariel Onoriaga",
