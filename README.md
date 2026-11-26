@@ -6,7 +6,7 @@
 
 **Zero-cloud SQLite FTS5 + stdio MCP memory hub (`iron`) and adversarial multi-agent engineering skills (`iron-*`) for Claude Code, Codex, Cursor, and Antigravity.**
 
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) [![M8ven Score](https://m8ven.ai/badge/mcp/arielonoriaga-iron-suite-88adhm)](https://m8ven.ai/mcp/arielonoriaga-iron-suite-88adhm?s=readme)
 
 Iron Suite solves two recurring failures in agentic software engineering:
 
