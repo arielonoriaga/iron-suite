@@ -11,7 +11,7 @@
 Iron Suite solves two recurring failures in agentic software engineering:
 
 1. **Unbounded, noisy, cloud-locked agent memory:** `iron` indexes your curated Markdown memories and session history into a compact local SQLite FTS5 + WAL store (with integer-keyed 32-byte SHA-256 content deduplication and hot/cold archive tiering), serves **5 deterministic MCP tools** over `stdio` (locally or across machines via plain `ssh`), auto-links lessons across separate conversations via shared technical anchors, reinforces helpful memories while decaying superseded ones, enforces **hard UTF-8 byte budgets (`--max-bytes`)**, and scrubs credentials/private spans before indexing — with **zero vector databases, zero hosted APIs, and zero background daemons**.
-2. **rubber-stamp "looks good" AI coding loops:** The bundled **7 `iron-*` skills** and **7 role-isolated subagents** enforce bounded ownership (`irondev`), fresh-context adversarial code & security review (`irondev-review`), offensive vulnerability hunting with `1 -> N` structural variant sweeps (`iron-hunt`), measurement-first performance profiling (`iron-perf`), systematic production forensics (`iron-debug`), and read-only architecture/security audits (`iron-audit`).
+2. **rubber-stamp "looks good" AI coding loops:** The bundled **8 `iron-*` skills** and **7 role-isolated subagents** enforce grounded mobile-first UX design (`iron-design`), bounded ownership (`irondev`), fresh-context adversarial code & security review (`irondev-review`), offensive vulnerability hunting with `1 -> N` structural variant sweeps (`iron-hunt`), measurement-first performance profiling (`iron-perf`), systematic production forensics (`iron-debug`), and read-only architecture/security audits (`iron-audit`).
 
 ---
 
@@ -164,6 +164,7 @@ See [docs/ssh-hub-rollout.md](docs/ssh-hub-rollout.md) and `integration/` for `s
 
 | Skill | Purpose |
 | :--- | :--- |
+| **`iron-design`** | Ground-truth UX/UI design orchestrator: parallel FE + BE + anonymized prod audit -> `UX.md` brief -> 3 structurally distinct proposals (plus Gen-2 genetic recombination) in an isolated clickable `390px` + desktop UX Lab -> Plain-to-Magic elevation -> verified handoff to `irondev`. |
 | **`irondev`** | End-to-end feature/fix orchestrator: bounded implementer brief -> fresh-context review -> real-surface verification -> curated learning. |
 | **`irondev-dev`** | Shared implementation discipline for backend, frontend, and security engineering roles with canonical handoff contracts. |
 | **`irondev-review`** | Fresh-context adversarial code review selecting correctness, architecture, systems, and security lenses proportional to change risk. |
