@@ -15,6 +15,20 @@ Iron Suite solves two recurring failures in agentic software engineering:
 
 ---
 
+## Why Iron Suite?
+
+| Capability | Plain `MEMORY.md` | Cloud Vector MCPs | **Iron Suite (`v0.3.0`)** |
+| :--- | :--- | :--- | :--- |
+| **Zero cloud / zero API keys** | Yes | No (hosted / paid) | **Yes (single Rust binary + SQLite)** |
+| **Hard byte budget (`--max-bytes`)** | No (dumps whole files) | Rarely | **Yes (exact UTF-8 serialized cap)** |
+| **Detects stale rules when code changes** | No | No | **Yes (`git ls-files` drift decay)** |
+| **Detects contradicting rules** | No | No | **Yes (nightly `iron memory sleep`)** |
+| **Multi-machine without sync conflicts** | No | Yes (via cloud) | **Yes (plain `ssh` stdio hub)** |
+| **Visual Second Brain & verification UI** | No | Hosted dashboard | **Yes (embedded local `iron ui`)** |
+| **Role isolation (`reviewer` = curated only)** | No | No | **Yes (built-in + `iron-*` skills)** |
+
+---
+
 ## How Iron Suite Works
 
 <p align="center">

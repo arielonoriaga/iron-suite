@@ -1,0 +1,28 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.arielonoriaga/iron-suite",
+  "title": "Iron Suite — Zero-Cloud SQLite FTS5 Memory Hub",
+  "description": "Zero-cloud SQLite FTS5 + stdio MCP memory hub with hard UTF-8 byte budgets, hybrid semantic RRF, code-drift detection, and an embedded Second Brain Web UI.",
+  "version": "0.3.0",
+  "websiteUrl": "https://github.com/arielonoriaga/iron-suite",
+  "repository": {
+    "url": "https://github.com/arielonoriaga/iron-suite",
+    "source": "github"
+  },
+  "packages": [
+    {
+      "registryType": "cargo",
+      "identifier": "iron-suite",
+      "version": "0.3.0",
+      "transport": {
+        "type": "stdio"
+      },
+      "packageArguments": [
+        {
+          "type": "positional",
+          "value": "mcp"
+        }
+      ]
+    }
+  ]
+}
