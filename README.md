@@ -204,3 +204,5 @@ python3 -m unittest discover -s eval -p test_runner.py -v
 ## License
 
 MIT — Copyright (c) 2026 Ariel Onoriaga.
+
+MCP Registry: `mcp-name: io.github.arielonoriaga/iron-suite`
