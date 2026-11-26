@@ -711,6 +711,7 @@ button, input, select, textarea { font-family: inherit; font-size: inherit; colo
     audit: null,
     evolution: null,
     aliases: {},
+    intelligence: null,
     dayIndex: 13,
     showEvolution: false,
     queue: {
@@ -863,17 +864,19 @@ button, input, select, textarea { font-family: inherit; font-size: inherit; colo
   }
 
   async function loadCoreData() {
-    const [statsData, auditData, evoData, aliasData] = await Promise.all([
+    const [statsData, auditData, evoData, aliasData, intelData] = await Promise.all([
       apiGet('/api/stats'),
       apiGet('/api/audit'),
       apiGet('/api/evolution?days=14'),
       apiGet('/api/aliases').catch(() => ({ aliases: {} })),
+      apiGet('/api/intelligence').catch(() => null),
     ]);
     state.stats = statsData.stats;
     state.facets = statsData.facets;
     state.audit = auditData;
     state.evolution = evoData;
     state.aliases = aliasData.aliases || {};
+    state.intelligence = intelData;
     state.dayIndex = Math.max(0, (evoData.timeline?.length || 1) - 1);
 
     const s = auditData.summary;
@@ -1007,13 +1010,21 @@ button, input, select, textarea { font-family: inherit; font-size: inherit; colo
         <span style="color:var(--text-muted);font-size:12.5px;">(${fmtNum(rawArchive)} raw cavemem session records stay out of your way unless selected.)</span>
       </p>
       <div class="radar-row">
+        ${(() => {
+          const qLen = state.intelligence?.review_queue?.length || 0;
+          const driftCnt = Object.values(state.intelligence?.drift || {}).filter((d) => d.drifted).length;
+          const confCnt = state.intelligence?.contradictions?.length || 0;
+          const cls = confCnt > 0 || driftCnt > 0 ? 'bad' : (qLen > 0 ? 'warn' : 'ok');
+          return `<button class="radar-pill ${cls}" data-open-sheet="morning">✦ Morning Review Queue (${fmtNum(qLen)})${driftCnt > 0 ? ` · ${driftCnt} drifted` : ''}${confCnt > 0 ? ` · ${confCnt} conflicts` : ''} ›</button>`;
+        })()}
         ${s.contested > 0 ? `<button class="radar-pill bad" data-open-sheet="contested">⚠ ${fmtNum(s.contested)} contested · review first ›</button>` : ''}
         <button class="radar-pill warn" data-open-sheet="consolidate">⚡ Recurring patterns to promote ›</button>
         <button class="radar-pill" data-open-sheet="fragmentation">⇄ ${fmtNum(pf.total_project_names)} → ${fmtNum(pf.canonical_roots)} fragmented project names (${fmtNum(pf.fragmented_roots)} roots) ›</button>
         <button class="radar-pill" data-open-merge="">⇄ Merge / Rename Projects${Object.keys(state.aliases || {}).length > 0 ? ` (${Object.keys(state.aliases).length} aliases)` : ''} ›</button>
         ${s.superseded > 0 ? `<button class="radar-pill" data-open-sheet="contested">↺ ${fmtNum(s.superseded)} superseded records ›</button>` : ''}
         ${s.duplicate_body_records > 0 ? `<button class="radar-pill" data-open-sheet="duplicates">⧉ ${fmtNum(s.duplicate_body_records)} deduped body rows ›</button>` : ''}
-        <button class="radar-pill" id="btnDeskRelink" style="margin-left:auto;">↻ Rebuild Auto-Links</button>
+        <button class="radar-pill" id="btnDeskSleep" style="margin-left:auto;">☾ Run Sleep Cycle</button>
+        <button class="radar-pill" id="btnDeskRelink">↻ Rebuild Auto-Links</button>
       </div>
     `;
   }
@@ -1638,6 +1649,19 @@ button, input, select, textarea { font-family: inherit; font-size: inherit; colo
             : `Ranked at <strong>${mult.toFixed(2)}×</strong> for <code class="mono">developer</code>${rec.source_type === 'markdown' ? ' &amp; <code class="mono">reviewer</code>' : ' only (excluded from <code class="mono">reviewer</code>)'} · ${s.confirm_count > 0 ? `<strong style="color:var(--ok);">confirmed ${s.confirm_count}×</strong>` : '<strong style="color:var(--warn);">never human-verified</strong>'} · ${fmtNum(rec.outgoing_link_count)} out / ${fmtNum(rec.incoming_link_count)} in links.`)}
       </div>
 
+      ${rec.drift?.drifted ? `
+        <div class="trust-sentence" style="border-left-color:var(--bad);background:var(--bad-soft);">
+          <strong style="color:var(--bad);">⚠ Drifted from HEAD (0.5× rank decay)</strong> — Missing cited repo path(s): <code class="mono">${esc((rec.drift.missing_paths || []).join(', '))}</code>
+        </div>
+      ` : ''}
+
+      ${rec.needs_review ? `
+        <div class="trust-sentence" style="border-left-color:var(--warn);background:var(--warn-soft);display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;">
+          <div><strong style="color:var(--warn);">⚑ Flagged for Review:</strong> ${esc(rec.needs_review.reason)}${rec.needs_review.note ? ` — ${esc(rec.needs_review.note)}` : ''}</div>
+          <button class="btn btn-sm" data-dismiss-flag="${esc(rec.id)}">Dismiss Flag</button>
+        </div>
+      ` : ''}
+
       ${!inSheet && !archived ? `
         <div class="verdict-bar">
           <button class="btn btn-ok" data-fb="helpful" data-id="${esc(rec.id)}">✓ Still True <span class="kbd">h</span></button>
@@ -1855,6 +1879,8 @@ button, input, select, textarea { font-family: inherit; font-size: inherit; colo
                 </div>
                 <div style="display:flex;gap:5px;flex-wrap:wrap;align-items:center;">
                   ${extraBadge(h)}
+                  ${h.relation ? `<span class="pill p-violet">${esc(h.relation)}</span>` : ''}
+                  ${(h.evidence || []).some((ev) => String(ev).startsWith('drifted:')) ? '<span class="pill p-bad">drifted 0.5×</span>' : ''}
                   ${h.status === 'superseded' ? '<span class="pill p-sup">superseded</span>' : ''}
                   <span class="pill p-neutral">${esc(h.source_type)}/${esc(h.kind)}</span>
                   <span class="pill p-neutral">${esc(h.project)}</span>
@@ -2285,6 +2311,52 @@ button, input, select, textarea { font-family: inherit; font-size: inherit; colo
         <button class="btn btn-accent" style="flex:1;" id="btnSubmitMerge">Merge / Rename Project</button>
       `;
       updateMergePreview();
+    } else if (top.type === 'morning') {
+      const intel = state.intelligence || {};
+      const items = intel.review_queue || [];
+      const driftCnt = Object.values(intel.drift || {}).filter((d) => d.drifted).length;
+      const confCnt = (intel.contradictions || []).length;
+      head.innerHTML = `<div>${backBtn || '<strong>Morning Review Queue</strong>'}</div><button class="btn btn-sm btn-ghost" data-sheet-close="1">Close ✕</button>`;
+      body.innerHTML = `
+        <div class="trust-sentence">
+          Last sleep: <strong class="mono">${intel.sleep_ran_at ? fmtTime(intel.sleep_ran_at) : 'never'}</strong> ·
+          <strong>${fmtNum(intel.semantic_records || 0)}</strong> semantic vectors ·
+          <strong style="color:${confCnt > 0 ? 'var(--bad)' : 'var(--ok)'};">${fmtNum(confCnt)}</strong> conflicts ·
+          <strong style="color:${driftCnt > 0 ? 'var(--bad)' : 'var(--ok)'};">${fmtNum(driftCnt)}</strong> drifted from HEAD.
+        </div>
+        ${items.length === 0
+          ? '<div class="empty-state">Your Morning Review Queue is clear. Run a Sleep Cycle to scan for contradictions, code drift, and high-value unverified hubs.</div>'
+          : items.map((it) => {
+            const badge = it.kind === 'correction_flag'
+              ? '<span class="pill p-bad">correction flag</span>'
+              : it.kind === 'contradiction'
+                ? '<span class="pill p-bad">potential conflict</span>'
+                : it.kind === 'code_drift'
+                  ? '<span class="pill p-warn">drifted from HEAD</span>'
+                  : '<span class="pill p-explicit">unverified hub</span>';
+            return `
+              <div class="anchor-group" style="padding:12px;">
+                <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:5px;">
+                  ${badge}
+                  <span class="pill p-neutral">${esc(it.project)}</span>
+                </div>
+                <div style="font-weight:700;font-size:13.5px;margin-bottom:4px;">${esc(it.title)}</div>
+                <div style="font-size:12px;color:var(--text-mid);margin-bottom:8px;">${esc(it.reason)}</div>
+                <div style="display:flex;flex-wrap:wrap;gap:6px;">
+                  <button class="btn btn-sm" data-push-mem="${esc(it.record_id)}">Inspect${it.peer_id ? ' A' : ''} ›</button>
+                  ${it.peer_id ? `<button class="btn btn-sm" data-push-mem="${esc(it.peer_id)}">Inspect B ›</button>` : ''}
+                  <button class="btn btn-sm btn-ok" data-fb="helpful" data-id="${esc(it.record_id)}">✓ Still True</button>
+                  <button class="btn btn-sm" data-open-supersede="${esc(it.record_id)}">⇄ Supersede</button>
+                  ${it.kind === 'correction_flag' ? `<button class="btn btn-sm btn-ghost" data-dismiss-flag="${esc(it.record_id)}">Dismiss</button>` : ''}
+                </div>
+              </div>
+            `;
+          }).join('')}
+      `;
+      foot.innerHTML = `
+        <button class="btn btn-accent" id="btnSheetRunSleep" style="flex:1;">☾ Run Sleep Cycle Now</button>
+        <button class="btn" data-sheet-close="1">Done</button>
+      `;
     } else if (top.type === 'duplicates') {
       const dups = state.audit?.duplicate_bodies || [];
       const totalDup = state.audit?.summary?.duplicate_body_records || 0;
@@ -2593,6 +2665,33 @@ button, input, select, textarea { font-family: inherit; font-size: inherit; colo
       state.simMode = simMode.dataset.simMode;
       $$('#simModeCards .choice-card').forEach((c) => c.classList.toggle('active', c === simMode));
       syncSimSourceLocks();
+      return;
+    }
+
+    const dismissFlag = e.target.closest('[data-dismiss-flag]');
+    if (dismissFlag) {
+      const id = dismissFlag.dataset.dismissFlag;
+      try {
+        await apiPost('/api/intelligence/dismiss', { id });
+        toast('Dismissed review flag', 'ok');
+        await loadCoreData();
+        if (state.selectedId === id) inspectInDesk(id);
+        renderSheet();
+      } catch (err) { toast(err.message, 'err'); }
+      return;
+    }
+
+    if (e.target.closest('#btnDeskSleep') || e.target.closest('#btnSheetRunSleep')) {
+      const btn = e.target.closest('#btnDeskSleep') || e.target.closest('#btnSheetRunSleep');
+      const prevTxt = btn.textContent;
+      btn.disabled = true; btn.textContent = 'Running sleep cycle…';
+      try {
+        const res = await apiPost('/api/sleep', {});
+        toast(`Sleep complete: ${fmtNum(res.semantic_records_indexed)} vectors · ${fmtNum(res.contradictions_found)} conflicts · ${fmtNum(res.review_queue_len)} queued`, 'ok');
+        await Promise.all([loadCoreData(), state.brain.data ? loadBrainGraph() : Promise.resolve()]);
+        renderSheet();
+      } catch (err) { toast(err.message, 'err'); }
+      finally { btn.disabled = false; btn.textContent = prevTxt; }
       return;
     }
 

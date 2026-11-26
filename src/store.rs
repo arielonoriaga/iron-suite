@@ -473,6 +473,298 @@ impl Store {
         Ok(updated)
     }
 
+    pub fn reinforce_co_used(
+        &mut self,
+        ids: &[String],
+        increment_use: bool,
+    ) -> Result<(usize, usize)> {
+        ensure!(self.writable, "memory index was opened read-only");
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis().min(i64::MAX as u128) as i64)
+            .unwrap_or(0);
+        let tx = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut valid_ids = Vec::new();
+        for id in ids.iter().take(16) {
+            let exists: Option<i64> = tx
+                .query_row("SELECT 1 FROM records WHERE id = ?1", [id], |r| r.get(0))
+                .optional()?;
+            if exists.is_some() && !valid_ids.iter().any(|x| x == id) {
+                valid_ids.push(id.clone());
+            }
+        }
+        let mut used = 0usize;
+        if increment_use {
+            for id in &valid_ids {
+                tx.execute(
+                    "INSERT INTO record_stats(record_id, use_count, last_used_at)
+                     VALUES(?1, 1, ?2)
+                     ON CONFLICT(record_id) DO UPDATE SET
+                       use_count = use_count + 1,
+                       last_used_at = MAX(last_used_at, excluded.last_used_at)",
+                    params![id, now],
+                )?;
+                used += 1;
+            }
+        }
+        let mut links = 0usize;
+        for i in 0..valid_ids.len() {
+            for j in (i + 1)..valid_ids.len() {
+                let a = &valid_ids[i];
+                let b = &valid_ids[j];
+                for (from, to) in [(a, b), (b, a)] {
+                    tx.execute(
+                        "INSERT INTO memory_links(from_id, to_id, relation, origin, weight, evidence)
+                         VALUES(?1, ?2, 'co_used', 'feedback', 1.0, '[\"co_retrieved\"]')
+                         ON CONFLICT(from_id, to_id, relation) DO UPDATE SET
+                           weight = MIN(5.0, weight + 0.5)",
+                        params![from, to],
+                    )?;
+                    links += 1;
+                }
+            }
+        }
+        tx.commit()?;
+        Ok((used, links))
+    }
+
+    pub fn fetch_hits_by_ids(
+        &self,
+        ids: &[String],
+        opts: &SearchOptions,
+    ) -> Result<std::collections::HashMap<String, SearchHit>> {
+        let mut out = std::collections::HashMap::new();
+        if ids.is_empty() {
+            return Ok(out);
+        }
+        let capped: Vec<&String> = ids.iter().take(MAX_RESULTS).collect();
+        let placeholders = vec!["?"; capped.len()].join(",");
+        let mut sql = format!(
+            "SELECT r.id, r.title, r.project, r.kind, r.source_type, r.source_path,
+                    r.updated_at, substr(b.content, 1, 640),
+                    CASE
+                        WHEN r.kind = 'correction' THEN 2.2
+                        WHEN r.source_type IN ('markdown', 'iron') THEN 2.0
+                        ELSE 1.0
+                    END
+                    * (1.0 + 0.45 * (
+                        (COALESCE(s.use_count, 0) + 2.0 * COALESCE(s.confirm_count, 0))
+                        / (4.0 + COALESCE(s.use_count, 0) + 2.0 * COALESCE(s.confirm_count, 0))
+                    ))
+                    * CASE WHEN COALESCE(s.status, 'active') = 'superseded' THEN 0.15 ELSE 1.0 END
+                    * (1.0 / (1.0 + 0.4 * COALESCE(s.contradict_count, 0))) AS score,
+                    NULL AS relation,
+                    '[]' AS evidence,
+                    CASE WHEN s.status = 'superseded' THEN s.status ELSE NULL END AS status,
+                    s.superseded_by
+             FROM records r
+             JOIN bodies b ON b.id = r.body_id
+             LEFT JOIN record_stats s ON s.record_id = r.id
+             WHERE r.id IN ({placeholders})"
+        );
+        let mut arguments: Vec<SqlValue> = capped
+            .iter()
+            .map(|id| SqlValue::Text((*id).clone()))
+            .collect();
+        if opts.exclude_superseded {
+            sql.push_str(" AND COALESCE(s.status, 'active') != 'superseded'");
+        }
+        if let Some(project) = &opts.project {
+            if opts.include_global {
+                sql.push_str(" AND (r.project = ? OR r.project = '*')");
+            } else {
+                sql.push_str(" AND r.project = ?");
+            }
+            arguments.push(SqlValue::Text(project.clone()));
+        }
+        for (column, filters) in [("kind", &opts.kinds), ("source_type", &opts.source_types)] {
+            ensure!(
+                filters.len() <= MAX_FILTER_VALUES,
+                "too many memory {column} filters"
+            );
+            if !filters.is_empty() {
+                sql.push_str(&format!(" AND r.{column} IN ("));
+                sql.push_str(&vec!["?"; filters.len()].join(","));
+                sql.push(')');
+                arguments.extend(filters.iter().cloned().map(SqlValue::Text));
+            }
+        }
+        let mut stmt = self.connection.prepare(&sql)?;
+        let rows = stmt.query_map(params_from_iter(arguments), hit_from_row)?;
+        for hit in rows {
+            let h = hit?;
+            out.insert(h.id.clone(), h);
+        }
+        Ok(out)
+    }
+
+    pub fn expand_graph_neighbors(
+        &self,
+        seed_hits: &[SearchHit],
+        opts: &SearchOptions,
+        max_neighbors: usize,
+    ) -> Result<Vec<SearchHit>> {
+        if seed_hits.is_empty() || max_neighbors == 0 {
+            return Ok(Vec::new());
+        }
+        let seed_ids: HashSet<&str> = seed_hits.iter().map(|h| h.id.as_str()).collect();
+        let top_seeds: Vec<&SearchHit> = seed_hits.iter().take(3).collect();
+        let mut best_by_id: std::collections::HashMap<String, SearchHit> =
+            std::collections::HashMap::new();
+
+        for seed in top_seeds {
+            let mut sql = String::from(
+                "SELECT r.id, r.title, r.project, r.kind, r.source_type, r.source_path,
+                        r.updated_at, substr(b.content, 1, 640),
+                        l.weight
+                            * CASE
+                                WHEN r.kind = 'correction' THEN 2.2
+                                WHEN r.source_type IN ('markdown', 'iron') THEN 2.0
+                                ELSE 1.0
+                              END
+                            * CASE WHEN COALESCE(s.status, 'active') = 'superseded' THEN 0.15 ELSE 1.0 END
+                            * (1.0 / (1.0 + 0.4 * COALESCE(s.contradict_count, 0))) AS edge_score,
+                        l.relation,
+                        l.evidence,
+                        CASE WHEN s.status = 'superseded' THEN s.status ELSE NULL END AS status,
+                        s.superseded_by
+                 FROM memory_links l
+                 JOIN records r ON r.id = CASE WHEN l.from_id = ?1 THEN l.to_id ELSE l.from_id END
+                 JOIN bodies b ON b.id = r.body_id
+                 LEFT JOIN record_stats s ON s.record_id = r.id
+                 WHERE (l.from_id = ?1 OR l.to_id = ?1)
+                   AND l.relation IN ('references', 'co_used', 'shares_anchor', 'supersedes')
+                   AND COALESCE(s.status, 'active') != 'superseded'",
+            );
+            let mut arguments = vec![SqlValue::Text(seed.id.clone())];
+            if let Some(project) = &opts.project {
+                if opts.include_global {
+                    sql.push_str(" AND (r.project = ? OR r.project = '*')");
+                } else {
+                    sql.push_str(" AND r.project = ?");
+                }
+                arguments.push(SqlValue::Text(project.clone()));
+            }
+            for (column, filters) in [("kind", &opts.kinds), ("source_type", &opts.source_types)] {
+                ensure!(
+                    filters.len() <= MAX_FILTER_VALUES,
+                    "too many memory {column} filters"
+                );
+                if !filters.is_empty() {
+                    sql.push_str(&format!(" AND r.{column} IN ("));
+                    sql.push_str(&vec!["?"; filters.len()].join(","));
+                    sql.push(')');
+                    arguments.extend(filters.iter().cloned().map(SqlValue::Text));
+                }
+            }
+            sql.push_str(" ORDER BY edge_score DESC, r.updated_at DESC LIMIT 6");
+            let mut stmt = self.connection.prepare(&sql)?;
+            let rows = stmt.query_map(params_from_iter(arguments), hit_from_row)?;
+            for row in rows {
+                let mut h = row?;
+                if seed_ids.contains(h.id.as_str()) {
+                    continue;
+                }
+                // Propagated score bounded below parent hit so exact matches stay ahead
+                let edge_boost = (h.score / 4.0).clamp(0.2, 1.0);
+                h.score = seed.score * 0.52 * edge_boost;
+                h.relation = Some(format!(
+                    "graph_neighbor:{}",
+                    h.relation.as_deref().unwrap_or("linked")
+                ));
+                match best_by_id.get(&h.id) {
+                    Some(prev) if prev.score >= h.score => {}
+                    _ => {
+                        best_by_id.insert(h.id.clone(), h);
+                    }
+                }
+            }
+        }
+
+        let mut neighbors: Vec<SearchHit> = best_by_id.into_values().collect();
+        neighbors.sort_by(|a, b| {
+            b.score
+                .total_cmp(&a.score)
+                .then_with(|| b.updated_at.cmp(&a.updated_at))
+                .then_with(|| a.id.cmp(&b.id))
+        });
+        neighbors.truncate(max_neighbors);
+        Ok(neighbors)
+    }
+
+    pub fn link_co_used_against(
+        &mut self,
+        new_id: &str,
+        prior_ids: &[String],
+    ) -> Result<usize> {
+        ensure!(self.writable, "memory index was opened read-only");
+        let tx = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let exists: Option<i64> = tx
+            .query_row("SELECT 1 FROM records WHERE id = ?1", [new_id], |r| r.get(0))
+            .optional()?;
+        if exists.is_none() {
+            return Ok(0);
+        }
+        let mut links = 0usize;
+        let mut seen = HashSet::new();
+        for peer in prior_ids.iter().take(16) {
+            if peer == new_id || !seen.insert(peer.as_str()) {
+                continue;
+            }
+            let peer_exists: Option<i64> = tx
+                .query_row("SELECT 1 FROM records WHERE id = ?1", [peer], |r| r.get(0))
+                .optional()?;
+            if peer_exists.is_none() {
+                continue;
+            }
+            for (from, to) in [(new_id, peer.as_str()), (peer.as_str(), new_id)] {
+                tx.execute(
+                    "INSERT INTO memory_links(from_id, to_id, relation, origin, weight, evidence)
+                     VALUES(?1, ?2, 'co_used', 'feedback', 1.0, '[\"co_retrieved\"]')
+                     ON CONFLICT(from_id, to_id, relation) DO UPDATE SET
+                       weight = MIN(5.0, weight + 0.5)",
+                    params![from, to],
+                )?;
+                links += 1;
+            }
+        }
+        tx.commit()?;
+        Ok(links)
+    }
+
+    pub fn record_stats_map(
+        &self,
+        ids: &[String],
+    ) -> Result<std::collections::HashMap<String, (i64, i64)>> {
+        let mut out = std::collections::HashMap::new();
+        if ids.is_empty() {
+            return Ok(out);
+        }
+        for chunk in ids.chunks(200) {
+            let placeholders = vec!["?"; chunk.len()].join(",");
+            let sql = format!(
+                "SELECT record_id, confirm_count, last_used_at FROM record_stats WHERE record_id IN ({placeholders})"
+            );
+            let args: Vec<SqlValue> = chunk
+                .iter()
+                .map(|id| SqlValue::Text(id.clone()))
+                .collect();
+            let mut stmt = self.connection.prepare(&sql)?;
+            let rows = stmt.query_map(params_from_iter(args), |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?))
+            })?;
+            for row in rows {
+                let (id, conf, last_used) = row?;
+                out.insert(id, (conf, last_used));
+            }
+        }
+        Ok(out)
+    }
+
     pub fn record_signal(&self, id: &str) -> Result<Option<Value>> {
         query_stats_conn(&self.connection, id)
     }
@@ -578,6 +870,14 @@ impl Store {
         let rows = statement.query_map(params_from_iter(arguments), hit_from_row)?;
         let mut hits = rows.collect::<rusqlite::Result<Vec<_>>>()?;
         hits.truncate(limit);
+        for hit in &mut hits {
+            if matches!(hit.source_type.as_str(), "markdown" | "iron")
+                && let Ok(Some(rec)) = self.get(&hit.id)
+                && let Some((_, sec_snippet)) = extract_best_section(&rec.content, query)
+            {
+                hit.snippet = sec_snippet;
+            }
+        }
         Ok(hits)
     }
 
@@ -2186,21 +2486,54 @@ fn refresh_links(transaction: &Transaction<'_>) -> Result<usize> {
     )?)?)
 }
 
+fn split_camel_subtokens(token: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut prev_lower = false;
+    for ch in token.chars() {
+        if ch.is_uppercase() && prev_lower && !current.is_empty() {
+            if current.chars().count() >= 2 {
+                parts.push(current.to_lowercase());
+            }
+            current.clear();
+        }
+        current.push(ch);
+        prev_lower = ch.is_lowercase();
+    }
+    if parts.is_empty() {
+        return Vec::new();
+    }
+    if current.chars().count() >= 2 {
+        parts.push(current.to_lowercase());
+    }
+    parts
+}
+
 fn search_expression(query: &str) -> Option<String> {
     let end = utf8_boundary(query, MAX_QUERY_BYTES);
     let mut seen = HashSet::new();
-    let terms: Vec<String> = QUERY_TOKEN
-        .find_iter(&query[..end])
-        .filter_map(|capture| {
-            let token = capture.as_str();
-            if token.len() > MAX_TERM_BYTES {
-                return None;
+    let mut terms = Vec::new();
+    for capture in QUERY_TOKEN.find_iter(&query[..end]) {
+        if terms.len() >= MAX_QUERY_TERMS {
+            break;
+        }
+        let raw = capture.as_str();
+        if raw.len() > MAX_TERM_BYTES {
+            continue;
+        }
+        let lower = raw.to_lowercase();
+        if seen.insert(lower.clone()) {
+            terms.push(format!("\"{lower}\""));
+        }
+        for sub in split_camel_subtokens(raw) {
+            if terms.len() >= MAX_QUERY_TERMS {
+                break;
             }
-            let token = token.to_lowercase();
-            seen.insert(token.clone()).then(|| format!("\"{token}\""))
-        })
-        .take(MAX_QUERY_TERMS)
-        .collect();
+            if sub.len() <= MAX_TERM_BYTES && seen.insert(sub.clone()) {
+                terms.push(format!("\"{sub}\""));
+            }
+        }
+    }
     (!terms.is_empty()).then(|| terms.join(" OR "))
 }
 
@@ -2297,6 +2630,86 @@ fn is_valid_iso_day(day: &str) -> bool {
         && bytes[4] == b'-'
         && bytes[7] == b'-'
         && bytes.iter().enumerate().all(|(i, b)| i == 4 || i == 7 || b.is_ascii_digit())
+}
+
+pub fn split_markdown_sections(content: &str) -> Vec<(String, String)> {
+    let mut sections: Vec<(String, String)> = Vec::new();
+    let mut current_heading = String::new();
+    let mut current_body = String::new();
+
+    for line in content.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("## ") || trimmed.starts_with("### ") {
+            if !current_body.trim().is_empty() || !current_heading.is_empty() {
+                sections.push((current_heading.clone(), current_body.trim().to_owned()));
+            }
+            current_heading = trimmed.trim_start_matches('#').trim().to_owned();
+            current_body.clear();
+            current_body.push_str(line);
+            current_body.push('\n');
+        } else {
+            current_body.push_str(line);
+            current_body.push('\n');
+        }
+    }
+    if !current_body.trim().is_empty() || !current_heading.is_empty() {
+        sections.push((current_heading, current_body.trim().to_owned()));
+    }
+    sections
+}
+
+pub fn extract_best_section(content: &str, query: &str) -> Option<(String, String)> {
+    if content.len() < 1_200 {
+        return None;
+    }
+    let sections = split_markdown_sections(content);
+    if sections.len() < 2 {
+        return None;
+    }
+    let query_tokens = crate::semantic::split_identifier_tokens(query);
+    if query_tokens.is_empty() {
+        return None;
+    }
+    let mut best: Option<(usize, String, String)> = None;
+    for (heading, body) in sections {
+        if heading.is_empty() {
+            continue;
+        }
+        let lower_h = heading.to_lowercase();
+        let lower_b = body.to_lowercase();
+        let mut score = 0usize;
+        for tok in &query_tokens {
+            if lower_h.contains(tok) {
+                score += 3;
+            }
+            if lower_b.contains(tok) {
+                score += 1;
+            }
+        }
+        if score > 0 && best.as_ref().is_none_or(|(s, _, _)| score > *s) {
+            best = Some((score, heading, body));
+        }
+    }
+    best.map(|(_, h, b)| { let snip = bounded_snippet(format!("[## {h}] {b}")); (h, snip) })
+}
+
+pub fn extract_named_section(content: &str, heading_query: &str) -> Option<(String, String)> {
+    let needle = heading_query.trim().to_lowercase();
+    if needle.is_empty() {
+        return None;
+    }
+    let sections = split_markdown_sections(content);
+    for (heading, body) in &sections {
+        if heading.to_lowercase() == needle {
+            return Some((heading.clone(), body.clone()));
+        }
+    }
+    for (heading, body) in sections {
+        if !heading.is_empty() && heading.to_lowercase().contains(&needle) {
+            return Some((heading, body));
+        }
+    }
+    None
 }
 
 pub fn canonical_project_root(project: &str) -> String {

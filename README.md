@@ -69,8 +69,9 @@ iron memory import --claude-root ~/.claude --cavemem-db ~/.cavemem/data.db
 iron memory search 'cargo target directory' --repo . --max-bytes 2000
 iron memory search 'tenant isolation' --project commerce-core --strict-project
 
-# Paginated byte-exact fetch & explicit Markdown graph traversal
+# Paginated byte-exact fetch (or targeted Markdown section) & explicit graph traversal
 iron memory get mem_ID --max-bytes 4000
+iron memory get mem_ID --section 'Rollback' --max-bytes 4000
 iron memory related mem_ID --relation references
 iron context 'migration rollback' --project commerce-core --role reviewer
 
@@ -79,8 +80,11 @@ iron memory remember --project iron-suite --agent claude --kind correction \
   --supersedes mem_OLD_ID \
   --title 'Shared memory hub' --content 'Desktop holds the authoritative Iron v2 store.'
 iron memory feedback mem_ID --outcome helpful
+iron memory outcome --outcome pass --project commerce-core
 
-# Cross-session anchor linking, pattern consolidation & hot/cold v2 archive split
+# Nightly sleep consolidation, code-drift audit, project merge & hot/cold v2 archive split
+iron memory sleep --repos-root ~/Projects
+iron memory audit-drift --project commerce-core --repo ~/Projects/commerce-core
 iron memory consolidate --min-occurrences 3
 iron memory merge-project --from legacy-shop --to commerce-core
 iron memory migrate --from ~/.local/share/iron/memory.v1.db \
@@ -99,9 +103,13 @@ iron ui --port 7420
 
 - **Second Brain (Interactive Knowledge Graph):** Obsidian-style orbital knowledge bubbles grouped by **Project Zones**, **Link Clusters**, or **Trust Zones**, with explicit reference edges, cross-session auto-anchor bridges, search spotlighting, day-growth halos, and dark/light themes.
 - **Today Pulse & 14-Day Evolution Rates:** Time-travel day selector (`◀ Today ▶`) and 14-day stacked activity chart tracking curated signal-to-noise lift, human verification coverage, native rule velocity, and self-correction rate.
-- **Trust Desk (Strictly Read-Only Inspection):** Inspect full Markdown/native memory prose, exact trust multiplier (`2.0×`/`2.2×` vs `0.15×` superseded decay), supersession lineage, duplicate-body clusters, and recurring consolidation candidates without mutating `use_count` until you click **Still True**, **Update & Supersede**, **Contradicted**, or **Outdated**.
-- **Agent Lens (Retrieval Simulator):** Run exact `developer`, `reviewer`, `verifier`, or side-by-side Dev-vs-Reviewer retrieval queries with live byte-budget rulers and truncation visibility.
+- **Trust Desk (Strictly Read-Only Inspection):** Inspect full Markdown/native memory prose, exact trust multiplier (`2.0×`/`2.2×` vs `0.15×` superseded decay), supersession lineage, `Drifted from HEAD` repo-path warnings, duplicate-body clusters, and the prioritized **Morning Review Queue** (correction flags, potential contradictions, drifted rules, and high-use unverified hubs) without mutating `use_count` until you click **Still True**, **Update & Supersede**, **Contradicted**, or **Outdated**.
+- **Agent Lens (Retrieval Simulator):** Run exact `developer`, `reviewer`, `verifier`, or side-by-side Dev-vs-Reviewer retrieval queries with live byte-budget rulers, truncation visibility, and provenance badges (`semantic_rrf`, `graph_neighbor`, `drifted:0.5x`).
 - **Project Merge, Rename & Persistent Aliases (`aliases.json`):** Consolidate fragmented or renamed projects directly from the UI (`⇄ Merge / Rename`) or CLI (`iron memory merge-project --from <OLD> --to <NEW>`). Saving a permanent alias writes a private `0600` `aliases.json` sibling file next to `memory.db` (zero schema changes) so future imports, `memory_remember`, and searches transparently resolve old names and subpaths/worktrees to the canonical project.
+- **Compounding Intelligence Engine (Zero-ML, Zero-Cloud):**
+  - **Hybrid Semantic RRF (`semantic.idx`):** Pure-Rust 512-dim sublinear TF + char n-gram + bilingual engineering-concept vectors fused with FTS5 BM25 via Reciprocal Rank Fusion, plus `camelCase`/`snake_case` query splitting, section-aware snippets, and 1-hop graph expansion (`references`, `co_used`, `shares_anchor`).
+  - **Code-Drift & Contradiction Auditing (`iron memory sleep` / `audit-drift`):** Verifies cited repo file paths against `git ls-files` (applying a `0.5×` rank decay to drifted memories), detects opposing directives sharing high-IDF technical anchors, and populates the Morning Review Queue.
+  - **Automatic Outcome Feedback & Co-Use Hebbian Edges (`iron memory outcome`):** Tracks session recalls in a bounded `0600` `session-ledger.json`, wires co-retrieved memories with bidirectional `co_used` edges, reinforces memories on verified `pass` outcomes, and flags memories for review on `fail`/`correction` hooks.
 
 #### MCP Server (`iron mcp`)
 Exposes 5 tools over newline-delimited JSON-RPC `stdio` (`2025-06-18` / `2025-03-26` / `2024-11-05`):

@@ -705,3 +705,203 @@ fn ui_merge_projects_persists_aliases_resolves_context_and_supports_delete() {
     assert_eq!(s_after, 200);
     assert_eq!(aliases_after["aliases"], json!({}));
 }
+
+#[test]
+fn ui_v03_intelligence_sleep_semantic_rrf_graph_drift_sections_and_outcomes() {
+    let (tmp, db) = seed_db();
+    // Add a multi-section large curated doc + a conflicting rule + a repo-path-citing rule
+    let mut store = Store::open(&db, true).unwrap();
+    let long_intro = "General architecture guidelines. ".repeat(45);
+    let multi_section = format!(
+        "# Payment Gateway Guide\n\n{long_intro}\n\n## Retry Backoff\nUse exponential backoff with jitter on billing gateway 502 responses.\n\n## Rollback Procedure\nRun `scripts/rollback_ledger.sh` before truncating pending settlement rows.\n"
+    );
+    let mut extra_records = vec![
+        make_record(
+            "rec_sections",
+            "markdown",
+            "curated",
+            "commerce-core",
+            "Payment Gateway Guide",
+            &multi_section,
+            "/home/dev/.claude/projects/commerce-core/memory/gateway.md",
+            now_ms(),
+        ),
+        make_record(
+            "rec_conflict_a",
+            "markdown",
+            "curated",
+            "commerce-core",
+            "Always poll checkout_sync_job",
+            "Always run polling inside `checkout_sync_job` every 5 seconds.",
+            "/home/dev/.claude/projects/commerce-core/memory/poll_a.md",
+            now_ms(),
+        ),
+        make_record(
+            "rec_conflict_b",
+            "iron",
+            "correction",
+            "commerce-core",
+            "Avoid polling checkout_sync_job",
+            "Never poll inside `checkout_sync_job`; it is deprecated and replaced by SSE. See `src/deleted_sync_worker.rs`.",
+            "native://iron/conflict_b",
+            now_ms(),
+        ),
+    ];
+    for r in &mut extra_records {
+        r.source_group = "v03".into();
+    }
+    store
+        .apply(&ImportBatch {
+            groups: vec!["v03".into()],
+            records: extra_records,
+            ..Default::default()
+        })
+        .unwrap();
+    drop(store);
+
+    let srv = TestServer::start(&db);
+    let origin = format!("http://{}", srv.addr);
+
+    // 1. CSRF & unknown-field guards on /api/sleep and /api/intelligence/dismiss
+    let (s_csrf, _) = srv.post_json("/api/sleep", &json!({}), &[("Origin", "http://evil.example")]);
+    assert_eq!(s_csrf, 403);
+    let (s_unk, _) = srv.post_json("/api/sleep", &json!({"bad": 1}), &[("Origin", origin.as_str())]);
+    assert_eq!(s_unk, 400);
+    let (s_dis_unk, _) = srv.post_json(
+        "/api/intelligence/dismiss",
+        &json!({"id": "rec_md_1", "extra": 1}),
+        &[("Origin", origin.as_str())],
+    );
+    assert_eq!(s_dis_unk, 400);
+
+    // 2. Run sleep consolidation via HTTP API -> builds semantic.idx + detects contradiction
+    let (s_sleep, sleep_res) = srv.post_json("/api/sleep", &json!({}), &[("Origin", origin.as_str())]);
+    assert_eq!(s_sleep, 200);
+    assert!(sleep_res["semantic_records_indexed"].as_u64().unwrap() >= 6);
+    assert!(sleep_res["contradictions_found"].as_u64().unwrap() >= 1);
+    assert!(tmp.path().join("semantic.idx").is_file());
+    assert!(tmp.path().join("intelligence.json").is_file());
+
+    let (s_int, intel) = srv.get_json("/api/intelligence");
+    assert_eq!(s_int, 200);
+    assert!(!intel["contradictions"].as_array().unwrap().is_empty());
+    assert!(!intel["review_queue"].as_array().unwrap().is_empty());
+
+    // 3. Conceptual bilingual semantic RRF query with zero exact keyword overlap
+    let (s_sem, sem_ctx) =
+        srv.get_json("/api/context?q=reintento+facturacion&project=commerce-core&source=curated");
+    assert_eq!(s_sem, 200);
+    let sem_hits = sem_ctx["results"].as_array().unwrap();
+    assert!(
+        sem_hits.iter().any(|h| h["id"] == "rec_sections"),
+        "expected semantic RRF to surface rec_sections, got: {sem_ctx}"
+    );
+
+    // 4. Identifier-aware camelCase splitting (`validateOrderToken` -> `validate_order_token`)
+    let (s_camel, camel_ctx) =
+        srv.get_json("/api/context?q=validateOrderToken&project=commerce-core&source=curated");
+    assert_eq!(s_camel, 200);
+    assert!(
+        camel_ctx["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|h| h["id"] == "rec_md_1")
+    );
+
+    // 5. 1-Hop Graph Expansion: searching `nebularsignal` (only on rec_md_1) surfaces
+    //    explicitly linked `rec_iron_1` for developer, while reviewer stays markdown-only!
+    let (s_dev_g, dev_g) =
+        srv.get_json("/api/context?q=nebularsignal&role=developer&source=curated");
+    assert_eq!(s_dev_g, 200);
+    assert!(
+        dev_g["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|h| h["id"] == "rec_iron_1"),
+        "expected 1-hop graph expansion to surface linked rec_iron_1: {dev_g}"
+    );
+    let (s_rev_g, rev_g) =
+        srv.get_json("/api/context?q=nebularsignal&role=reviewer&source=curated");
+    assert_eq!(s_rev_g, 200);
+    assert!(
+        rev_g["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|h| h["source_type"] == "markdown")
+    );
+
+    // 6. Section-targeted get returns only the requested Markdown section
+    let ro_store = Store::open(&db, false).unwrap();
+    let sec_res = iron_suite::service::get_with_archive(
+        &ro_store,
+        Some(&db),
+        iron_suite::service::GetRequest {
+            id: "rec_sections".into(),
+            offset: 0,
+            max_bytes: Some(4000),
+            section: Some("Rollback".into()),
+        },
+    )
+    .unwrap();
+    assert_eq!(sec_res["section"], "Rollback Procedure");
+    assert!(sec_res["content"].as_str().unwrap().contains("rollback_ledger.sh"));
+    assert!(!sec_res["content"].as_str().unwrap().contains("General architecture guidelines"));
+
+    // 7. Code-drift audit flags deleted file & surfaces drift metadata on GET /api/records/:id
+    let repo_dir = tmp.path().join("commerce-core");
+    std::fs::create_dir_all(repo_dir.join("src")).unwrap();
+    std::fs::write(repo_dir.join("src/live.rs"), "pub fn ok() {}\n").unwrap();
+    let (entries, _) =
+        iron_suite::drift::audit_project_drift(&ro_store, "commerce-core", &repo_dir).unwrap();
+    assert!(entries.contains_key("rec_conflict_b"));
+    let mut istate = iron_suite::intelligence::load_state(&db).unwrap();
+    istate.drift = entries;
+    iron_suite::intelligence::save_state(&db, &istate).unwrap();
+    let (s_rec, rec_b) = srv.get_json("/api/records/rec_conflict_b");
+    assert_eq!(s_rec, 200);
+    assert_eq!(rec_b["drift"]["drifted"], true);
+
+    // 8. Automatic outcome feedback: pass strengthens co_used links; correction flags & dismiss clears
+    let pass_out = iron_suite::intelligence::record_outcome(
+        &db,
+        "pass",
+        Some("commerce-core"),
+        &["rec_md_1".into(), "rec_sections".into()],
+        None,
+    )
+    .unwrap();
+    assert_eq!(pass_out["reinforced"], 2);
+    assert_eq!(pass_out["co_used_links"], 2);
+
+    let corr_out = iron_suite::intelligence::record_outcome(
+        &db,
+        "correction",
+        Some("commerce-core"),
+        &["rec_md_1".into()],
+        Some("Rule needed update after incident"),
+    )
+    .unwrap();
+    assert_eq!(corr_out["flagged_for_review"], 1);
+
+    let (_, flagged_rec) = srv.get_json("/api/records/rec_md_1");
+    assert!(flagged_rec["needs_review"].is_object());
+
+    let (s_dis, dis_res) = srv.post_json(
+        "/api/intelligence/dismiss",
+        &json!({"id": "rec_md_1"}),
+        &[("Origin", origin.as_str())],
+    );
+    assert_eq!(s_dis, 200);
+    assert_eq!(dis_res["dismissed"], true);
+
+    // P0-1 regression: invalid role, strict_project without project, and empty query rejected with 400
+    let (s_bad_role, _) = srv.get_json("/api/context?q=nebularsignal&role=reveiwer");
+    assert_eq!(s_bad_role, 400);
+    let (s_bad_strict, _) = srv.get_json("/api/context?q=nebularsignal&strict_project=true");
+    assert_eq!(s_bad_strict, 400);
+    let (s_empty_q, _) = srv.get_json("/api/context?q=");
+    assert_eq!(s_empty_q, 400);
+}

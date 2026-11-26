@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
-use iron_suite::{backup, import, mcp, migrate, native, output, refresh, service, store::Store, ui};
+use iron_suite::{backup, drift, import, intelligence, mcp, migrate, native, output, refresh, service, sleep, store::Store, ui};
 use serde_json::json;
 use std::{
     io::{self, Write},
@@ -75,6 +75,26 @@ enum MemoryCommand {
         superseded_by: Option<String>,
     },
     Link,
+    Sleep {
+        #[arg(long)]
+        repos_root: Option<PathBuf>,
+    },
+    AuditDrift {
+        #[arg(long)]
+        project: String,
+        #[arg(long)]
+        repo: PathBuf,
+    },
+    Outcome {
+        #[arg(long, value_parser = ["pass", "fail", "correction"])]
+        outcome: String,
+        #[arg(long)]
+        project: Option<String>,
+        #[arg(long = "id")]
+        ids: Vec<String>,
+        #[arg(long)]
+        note: Option<String>,
+    },
     MergeProject {
         #[arg(long)]
         from: String,
@@ -116,6 +136,8 @@ enum MemoryCommand {
         offset: usize,
         #[arg(long, default_value_t = 4000)]
         max_bytes: usize,
+        #[arg(long)]
+        section: Option<String>,
     },
     Related {
         id: String,
@@ -265,6 +287,21 @@ fn run(cli: Cli) -> Result<()> {
             json!({"auto_links_built": built})
         }
         Command::Memory {
+            command: MemoryCommand::Sleep { repos_root },
+        } => sleep::run(&db, repos_root.as_deref())?,
+        Command::Memory {
+            command: MemoryCommand::AuditDrift { project, repo },
+        } => drift::audit_and_save_drift(&db, &project, &repo)?,
+        Command::Memory {
+            command:
+                MemoryCommand::Outcome {
+                    outcome,
+                    project,
+                    ids,
+                    note,
+                },
+        } => intelligence::record_outcome(&db, &outcome, project.as_deref(), &ids, note.as_deref())?,
+        Command::Memory {
             command:
                 MemoryCommand::Import {
                     claude_root,
@@ -288,6 +325,7 @@ fn run(cli: Cli) -> Result<()> {
                     id,
                     offset,
                     max_bytes,
+                    section,
                 } => service::get_with_archive(
                     &store,
                     Some(&db),
@@ -295,6 +333,7 @@ fn run(cli: Cli) -> Result<()> {
                         id,
                         offset,
                         max_bytes: Some(max_bytes),
+                        section,
                     },
                 )?,
                 MemoryCommand::Related {
@@ -326,7 +365,10 @@ fn run(cli: Cli) -> Result<()> {
                 | MemoryCommand::Link
                 | MemoryCommand::MergeProject { .. }
                 | MemoryCommand::Migrate { .. }
-                | MemoryCommand::Backup { .. } => unreachable!(),
+                | MemoryCommand::Backup { .. }
+                | MemoryCommand::Sleep { .. }
+                | MemoryCommand::AuditDrift { .. }
+                | MemoryCommand::Outcome { .. } => unreachable!(),
             }
         }
         Command::Context(args) => {

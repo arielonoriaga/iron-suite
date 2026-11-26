@@ -1,6 +1,8 @@
 pub mod aliases;
 pub mod backup;
+pub mod drift;
 pub mod import;
+pub mod intelligence;
 pub mod linker;
 pub mod mcp;
 pub mod migrate;
@@ -9,6 +11,8 @@ pub mod native;
 pub mod output;
 pub mod privacy;
 pub mod refresh;
+pub mod semantic;
 pub mod service;
+pub mod sleep;
 pub mod store;
 pub mod ui;

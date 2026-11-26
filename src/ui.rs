@@ -39,6 +39,7 @@ struct ServerState {
     bound_addr: SocketAddr,
     configured_host: Option<String>,
     relink_in_flight: AtomicBool,
+    sleep_in_flight: AtomicBool,
 }
 
 struct HttpRequest {
@@ -154,6 +155,7 @@ fn serve_on_listener_with_host(
         bound_addr,
         configured_host,
         relink_in_flight: AtomicBool::new(false),
+        sleep_in_flight: AtomicBool::new(false),
     });
 
     for incoming in listener.incoming() {
@@ -580,6 +582,10 @@ fn dispatch_get(req: &HttpRequest, db: &Path) -> HttpResponse {
             Ok(aliases) => HttpResponse::json(200, &json!({ "aliases": aliases })),
             Err(err) => HttpResponse::error(500, format!("{err:#}")),
         },
+        "/api/intelligence" => match crate::intelligence::load_state(db) {
+            Ok(intel) => HttpResponse::json(200, &json!(intel)),
+            Err(err) => HttpResponse::error(500, format!("{err:#}")),
+        },
         path if path.starts_with("/api/records/") => {
             let id = &path["/api/records/".len()..];
             if id.contains('/') || validate_id(id).is_err() {
@@ -590,7 +596,17 @@ fn dispatch_get(req: &HttpRequest, db: &Path) -> HttpResponse {
                 Err(err) => return HttpResponse::error(500, format!("{err:#}")),
             };
             match store.inspect(id) {
-                Ok(Some(record)) => HttpResponse::json(200, &record),
+                Ok(Some(mut record)) => {
+                    if let Ok(intel) = crate::intelligence::load_state(db) {
+                        if let Some(d) = intel.drift.get(id) {
+                            record["drift"] = json!(d);
+                        }
+                        if let Some(flag) = intel.needs_review.get(id) {
+                            record["needs_review"] = json!(flag);
+                        }
+                    }
+                    HttpResponse::json(200, &record)
+                }
                 Ok(None) => {
                     let archive_path = db.with_file_name("archive.db");
                     if archive_path.is_file()
@@ -679,6 +695,46 @@ fn dispatch_post(req: &HttpRequest, state: &ServerState) -> HttpResponse {
                 Err(err) => return HttpResponse::error(400, format!("invalid JSON payload: {err}")),
             };
             match crate::native::remove_project_alias(db, &payload.from) {
+                Ok(v) => HttpResponse::json(200, &v),
+                Err(err) => map_client_or_server_err(err),
+            }
+        }
+        "/api/sleep" => {
+            if state
+                .sleep_in_flight
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_err()
+            {
+                return HttpResponse::error(409, "sleep consolidation already in progress");
+            }
+            let _guard = RelinkGuard(&state.sleep_in_flight);
+            #[derive(serde::Deserialize, Default)]
+            #[serde(deny_unknown_fields)]
+            struct SleepReq {}
+            if !req.body.is_empty()
+                && serde_json::from_slice::<SleepReq>(&req.body).is_err()
+            {
+                return HttpResponse::error(400, "invalid JSON payload for /api/sleep");
+            }
+            match crate::sleep::run(db, None) {
+                Ok(v) => HttpResponse::json(200, &v),
+                Err(err) => map_client_or_server_err(err),
+            }
+        }
+        "/api/intelligence/dismiss" => {
+            #[derive(serde::Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct DismissReq {
+                id: String,
+            }
+            let payload: DismissReq = match serde_json::from_slice(&req.body) {
+                Ok(p) => p,
+                Err(err) => return HttpResponse::error(400, format!("invalid JSON payload: {err}")),
+            };
+            if validate_id(&payload.id).is_err() {
+                return HttpResponse::error(400, "invalid memory ID");
+            }
+            match crate::intelligence::dismiss_review_flag(db, &payload.id) {
                 Ok(v) => HttpResponse::json(200, &v),
                 Err(err) => map_client_or_server_err(err),
             }

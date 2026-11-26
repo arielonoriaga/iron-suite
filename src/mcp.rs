@@ -1,4 +1,4 @@
-use crate::{native, output, service, store::Store};
+use crate::{intelligence, native, output, service, store::Store};
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
 use std::{
@@ -30,7 +30,7 @@ fn definitions() -> Value {
              "limit":limit,"max_bytes":budget}}},
         {"name":"memory_get","description":"Fetch an indexed memory by ID, with provenance and supersession metadata. Continue using next_offset when truncated. Implicitly reinforces useful memories once per session.","annotations":annotations,
          "inputSchema":{"type":"object","additionalProperties":false,"required":["id"],"properties":{
-             "id":id,"offset":{"type":"integer","minimum":0,"default":0},"max_bytes":budget}}},
+             "id":id,"offset":{"type":"integer","minimum":0,"default":0},"max_bytes":budget,"section":{"type":"string","maxLength":160,"description":"Optional Markdown heading substring to fetch only that matching section."}}}},
         {"name":"memory_related","description":"Follow explicit Markdown references, supersession chains, and auto-discovered cross-conversation anchor links (`shares_anchor` with matched anchor evidence).","annotations":annotations,
          "inputSchema":{"type":"object","additionalProperties":false,"required":["id"],"properties":{
              "id":id,"relation":{"type":"string","maxLength":64},"limit":limit,"max_bytes":budget}}},
@@ -52,11 +52,24 @@ fn definitions() -> Value {
     ]})
 }
 
-#[derive(Default)]
 struct Session {
     initialized: bool,
     ready: bool,
+    session_id: String,
     reinforced_ids: HashSet<String>,
+    fetched_order: Vec<String>,
+}
+
+impl Default for Session {
+    fn default() -> Self {
+        Self {
+            initialized: false,
+            ready: false,
+            session_id: format!("mcp-{}-{}", std::process::id(), intelligence::now_ms()),
+            reinforced_ids: HashSet::new(),
+            fetched_order: Vec::new(),
+        }
+    }
 }
 
 impl Session {
@@ -101,6 +114,26 @@ impl Session {
                     && self.reinforced_ids.insert(target_id.clone())
                 {
                     let _ = native::reinforce_once(db, &target_id);
+                    let project = val
+                        .get("project")
+                        .and_then(Value::as_str)
+                        .unwrap_or("*");
+                    let _ = intelligence::record_session_recall(
+                        db,
+                        &self.session_id,
+                        project,
+                        &target_id,
+                    );
+                    if self.fetched_order.len() < 16 {
+                        if !self.fetched_order.is_empty() {
+                            let _ = intelligence::link_session_co_used(
+                                db,
+                                &target_id,
+                                &self.fetched_order,
+                            );
+                        }
+                        self.fetched_order.push(target_id.clone());
+                    }
                 }
                 res
             }

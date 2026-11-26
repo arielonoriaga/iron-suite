@@ -571,7 +571,7 @@ fn validate_text(field: &str, text: &str, max_bytes: usize) -> Result<()> {
     Ok(())
 }
 
-fn lock_native_writes(db: &Path) -> Result<File> {
+pub(crate) fn lock_native_writes(db: &Path) -> Result<File> {
     let parent = db
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
