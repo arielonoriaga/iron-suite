@@ -15,7 +15,7 @@ Usage: install.sh [options]
 
 Install Iron Suite:
   - `iron` Rust CLI & stdio MCP memory server -> ~/.local/bin/iron
-  - 8 Iron engineering & design skills (iron-design, irondev, iron-hunt, iron-audit, iron-debug, iron-perf, ...)
+  - 9 Iron engineering, browser & design skills (iron-design, iron-browser, irondev, iron-hunt, iron-audit, iron-debug, iron-perf, ...)
   - 7 Iron subagent role definitions -> ~/.claude/agents/
   - Registers `iron-memory` MCP server in Claude Code (when `claude` CLI is present)
 
@@ -114,7 +114,7 @@ install_skills_and_agents() {
       cp -R "$skill_path" "$AGENTS_SKILLS_DIR/$skill_name"
     fi
   done
-  ok "Installed 8 Iron skills -> $CLAUDE_DIR/skills/"
+  ok "Installed 9 Iron skills -> $CLAUDE_DIR/skills/"
 
   local agent_file
   for agent_file in "$src_dir"/agents/iron-*.md; do
