@@ -195,7 +195,7 @@ Iron Suite is the memory and skill foundation of **The Iron Stack** — three lo
 flowchart TB
   subgraph Stack["The Iron Stack (Zero-Cloud · Local-First · MIT)"]
     Suite["1. iron-suite (Available Now)\nSQLite FTS5 + Hybrid RRF Memory Hub · iron ui Second Brain · 9 iron-* Skills"]
-    Browser["2. iron-browser (Public Beta — Available Now)\nDual-Viewport Chromium (390×844 + 1280×720) · Rust TabEventBus · 18 MCP Tools"]
+    Browser["2. iron-browser (Public Beta — Available Now)\nDual-Viewport Chromium (390×844 + 1280×720) · WebGL Inspector · 19 MCP Tools"]
     Term["3. iron-term (Coming Soon)\nNative Rust + GPUI Multi-Agent Fleet Terminal · Headless iron-agentd · 0 MB Hibernation"]
   end
 
@@ -206,13 +206,17 @@ flowchart TB
 
 ### 1. [`iron-browser`](https://github.com/arielonoriaga/iron-browser) — *Public Beta (Available Now)*
 
-Dual-viewport Chromium developer browser and **18-tool native Rust MCP sidecar** (`iron-browser-mcp`) built so agents and humans verify mobile (`390×844`) and desktop (`1280×720`) simultaneously without double-submitting mutations:
+Dual-viewport Chromium developer browser and **19-tool native Rust MCP sidecar** (`iron-browser-mcp`) built so agents and humans verify mobile (`390×844`) and desktop (`1280×720`) simultaneously without double-submitting mutations:
 
 - **3-Tier Mirrored Input + Full-Stack Single-Flight Dedup:** Synchronizes proportional scroll, semantic DOM selectors (including Kobalte/Radix/`<dialog open>` backdrop dismissals and `preventDefault` PIN keypads), and `<canvas>` coordinates while deduplicating concurrent `POST`/`PUT`/`PATCH`/`DELETE` HTTP mutations (with correlation-ID remapping), multiplexing WebSockets + SSE + **SmartFoxServer 2X (`SFS2X`)** binary packets onto a single upstream connection, and replicating `sessionStorage` + zero-reload `spa_sync` transitions across panes.
 - **Causal Rust `TabEventBus` (`~878 ns/op`) & Visual Forensics:** Links every downstream network, storage, download, popup, and route effect to its originating `gestureSeq`; exports exact-size screenshots with per-element `clippedItems` overflow highlights, deterministic frame-stepped PNG filmstrips (`browser_repro` / `browser_filmstrip`), and `before`/`during`/`after` mark traces.
 - **POS & Slow-Device Hardware Lab + Crash/Hang Diagnostics:** Ships `sunmi-v2-pro` (`360×720`, `6×` CPU, `slow-4g`, `2 GB` `deviceMemory`, Android 7.1 UA) and `low-end-android` CDP profiles with host-to-target CPU `calibrate`, an off-thread Worker V8 `.cpuprofile` profiler (`browser_profile`), local Crashpad minidumps + stall watchdogs (`browser_health` / `iron-browser doctor`), and invisible focus-safe `--smoke` execution.
 
 ### 2. `iron-term` — *Coming Soon*
+
+<p align="center">
+  <img src="assets/iron-term-preview.png" alt="IronTerm — Coming Soon Native Rust + GPUI Multi-Agent Fleet Terminal (Alacritty Blade)" width="100%" />
+</p>
 
 Native **Rust + GPUI** multi-agent terminal and cross-machine fleet orchestrator (*Alacritty Blade* architecture) designed for engineers running 15–30+ concurrent CLI coding sessions (`claude`, `agy`, `codex`, `opencode`, shells) across workstation and laptop without melting RAM, GPU, or human attention:
 

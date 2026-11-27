@@ -1,6 +1,6 @@
 ---
 name: iron-browser
-description: "Dual-viewport (390x844 Portrait + 1280x720 Landscape) Chromium developer browser & 18-tool Rust MCP server (`iron-browser` / `iron-browser-mcp`) with 3-tier mirrored input, HTTP/WS/SSE/SFS2X deduplication, native Rust `TabEventBus` (`browser_events` causal `gestureSeq`), cross-viewport `sessionStorage` sync, SPA `spa_sync`, POS/slow-device emulation (`browser_emulate`), off-thread V8 CPU profiling (`browser_profile`), crash/hang diagnostics (`browser_health` / `iron-browser doctor`), deterministic `browser_repro`/`browser_filmstrip`, `browser_trace_start`/`stop`, and silent `--smoke` offscreen verification. Use whenever testing responsive mobile+desktop UI parity, slow Android/POS hardware, live multiplayer/WebSocket/RGS apps, UX Labs, clipped overflow, or multi-viewport regressions."
+description: "Dual-viewport (390x844 Portrait + 1280x720 Landscape) Chromium developer browser & 19-tool Rust MCP server (`iron-browser` / `iron-browser-mcp`) with 3-tier mirrored pointer/keyboard input, HTTP/WS/SSE/SFS2X deduplication, native Rust `TabEventBus` (`browser_events` causal `gestureSeq`), WebGL draw-call & rendering-order inspection (`browser_webgl`), POS/slow-device emulation (`browser_emulate`), off-thread V8 CPU profiling (`browser_profile`), crash/hang diagnostics (`browser_health` / `iron-browser doctor`), embedded multi-CLI Agent Chat Dock, deterministic `browser_repro`/`browser_filmstrip`, `browser_trace_start`/`stop`, and silent `--smoke` offscreen verification. Use whenever testing responsive mobile+desktop UI parity, WebGL draw calls/render order, slow Android/POS hardware, live multiplayer/WebSocket/RGS apps, UX Labs, clipped overflow, or multi-viewport regressions."
 ---
 
 # IronBrowser (`iron-browser` & `iron-browser-mcp`)
@@ -36,7 +36,7 @@ When running automated verification, E2E scripts, or background probes while the
    - **One-shot 302 launch convergence:** Converges initial 302 session-token redirects (`?user=...&token=...`) from Landscape onto Portrait once per programmatic navigation without mobile/desktop redirect ping-pong.
    - **Main-frame SPA `spa_sync` & `spa_auth_reconcile`:** Ignores subframe `did-navigate-in-page` (`isMainFrame === false`), transitions main-frame `pushState`/`replaceState` routes in-page without dropping WebSockets/SSE, and reconciles diverged routes when one pane unlocks via `sessionStorage` auth or hits an interactive `target-not-found` miss on a stale route.
 
-## Complete 18-Tool MCP Surface (`iron-browser mcp`)
+## Complete 19-Tool MCP Surface (`iron-browser mcp`)
 
 | Tool | Purpose & Key Arguments |
 | :--- | :--- |
@@ -58,6 +58,7 @@ When running automated verification, E2E scripts, or background probes while the
 | `browser_emulate` | Apply/reset `sunmi-v2-pro`, `low-end-android`, or custom `cpu_rate` (`1..20`), `network` (`slow-4g`, `3g`, `offline`, custom), UA, cores, RAM, `reduced_motion`, `save_data`, and `calibrate`. |
 | `browser_profile` | Non-blocking V8 CPU profiler (`action: "start"\|"stop"`) returning off-thread bottom-up `selfMs`/`totalMs` hotspots, per-script breakdown, and a `0600` `.cpuprofile` path. |
 | `browser_health` | Live main-thread event-loop lag, renderer crash/unresponsive flags, watchdog stalls, recent `main.log` tail, and offline Crashpad `.dmp` inspection. |
+| `browser_webgl` | WebGL/WebGL2 draw calls, triangles/vertices, instanced draws, shader switches, texture binds, FBO render passes, GPU resource counts, 1-frame chronological draw-call log (`action: "capture_frame"`), and CSS/Canvas paint & stacking-context rendering order (`rendering_order`). |
 
 ## CLI & MCP Configuration
 
