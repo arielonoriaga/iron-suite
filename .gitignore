@@ -1,0 +1,11 @@
+/target
+**/*.rs.bk
+*.db
+*.db-wal
+*.db-shm
+*.sock
+.DS_Store
+.env
+.env.*
+.teamwork-handoff/
+docs/IRON_BROWSER_SYNC.md

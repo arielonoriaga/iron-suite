@@ -1,0 +1,21 @@
+[package]
+name = "iron-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "iron-termctl"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+iron-proto.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+iron-agentd = { path = "../iron-agentd" }
+tempfile.workspace = true
+tokio.workspace = true

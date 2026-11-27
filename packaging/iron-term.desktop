@@ -1,0 +1,19 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=IronTerm
+GenericName=Terminal Emulator
+Comment=Multi-agent native GPUI terminal (Alacritty Blade)
+TryExec=iron-term
+Exec=iron-term
+Icon=utilities-terminal
+Terminal=false
+Categories=System;TerminalEmulator;Development;
+Keywords=terminal;shell;prompt;agent;ai;claude;codex;
+StartupNotify=true
+StartupWMClass=iron-term
+Actions=NewWindow;
+
+[Desktop Action NewWindow]
+Name=New Terminal Window
+Exec=iron-term --new-session
