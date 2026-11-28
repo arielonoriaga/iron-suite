@@ -1,12 +1,12 @@
 [Unit]
-Description=Periodic sync of laptop Cavemem history to desktop Iron Memory hub
+Description=Periodic push of this device's Cavemem history to the Iron Memory hub
 
 [Timer]
 OnBootSec=5min
 OnUnitActiveSec=6h
 Persistent=true
 RandomizedDelaySec=5m
-Unit=iron-sync-laptop-cavemem.service
+Unit=iron-sync-cavemem-to-hub.service
 
 [Install]
 WantedBy=timers.target

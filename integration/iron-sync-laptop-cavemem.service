@@ -1,9 +1,0 @@
-[Unit]
-Description=Sync consistent laptop Cavemem SQLite snapshot to desktop Iron Memory hub
-
-[Service]
-Type=oneshot
-UMask=0077
-Nice=10
-IOSchedulingClass=idle
-ExecStart=%h/.local/bin/iron-sync-laptop-cavemem

@@ -943,7 +943,7 @@ mod tests {
     }
 
     #[test]
-    fn desktop_and_laptop_personal_project_aliases_follow_the_shared_harness() {
+    fn personal_project_aliases_resolve_the_same_on_every_device_layout() {
         assert_eq!(
             scope_for_path(Path::new("/home/dev/Projects/commerce-core")).unwrap(),
             "commerce-core"

@@ -46,7 +46,7 @@ Never hand over 1 "statistical average" layout or 3 color skins of the same scre
 - Propose **3 genuinely different mental models / interaction architectures** (e.g., *Unified Single-Screen Desk* vs *Chronological Multi-Stage Flow* vs *Mobile-First Triage Copilot*).
 - **Genetic Recombination (Gen-2 / Gen-3 Iteration):** When the owner responds to Gen-1 by combining traits of two directions (e.g., *"60% A + 30% C + mutations"*), breed **2 genuinely distinct offspring per pair** inside the same live UX Lab — never a single lukewarm blend — pairing the merged architecture with concrete structural mutations (e.g., *Fused Command Omnibox + 1-Tap Inline Action Drawer* vs *Collapsible Time-of-Day Lanes + Item-by-Item Checkoff*) so the owner can test evolutionary choices live.
 - Map **100% of inventoried features, dialogs, alerts, and backend invariants** (proving zero functional regression, naming which modals collapse inline or unify).
-- Serve the **isolated clickable HTTP UX Lab** (zero edits to the shipping repo; reachable from laptop, desktop, and real mobile phone on your local/Tailscale network) with:
+- Serve the **isolated clickable HTTP UX Lab** (zero edits to the shipping repo; reachable from any of your devices and a real mobile phone on your local/Tailscale network) with:
   - Shared live state across all proposals
   - Real custom UI components & crisp vector icons (zero raw browser-default controls, zero missing CSS classes, zero cartoon emojis in chrome)
   - Real backend invariants enforced interactively (locks, permission/branch guards, reservation/overdraw checks, Undo toasts)

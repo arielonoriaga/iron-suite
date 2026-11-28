@@ -1,0 +1,7 @@
+[Unit]
+Description=Refresh the Iron system graph from local checkouts
+
+[Service]
+Type=oneshot
+Nice=10
+ExecStart=%h/.local/bin/iron --db %h/.local/share/iron/memory.db memory graph refresh

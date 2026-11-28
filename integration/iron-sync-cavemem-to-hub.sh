@@ -2,22 +2,22 @@
 set -euo pipefail
 
 SRC_DB="${CAVEMEM_DB:-$HOME/.cavemem/data.db}"
-REMOTE_HOST="${IRON_HUB_HOST:-desktop}"
-REMOTE_DEST="${IRON_REMOTE_DEST:-.local/share/iron/sources/laptop-cavemem.db}"
+REMOTE_HOST="${IRON_HUB_HOST:?set IRON_HUB_HOST to the SSH alias of the Iron Memory hub}"
+REMOTE_DEST="${IRON_REMOTE_DEST:-.local/share/iron/sources/$(uname -n)-cavemem.db}"
 REMOTE_BIN="${IRON_REMOTE_BIN:-.local/bin/iron}"
 
 if [ -L "$SRC_DB" ]; then
-  echo "iron-sync-laptop-cavemem: refusing symlink source: $SRC_DB" >&2
+  echo "iron-sync-cavemem-to-hub: refusing symlink source: $SRC_DB" >&2
   exit 1
 fi
 [ -e "$SRC_DB" ] || exit 0
 if [ ! -f "$SRC_DB" ] || [ ! -s "$SRC_DB" ]; then
-  echo "iron-sync-laptop-cavemem: source must be a non-empty regular file: $SRC_DB" >&2
+  echo "iron-sync-cavemem-to-hub: source must be a non-empty regular file: $SRC_DB" >&2
   exit 1
 fi
 
 umask 077
-tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/laptop-cavemem-XXXXXX")"
+tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/cavemem-XXXXXX")"
 trap 'rm -rf "$tmp_dir"' EXIT
 tmp_snap="$tmp_dir/snapshot.db"
 
@@ -39,7 +39,7 @@ PY
 
 snap_size="$(stat -c %s "$tmp_snap")"
 if ! [[ "$snap_size" =~ ^[1-9][0-9]*$ ]]; then
-  echo "iron-sync-laptop-cavemem: invalid snapshot size: $snap_size" >&2
+  echo "iron-sync-cavemem-to-hub: invalid snapshot size: $snap_size" >&2
   exit 1
 fi
 snap_sha="$(sha256sum "$tmp_snap" | cut -d' ' -f1)"
@@ -53,13 +53,13 @@ case "$2" in /*) iron_bin="$2" ;; *) iron_bin="$HOME/$2" ;; esac
 expected_size="$3"
 expected_sha="$4"
 if [ -L "$dest" ] || [ -d "$dest" ]; then
-  echo "iron-sync-laptop-cavemem: refusing symlink or directory destination: $dest" >&2
+  echo "iron-sync-cavemem-to-hub: refusing symlink or directory destination: $dest" >&2
   exit 1
 fi
 dest_dir="$(dirname "$dest")"
 mkdir -p "$dest_dir"
 chmod 700 "$dest_dir"
-rtmp="$(mktemp "$dest_dir/.laptop-cavemem-XXXXXX.tmp")"
+rtmp="$(mktemp "$dest_dir/.cavemem-XXXXXX.tmp")"
 trap '\''rm -f -- "$rtmp"'\'' EXIT
 cat > "$rtmp"
 python3 -c '\''

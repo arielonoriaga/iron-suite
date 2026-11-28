@@ -339,7 +339,7 @@ fn mcp_native_save_is_visible_to_cli_and_survives_source_refresh() {
     let messages = [
         json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"antigravity-fixture","version":"1"}}}),
         json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
-        json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"memory_remember","arguments":{"title":"Shared orbit decision","content":"The orbitmarker belongs in one desktop hub.","project":"alpha","agent":"antigravity","kind":"decision"}}}),
+        json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"memory_remember","arguments":{"title":"Shared orbit decision","content":"The orbitmarker belongs in one shared hub.","project":"alpha","agent":"antigravity","kind":"decision"}}}),
         json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"memory_search","arguments":{"query":"orbitmarker","project":"alpha","strict_project":true}}}),
     ];
     let mut input = child.stdin.take().unwrap();
@@ -378,7 +378,7 @@ fn mcp_native_save_is_visible_to_cli_and_survives_source_refresh() {
             "--title",
             "Shared orbit decision",
             "--content",
-            "The orbitmarker belongs in one desktop hub.",
+            "The orbitmarker belongs in one shared hub.",
             "--project",
             "alpha",
             "--agent",

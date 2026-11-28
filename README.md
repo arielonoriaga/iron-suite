@@ -113,7 +113,7 @@ iron memory search 'tenant isolation' --project commerce-core --strict-project -
 
 # Save replay-safe notes/corrections & run nightly drift/contradiction consolidation
 iron memory remember --project iron-stack --agent claude --kind correction \
-  --supersedes mem_OLD_ID --title 'Shared memory hub' --content 'Desktop holds the authoritative store.'
+  --supersedes mem_OLD_ID --title 'Shared memory hub' --content 'One hub host holds the authoritative store.'
 iron memory sleep --repos-root ~/Projects
 
 # Launch the zero-dependency Second Brain & Trust Desk Web UI (loopback by default)
@@ -130,20 +130,20 @@ iron ui --port 7420
 - `memory_feedback` — reinforces `helpful` memories or demotes `outdated`/`contradicted` entries.
 
 #### Zero-Cloud Multi-Machine Hub over SSH
-Point laptops and remote devboxes at one workstation SQLite WAL store over plain SSH (no open ports, no sync conflicts):
+Run one hub host with the authoritative SQLite WAL store and point any number of other devices at it over plain SSH (no open ports, no sync conflicts):
 
 ```json
 {
   "mcpServers": {
     "iron-memory": {
       "command": "ssh",
-      "args": ["-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=12", "desktop", ".local/bin/iron", "mcp"]
+      "args": ["-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=12", "iron-hub", ".local/bin/iron", "mcp"]
     }
   }
 }
 ```
 
-See [docs/ssh-hub-rollout.md](docs/ssh-hub-rollout.md) and `integration/` for `systemd --user` timers.
+See [docs/ssh-hub-rollout.md](docs/ssh-hub-rollout.md) for running one hub with any number of devices (memory over SSH, a per-device system graph, verified pairs shared through any file sync) and `integration/` for `systemd --user` timers.
 
 ---
 

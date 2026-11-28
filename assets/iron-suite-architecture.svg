@@ -144,8 +144,8 @@
     <!-- Core Sub-box 4: Multi-Machine Hub Note -->
     <rect x="432" y="576" width="396" height="82" rx="8" fill="#142336" stroke="#3B82F6" stroke-opacity="0.55"/>
     <text x="448" y="600" font-family="GeistMono Nerd Font Mono, monospace" font-size="11.2" font-weight="700" fill="#93C5FD">MULTI-MACHINE SHARED HUB OVER PLAIN SSH</text>
-    <text x="448" y="622" font-family="Adwaita Sans, sans-serif" font-size="11.6" fill="#CAD7E6">One workstation holds the canonical DB; laptops &amp; devboxes</text>
-    <text x="448" y="641" font-family="Adwaita Sans, sans-serif" font-size="11.6" fill="#CAD7E6">connect via <tspan font-family="GeistMono Nerd Font Mono, monospace" fill="#EDF2F8">ssh desktop .local/bin/iron mcp</tspan> — zero drift.</text>
+    <text x="448" y="622" font-family="Adwaita Sans, sans-serif" font-size="11.6" fill="#CAD7E6">One hub holds the canonical DB; any number of devices</text>
+    <text x="448" y="641" font-family="Adwaita Sans, sans-serif" font-size="11.6" fill="#CAD7E6">connect via <tspan font-family="GeistMono Nerd Font Mono, monospace" fill="#EDF2F8">ssh iron-hub .local/bin/iron mcp</tspan> — zero drift.</text>
   </g>
 
   <!-- COLUMN 3 TOP: NATIVE AGENTS & ADVERSARIAL HARNESS -->

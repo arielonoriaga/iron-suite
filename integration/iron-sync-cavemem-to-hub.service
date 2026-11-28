@@ -1,0 +1,9 @@
+[Unit]
+Description=Push a consistent Cavemem SQLite snapshot from this device to the Iron Memory hub
+
+[Service]
+Type=oneshot
+UMask=0077
+Nice=10
+IOSchedulingClass=idle
+ExecStart=%h/.local/bin/iron-sync-cavemem-to-hub
