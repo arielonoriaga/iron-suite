@@ -367,15 +367,35 @@ pub fn record_file_recall(db: &Path, session_id: &str, path: &Path) -> Result<Va
     Ok(json!({"found": true, "id": id, "project": project, "reinforced": reinforced}))
 }
 
+const CLAUDE_HOME_MARKER: &str = "/.claude/";
+pub const CLAUDE_CONFIG_DIR_ENV: &str = "CLAUDE_CONFIG_DIR";
+
 fn recall_path_candidates(path: &Path) -> Vec<String> {
     let mut candidates = vec![path.to_string_lossy().into_owned()];
-    if let Ok(real) = fs::canonicalize(path) {
-        let real = real.to_string_lossy().into_owned();
-        if !candidates.contains(&real) {
-            candidates.push(real);
+    let mut push = |candidate: String| {
+        if !candidates.contains(&candidate) {
+            candidates.push(candidate);
         }
+    };
+    if let Ok(real) = fs::canonicalize(path) {
+        push(real.to_string_lossy().into_owned());
+    }
+    if let Some(local) = local_claude_equivalent(path) {
+        if let Ok(real) = fs::canonicalize(&local) {
+            push(real.to_string_lossy().into_owned());
+        }
+        push(local.to_string_lossy().into_owned());
     }
     candidates
+}
+
+fn local_claude_equivalent(path: &Path) -> Option<PathBuf> {
+    let raw = path.to_string_lossy();
+    let (_, relative) = raw.split_once(CLAUDE_HOME_MARKER)?;
+    let claude_home = std::env::var_os(CLAUDE_CONFIG_DIR_ENV)
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".claude")))?;
+    Some(claude_home.join(relative))
 }
 
 pub fn link_session_co_used(db: &Path, new_id: &str, prior_ids: &[String]) -> Result<usize> {

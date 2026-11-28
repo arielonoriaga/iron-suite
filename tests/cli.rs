@@ -2001,3 +2001,64 @@ impl ShopClient {
         graph_text(&["unverified", "--repo", "shop"]).contains("0 cross-repo edges")
     );
 }
+
+#[test]
+fn verified_pairs_written_on_one_machine_mark_the_same_pairs_verified_on_another() {
+    let machine_a = Fixture::new();
+    let machine_b = tempfile::tempdir().unwrap();
+    let db_b = machine_b.path().join("iron.db");
+    let shared = machine_a.root.join("synced/verdicts/graph-pairs.jsonl");
+    let repos_root = machine_a.root.join("repos");
+    init_git_repo(
+        &repos_root.join("shop"),
+        &[("backend/src/api.rs", "use axum::{Router, routing::post};\npub async fn create_invoice() {}\npub fn router() -> Router {\n    Router::new().route(\"/api/internal/invoices\", post(create_invoice))\n}\n")],
+    );
+    init_git_repo(
+        &repos_root.join("addon"),
+        &[("src/client.rs", "pub struct ShopClient { base_url: String, http: reqwest::Client }\nimpl ShopClient {\n    pub async fn issue(&self) {\n        let _ = self.http.post(format!(\"{}/api/internal/invoices\", self.base_url)).send().await;\n    }\n}\n")],
+    );
+    let config = json!({
+        "repos_root": repos_root,
+        "services": {
+            "shop-api": { "repo": "shop", "root": "backend", "stack": "axum" },
+            "addon-api": { "repo": "addon", "root": "", "stack": "axum" }
+        },
+        "clients": { "addon:src/client.rs": "shop-api" },
+        "verified_pairs_file": shared
+    });
+    write_graph_cfg(&machine_a.db, config.clone());
+    write_graph_cfg(&db_b, config);
+
+    run_iron_text(&machine_a.db, &["memory", "graph", "refresh"]);
+    let first_b: Value = serde_json::from_str(&run_iron_text(&db_b, &["memory", "graph", "refresh"])).unwrap();
+    assert_eq!(first_b["shared_pairs_applied"], 0);
+    assert!(run_iron_text(&db_b, &["memory", "graph", "unverified", "--repo", "shop"]).contains("[never-verified]"));
+
+    let verified: Value = serde_json::from_str(&run_iron_text(&machine_a.db, &["memory", "graph", "verify", "--repo", "shop"])).unwrap();
+    assert_eq!(verified["shared_pairs_written"], 1);
+    let again: Value = serde_json::from_str(&run_iron_text(&machine_a.db, &["memory", "graph", "verify", "--repo", "shop"])).unwrap();
+    assert_eq!(again["shared_pairs_written"], 0);
+
+    let second_b: Value = serde_json::from_str(&run_iron_text(&db_b, &["memory", "graph", "refresh"])).unwrap();
+    assert_eq!(second_b["shared_pairs_applied"], 1);
+    let unverified_b = run_iron_text(&db_b, &["memory", "graph", "unverified", "--repo", "shop"]);
+    assert!(!unverified_b.contains("[never-verified]"), "unverified_b={unverified_b}");
+}
+
+#[test]
+fn file_recall_resolves_a_memory_path_written_under_another_machines_home() {
+    let fixture = Fixture::new();
+    fixture.import();
+    let foreign_path = "/home/other-user/.claude/memory/projects/alpha/decision.md";
+    let out = Command::new(env!("CARGO_BIN_EXE_iron"))
+        .env(iron_suite::intelligence::CLAUDE_CONFIG_DIR_ENV, &fixture.root)
+        .arg("--db")
+        .arg(&fixture.db)
+        .args(["memory", "recall", "--path", foreign_path, "--session", "claude-remote"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let recalled: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(recalled["found"], true);
+    assert_eq!(recalled["project"], "alpha");
+}

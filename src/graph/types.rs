@@ -320,6 +320,8 @@ pub struct GraphConfig {
     pub containers: BTreeMap<String, String>,
     #[serde(default)]
     pub external: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verified_pairs_file: Option<PathBuf>,
 }
 
 impl GraphConfig {
@@ -332,6 +334,7 @@ impl GraphConfig {
             prefixes: BTreeMap::new(),
             containers: BTreeMap::new(),
             external: Vec::new(),
+            verified_pairs_file: None,
         }
     }
 }

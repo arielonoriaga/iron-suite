@@ -1985,6 +1985,31 @@ impl GraphWriteTx<'_> {
         Ok(updated)
     }
 
+    pub fn verified_pairs_for_repo(&self, repo: &str) -> Result<Vec<(String, String, i64)>> {
+        let mut stmt = self.tx.prepare(
+            "SELECT pair_key, verified_sha, verified_at FROM edges
+             WHERE pair_key != '' AND verified_pair_key = pair_key
+               AND (
+                   call_id IN (SELECT id FROM calls WHERE repo = ?1)
+                   OR endpoint_id IN (SELECT id FROM endpoints WHERE repo = ?1)
+               )",
+        )?;
+        let rows = stmt.query_map(params![repo], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    pub fn apply_shared_verified_pairs(&self, pairs: &[(String, String, i64)]) -> Result<usize> {
+        let mut stmt = self.tx.prepare(
+            "UPDATE edges SET verified_pair_key = pair_key, verified_sha = ?2, verified_at = ?3
+             WHERE pair_key = ?1 AND verified_pair_key IS NOT pair_key",
+        )?;
+        let mut applied = 0;
+        for (pair_key, sha, at) in pairs {
+            applied += stmt.execute(params![pair_key, sha, at])?;
+        }
+        Ok(applied)
+    }
+
     pub fn record_lost_edge_history(
         &self,
         lost: &[ExistingEdgeSnapshot],

@@ -538,15 +538,7 @@ mod tests {
     }
 
     fn empty_config() -> GraphConfig {
-        GraphConfig {
-            repos_root: PathBuf::from("/tmp"),
-            services: BTreeMap::new(),
-            env: BTreeMap::new(),
-            clients: BTreeMap::new(),
-            prefixes: BTreeMap::new(),
-            containers: BTreeMap::new(),
-            external: Vec::new(),
-        }
+        GraphConfig::with_services(PathBuf::from("/tmp"), BTreeMap::new())
     }
 
     fn run_test_resolve(

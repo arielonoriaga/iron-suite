@@ -30,5 +30,6 @@
   "prefixes": {},
   "external": [
     "worker:src/providers/**"
-  ]
+  ],
+  "verified_pairs_file": "~/.claude/verdicts/graph-pairs.jsonl"
 }

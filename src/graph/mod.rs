@@ -9,6 +9,7 @@ pub mod query;
 pub mod resolve;
 pub mod rust_client;
 pub mod scan;
+pub mod shared_pairs;
 pub mod store;
 pub mod suggest;
 pub mod sync;
@@ -78,7 +79,12 @@ pub fn save_config(db: &Path, config: &GraphConfig) -> Result<String> {
 pub fn refresh(db: &Path) -> Result<Value> {
     let (config, config_hash) = load_config(db)?;
     let graph_db = graph_db_path(db).context("system-graph requires a durable index path")?;
-    sync::refresh_graph(&config, &config_hash, &graph_db)
+    let mut report = sync::refresh_graph(&config, &config_hash, &graph_db)?;
+    let imported = sync::import_shared_pairs(&config, &graph_db)?;
+    if let Some(object) = report.as_object_mut() {
+        object.insert("shared_pairs_applied".into(), json!(imported));
+    }
+    Ok(report)
 }
 
 pub fn touch(db: &Path, paths: &[PathBuf]) -> Result<TouchReport> {

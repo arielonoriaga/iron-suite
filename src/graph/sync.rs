@@ -23,6 +23,7 @@ use super::query;
 use super::resolve;
 use super::rust_client;
 use super::scan;
+use super::shared_pairs::{SharedPair, append_new_pairs, expand_home, read_pairs};
 use super::store::{
     CallRow, EdgeLogicalKey, EdgeUpdateBatch, EndpointRow, ExistingEdgeSnapshot, FileHashRow,
     GraphStore, GraphWriteTx, RepoRow, ServiceRow, lock_graph_file,
@@ -341,13 +342,44 @@ pub fn verify_repo(
     let verified_at = now_ms();
     let tx = store.begin_write()?;
     let verified_edges = tx.verify_repo_edges(repo, &target_sha, verified_at)?;
+    let verified_pairs = tx.verified_pairs_for_repo(repo)?;
     tx.commit()?;
+    let shared_pairs_written = match &config.verified_pairs_file {
+        Some(file) => {
+            let pairs: Vec<SharedPair> = verified_pairs
+                .into_iter()
+                .map(|(pair_key, sha, at)| SharedPair { pair_key, sha, repo: repo.to_owned(), at })
+                .collect();
+            append_new_pairs(&expand_home(file), &pairs)?
+        }
+        None => 0,
+    };
     Ok(json!({
         "repo": repo,
         "sha": target_sha,
         "verified_edges": verified_edges,
         "verified_at": verified_at,
+        "shared_pairs_written": shared_pairs_written,
     }))
+}
+
+pub fn import_shared_pairs(config: &GraphConfig, graph_db: &Path) -> Result<usize> {
+    let Some(file) = &config.verified_pairs_file else {
+        return Ok(0);
+    };
+    let pairs: Vec<(String, String, i64)> = read_pairs(&expand_home(file))?
+        .into_iter()
+        .map(|p| (p.pair_key, p.sha, p.at))
+        .collect();
+    if pairs.is_empty() {
+        return Ok(0);
+    }
+    let _lock = lock_graph_file(graph_db)?;
+    let mut store = GraphStore::open_writable(graph_db)?;
+    let tx = store.begin_write()?;
+    let applied = tx.apply_shared_verified_pairs(&pairs)?;
+    tx.commit()?;
+    Ok(applied)
 }
 
 fn resolve_sha_arg(repo_dir: &Path, raw: &str) -> String {
@@ -2595,13 +2627,8 @@ mod tests {
         let mut prefixes = BTreeMap::new();
         prefixes.insert("repo:src/c.rs".to_owned(), "/catalog".to_owned());
         let config = GraphConfig {
-            repos_root: PathBuf::from("/tmp"),
-            services: BTreeMap::new(),
-            env: BTreeMap::new(),
-            clients: BTreeMap::new(),
             prefixes,
-            containers: BTreeMap::new(),
-            external: Vec::new(),
+            ..GraphConfig::with_services(PathBuf::from("/tmp"), BTreeMap::new())
         };
         let mut affected = HashSet::new();
         affected.insert((HttpMethod::Get, "/catalog".to_owned()));
