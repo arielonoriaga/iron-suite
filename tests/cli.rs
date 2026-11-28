@@ -774,6 +774,11 @@ fn init_git_repo(dir: &std::path::Path, files: &[(&str, &str)]) -> String {
     git_in(dir, &["rev-parse", "HEAD"])
 }
 
+fn write_graph_cfg(db: &std::path::Path, cfg: Value) {
+    let cfg_path = db.parent().unwrap().join("system-graph.json");
+    fs::write(&cfg_path, serde_json::to_string_pretty(&cfg).unwrap()).unwrap();
+}
+
 fn run_iron_text(db: &std::path::Path, args: &[&str]) -> String {
     let out = Command::new(env!("CARGO_BIN_EXE_iron"))
         .arg("--db")
@@ -1520,4 +1525,212 @@ server {
         &["memory", "graph", "who-calls", "POST /v1/public/signup"],
     );
     assert!(who_after.contains("apps/huggian/src/pages/signup.astro"));
+}
+
+#[test]
+fn system_graph_breaking_alerts_contracts_mismatches_and_express_under_byte_cap() {
+    let fixture = Fixture::new();
+    let repos_root = fixture.root.join("repos");
+    let shop_dir = repos_root.join("shop");
+    let addon_dir = repos_root.join("addon");
+    let wa_dir = repos_root.join("ez-wa");
+
+    let api_rs_initial = r#"
+#[derive(Deserialize)]
+pub struct InvoiceReq {
+    pub customer_id: String,
+    pub total: i64,
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct InvoiceRes {
+    pub cae: String,
+    pub total: i64,
+}
+
+async fn create_invoice(Json(req): Json<InvoiceReq>) -> Result<Json<InvoiceRes>, AppError> {
+    todo!()
+}
+
+async fn create_order() -> Json<InvoiceRes> {
+    todo!()
+}
+
+pub fn router() -> Router {
+    Router::new()
+        .route("/api/internal/invoices", post(create_invoice))
+        .route("/api/v1/orders", post(create_order))
+}
+"#;
+    init_git_repo(
+        &shop_dir,
+        &[
+            ("backend/src/api.rs", api_rs_initial),
+            (
+                "backend/src/wa_client.rs",
+                r#"
+impl WaClient {
+    async fn send(&self, to: &str, text: &str) {
+        let url = format!("{}/send", self.base_url.trim_end_matches('/'));
+        let _ = self.http
+            .post(url)
+            .json(&serde_json::json!({ "to": to, "text": text }))
+            .send()
+            .await;
+    }
+}
+"#,
+            ),
+            (
+                "frontend/src/lib/api.ts",
+                r#"
+export const api = {
+  orders: {
+    create: (body: unknown) => apiFetch("/orders", { method: "POST", body }),
+  },
+};
+"#,
+            ),
+            (
+                "frontend/src/pages/orders/NewOrder.tsx",
+                r#"
+export async function submitOrder() {
+  return api.orders.create({ sku: "A1" });
+}
+"#,
+            ),
+        ],
+    );
+    let addon_client_initial = r#"
+#[derive(Serialize)]
+struct InvoicePayload {
+    customer_id: String,
+    total: i64,
+}
+
+impl ShopClient {
+    async fn issue(&self) {
+        let body = InvoicePayload { customer_id: "c1".into(), total: 100 };
+        let _ = self.http
+            .post(format!("{}/api/internal/invoices", self.base_url))
+            .json(&body)
+            .send()
+            .await;
+    }
+}
+"#;
+    init_git_repo(&addon_dir, &[("src/client.rs", addon_client_initial)]);
+    init_git_repo(
+        &wa_dir,
+        &[(
+            "src/app.js",
+            r#"
+import express from 'express';
+export function createApp() {
+  const app = express();
+  app.get('/health', (_req, res) => res.json({ status: 'ok' }));
+  app.post('/send', (req, res) => res.json({ ok: true }));
+  return app;
+}
+"#,
+        )],
+    );
+
+    write_graph_cfg(
+        &fixture.db,
+        json!({
+            "repos_root": repos_root,
+            "services": {
+                "shop-api": { "repo": "shop", "root": "backend", "stack": "axum" },
+                "shop-web": { "repo": "shop", "root": "frontend", "stack": "spa", "client": "src/lib/api.ts", "base": "shop-api", "base_prefix": "/api/v1" },
+                "addon-api": { "repo": "addon", "root": "", "stack": "axum" },
+                "ez-wa": { "repo": "ez-wa", "root": "", "stack": "express" }
+            },
+            "clients": {
+                "addon:src/client.rs": "shop-api",
+                "shop:backend/src/wa_client.rs": "ez-wa"
+            }
+        }),
+    );
+
+    let (init_ref, _) = fixture.call(&["memory", "graph", "refresh"]);
+    assert_eq!(init_ref["edges"], 3);
+    assert_eq!(init_ref["fog"], 0);
+    assert_eq!(init_ref["breaking"], json!([]));
+
+    let graph_text = |extra: &[&str]| {
+        let mut args = vec!["memory", "graph"];
+        args.extend_from_slice(extra);
+        run_iron_text(&fixture.db, &args)
+    };
+    let who_send = graph_text(&["who-calls", "POST /send"]);
+    assert!(who_send.contains("backend/src/wa_client.rs"), "who_send={who_send}");
+
+    let no_mismatch = graph_text(&["contracts", "--mismatches"]);
+    assert!(no_mismatch.contains("0 mismatches"), "no_mismatch={no_mismatch}");
+    let bad_budget = Command::new(env!("CARGO_BIN_EXE_iron"))
+        .args(["--db", fixture.db.to_str().unwrap(), "memory", "graph", "contracts", "--max-bytes", "10"])
+        .output()
+        .unwrap();
+    assert!(!bad_budget.status.success());
+
+    let api_rs = shop_dir.join("backend/src/api.rs");
+    let contract_changed_src = api_rs_initial.replace("pub customer_id: String,", "pub tenant_id: String,");
+    fs::write(&api_rs, &contract_changed_src).unwrap();
+    let contract_touch = graph_text(&["touch", api_rs.to_str().unwrap()]);
+    assert!(contract_touch.len() <= 300, "len={} out={contract_touch}", contract_touch.len());
+    assert!(contract_touch.contains("⚠ CONTRACT POST /api/internal/invoices"), "out={contract_touch}");
+    assert!(contract_touch.contains("-customer_id +tenant_id"), "out={contract_touch}");
+    assert!(contract_touch.contains("addon src/client.rs:"), "out={contract_touch}");
+
+    let mismatches = graph_text(&["contracts", "--mismatches", "--max-bytes", "600"]);
+    assert!(mismatches.len() <= 600, "len={}", mismatches.len());
+    assert!(mismatches.contains("POST /api/internal/invoices"), "mismatches={mismatches}");
+    assert!(mismatches.contains("missing: tenant_id"), "mismatches={mismatches}");
+    assert!(mismatches.contains("unknown: customer_id"), "mismatches={mismatches}");
+
+    let who_inv = graph_text(&["who-calls", "POST /api/internal/invoices"]);
+    assert!(who_inv.contains("mismatch("), "who_inv={who_inv}");
+
+    let client_rs = addon_dir.join("src/client.rs");
+    let imp_client = graph_text(&["impact", "--file", client_rs.to_str().unwrap()]);
+    assert!(imp_client.contains("mismatch("), "imp_client={imp_client}");
+
+    let renamed_src = contract_changed_src
+        .replace("/api/internal/invoices", "/api/internal/invoices-v2")
+        .replace("/api/v1/orders", "/api/v2/orders");
+    fs::write(&api_rs, &renamed_src).unwrap();
+    let (break_json, _) = fixture.call(&[
+        "memory",
+        "graph",
+        "touch",
+        "--json",
+        api_rs.to_str().unwrap(),
+    ]);
+    let break_text = break_json["impact"].as_str().unwrap();
+    assert!(break_text.len() <= 300, "len={} text={break_text}", break_text.len());
+    assert!(
+        break_text.starts_with("⚠ BREAKING POST /api/internal/invoices removed here (renamed to /api/internal/invoices-v2?); 1 caller now unresolved: addon src/client.rs:"),
+        "break_text={break_text}"
+    );
+    let breaking_arr = break_json["breaking"].as_array().unwrap();
+    assert_eq!(breaking_arr.len(), 2, "breaking={breaking_arr:?}");
+    assert_eq!(breaking_arr[0]["cross_repo"], true);
+    assert_eq!(breaking_arr[1]["cross_repo"], false);
+
+    let changes_txt = graph_text(&["changes", "--since", "7"]);
+    assert!(changes_txt.contains("[BREAKING]"), "changes={changes_txt}");
+
+    fs::write(&api_rs, api_rs_initial).unwrap();
+    let _ = graph_text(&["touch", api_rs.to_str().unwrap()]);
+    let broken_caller = addon_client_initial.replace("/api/internal/invoices", "/api/internal/invoices-typo");
+    fs::write(&client_rs, &broken_caller).unwrap();
+    let caller_touch = graph_text(&["touch", client_rs.to_str().unwrap()]);
+    assert!(caller_touch.len() <= 300, "len={} out={caller_touch}", caller_touch.len());
+    assert!(
+        caller_touch.contains("⚠ BREAKING POST /api/internal/invoices-typo no longer resolves"),
+        "caller_touch={caller_touch}"
+    );
 }

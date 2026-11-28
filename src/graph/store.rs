@@ -12,6 +12,7 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension, Transaction, Transactio
 
 use crate::aliases::ensure_private_dir;
 
+use super::contracts::{BreakingKind, PayloadContract};
 use super::nginx::NginxRoute;
 use super::scan::matches_external_glob;
 use super::types::{
@@ -19,7 +20,7 @@ use super::types::{
 };
 
 const GRAPH_APPLICATION_ID: i64 = 0x4952_4750;
-const GRAPH_SCHEMA_VERSION: i64 = 2;
+const GRAPH_SCHEMA_VERSION: i64 = 3;
 const BUSY_TIMEOUT_SECS: u64 = 5;
 const LOCK_TIMEOUT_SECS: u64 = 10;
 const LOCK_POLL_MS: u64 = 20;
@@ -198,7 +199,9 @@ pub struct ExistingEdgeSnapshot {
     pub source: SiteRef,
     pub target: SiteRef,
     pub method: HttpMethod,
+    pub call_method: HttpMethod,
     pub path_norm: String,
+    pub call_path_norm: String,
     pub confidence: Confidence,
     pub first_seen_sha: String,
     pub last_seen_sha: String,
@@ -238,6 +241,8 @@ pub struct EdgeChangeRow {
     pub sha: String,
     pub seen_count: i64,
     pub timestamp_ms: i64,
+    pub breaking: bool,
+    pub reason: String,
 }
 
 #[derive(Debug, Clone)]
@@ -272,6 +277,7 @@ pub struct GraphCounts {
 
 pub struct GraphStore {
     conn: Connection,
+    has_contract_cols: bool,
 }
 
 pub struct GraphWriteTx<'a> {
@@ -318,7 +324,10 @@ CREATE TABLE IF NOT EXISTS endpoints (
     line INTEGER NOT NULL,
     handler TEXT NOT NULL,
     prefix_state TEXT NOT NULL,
-    verified_sha TEXT NOT NULL
+    verified_sha TEXT NOT NULL,
+    req_contract TEXT NOT NULL DEFAULT '',
+    res_contract TEXT NOT NULL DEFAULT '',
+    contract_hash TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS calls (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -334,7 +343,8 @@ CREATE TABLE IF NOT EXISTS calls (
     area TEXT NOT NULL,
     why TEXT NOT NULL,
     external INTEGER NOT NULL DEFAULT 0,
-    verified_sha TEXT NOT NULL
+    verified_sha TEXT NOT NULL,
+    req_contract TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS edges (
     call_id INTEGER NOT NULL REFERENCES calls(id) ON DELETE CASCADE,
@@ -363,7 +373,9 @@ CREATE TABLE IF NOT EXISTS edge_history (
     first_seen_sha TEXT NOT NULL,
     last_seen_sha TEXT NOT NULL,
     seen_count INTEGER NOT NULL DEFAULT 1,
-    removed_at INTEGER NOT NULL
+    removed_at INTEGER NOT NULL,
+    breaking INTEGER NOT NULL DEFAULT 0,
+    reason TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_file_hashes_service ON file_hashes(repo, service);
 CREATE INDEX IF NOT EXISTS idx_endpoints_lookup ON endpoints(method, path_norm);
@@ -386,16 +398,29 @@ const EDGE_MIGRATION_COLUMNS: &[(&str, &str)] = &[
     ("first_seen_at", "INTEGER NOT NULL DEFAULT 0"),
     ("last_seen_at", "INTEGER NOT NULL DEFAULT 0"),
 ];
+const ENDPOINT_MIGRATION_COLUMNS: &[(&str, &str)] = &[
+    ("req_contract", "TEXT NOT NULL DEFAULT ''"),
+    ("res_contract", "TEXT NOT NULL DEFAULT ''"),
+    ("contract_hash", "TEXT NOT NULL DEFAULT ''"),
+];
+const CALL_MIGRATION_COLUMNS: &[(&str, &str)] = &[
+    ("req_contract", "TEXT NOT NULL DEFAULT ''"),
+];
+const EDGE_HISTORY_MIGRATION_COLUMNS: &[(&str, &str)] = &[
+    ("breaking", "INTEGER NOT NULL DEFAULT 0"),
+    ("reason", "TEXT NOT NULL DEFAULT ''"),
+];
 
-const ENDPOINT_SELECT: &str =
-    "SELECT id, service, repo, method, path_raw, path_norm, file, line, handler, prefix_state, verified_sha FROM endpoints";
-const CALL_SELECT: &str =
-    "SELECT id, service, repo, method, path_raw, path_norm, file, line, base_ref, symbol, area, why, external, verified_sha FROM calls";
+const ENDPOINT_SELECT: &str = "SELECT id, service, repo, method, path_raw, path_norm, file, line, handler, prefix_state, verified_sha, req_contract, res_contract, contract_hash FROM endpoints";
+const ENDPOINT_SELECT_V2: &str = "SELECT id, service, repo, method, path_raw, path_norm, file, line, handler, prefix_state, verified_sha, '' AS req_contract, '' AS res_contract, '' AS contract_hash FROM endpoints";
+const CALL_SELECT: &str = "SELECT id, service, repo, method, path_raw, path_norm, file, line, base_ref, symbol, area, why, external, verified_sha, req_contract FROM calls";
+const CALL_SELECT_V2: &str = "SELECT id, service, repo, method, path_raw, path_norm, file, line, base_ref, symbol, area, why, external, verified_sha, '' AS req_contract FROM calls";
 const SNAPSHOT_SELECT_SQL: &str = "
 SELECT c.service, c.repo, c.file, c.line,
        ep.service, ep.repo, ep.file, ep.line,
-       ep.method, ep.path_norm, e.confidence,
-       e.first_seen_sha, e.last_seen_sha, e.seen_count, e.first_seen_at
+       ep.method, ep.path_norm, c.path_norm, e.confidence,
+       e.first_seen_sha, e.last_seen_sha, e.seen_count, e.first_seen_at,
+       c.method
 FROM edges e
 JOIN calls c ON c.id = e.call_id
 JOIN endpoints ep ON ep.id = e.endpoint_id";
@@ -403,8 +428,9 @@ const INSERT_HISTORY_SQL: &str = "
 INSERT INTO edge_history(
     call_service, call_repo, call_file, call_line,
     endpoint_service, endpoint_repo, endpoint_file, endpoint_line,
-    method, path_norm, confidence, first_seen_sha, last_seen_sha, seen_count, removed_at
-) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)";
+    method, path_norm, confidence, first_seen_sha, last_seen_sha, seen_count, removed_at,
+    breaking, reason
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)";
 
 impl GraphStore {
     pub fn open_writable(path: &Path) -> Result<Self> {
@@ -431,11 +457,14 @@ impl GraphStore {
         if current_ver < GRAPH_SCHEMA_VERSION {
             conn.execute_batch("PRAGMA journal_mode = WAL;")?;
             conn.execute_batch(SCHEMA_SQL)?;
-            migrate_edges_table(&conn)?;
+            migrate_schema_columns(&conn)?;
             conn.pragma_update(None, "application_id", GRAPH_APPLICATION_ID)?;
             conn.pragma_update(None, "user_version", GRAPH_SCHEMA_VERSION)?;
         }
-        Ok(Self { conn })
+        Ok(Self {
+            conn,
+            has_contract_cols: true,
+        })
     }
 
     pub fn open_readonly(path: &Path) -> Result<Option<Self>> {
@@ -455,7 +484,28 @@ impl GraphStore {
             .with_context(|| format!("cannot open graph db read-only {}", path.display()))?;
         conn.busy_timeout(Duration::from_secs(BUSY_TIMEOUT_SECS))?;
         conn.execute_batch("PRAGMA query_only = ON;")?;
-        Ok(Some(Self { conn }))
+        let has_contract_cols = table_has_column(&conn, "endpoints", "req_contract")?
+            && table_has_column(&conn, "calls", "req_contract")?;
+        Ok(Some(Self {
+            conn,
+            has_contract_cols,
+        }))
+    }
+
+    fn endpoint_select_sql(&self) -> &'static str {
+        if self.has_contract_cols {
+            ENDPOINT_SELECT
+        } else {
+            ENDPOINT_SELECT_V2
+        }
+    }
+
+    fn call_select_sql(&self) -> &'static str {
+        if self.has_contract_cols {
+            CALL_SELECT
+        } else {
+            CALL_SELECT_V2
+        }
     }
 
     pub fn begin_write(&mut self) -> Result<GraphWriteTx<'_>> {
@@ -532,11 +582,11 @@ impl GraphStore {
     }
 
     pub fn load_all_endpoints(&self) -> Result<Vec<EndpointRow>> {
-        load_all_endpoints_conn(&self.conn)
+        load_all_endpoints_with_sql(&self.conn, self.endpoint_select_sql())
     }
 
     pub fn load_all_calls(&self) -> Result<Vec<CallRow>> {
-        load_all_calls_conn(&self.conn)
+        load_all_calls_with_sql(&self.conn, self.call_select_sql())
     }
 
     pub fn find_endpoints(
@@ -545,8 +595,9 @@ impl GraphStore {
         path_norm: &str,
         repo: Option<&str>,
     ) -> Result<Vec<EndpointRow>> {
+        let ep_sel = self.endpoint_select_sql();
         let mut stmt = self.conn.prepare(&format!(
-            "{ENDPOINT_SELECT} WHERE path_norm = ?1 AND (?2 IS NULL OR method = ?2) AND (?3 IS NULL OR repo = ?3) ORDER BY method, service, file, line"
+            "{ep_sel} WHERE path_norm = ?1 AND (?2 IS NULL OR method = ?2) AND (?3 IS NULL OR repo = ?3) ORDER BY method, service, file, line"
         ))?;
         collect_rows(stmt.query_map(
             params![path_norm, method.map(HttpMethod::as_str), repo],
@@ -555,40 +606,27 @@ impl GraphStore {
     }
 
     pub fn callers_for_endpoint(&self, endpoint_id: i64) -> Result<Vec<CallerEdge>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT c.id, c.service, c.repo, c.method, c.path_raw, c.path_norm, c.file, c.line,
-                    c.base_ref, c.symbol, c.area, c.why, c.external, c.verified_sha,
-                    COALESCE(s.stack, ?2), e.confidence
-             FROM edges e
-             JOIN calls c ON c.id = e.call_id
-             LEFT JOIN services s ON s.name = c.service
-             WHERE e.endpoint_id = ?1
-             ORDER BY c.service, c.file, c.line",
-        )?;
-        collect_rows(stmt.query_map(params![endpoint_id, Stack::Axum.as_str()], |r| {
-            let call = map_call_row(r)?;
-            let stack_raw: String = r.get(14)?;
-            let conf_raw: String = r.get(15)?;
-            Ok(CallerEdge {
-                call,
-                service_stack: Stack::parse(&stack_raw).unwrap_or(Stack::Axum),
-                confidence: Confidence::parse(&conf_raw).unwrap_or(Confidence::Suffix),
-            })
-        })?)
+        callers_for_endpoint_conn(&self.conn, endpoint_id, self.has_contract_cols)
     }
 
     pub fn providers_for_call(&self, call_id: i64) -> Result<Vec<ProviderEdge>> {
-        let mut stmt = self.conn.prepare(
+        let ep_contract_cols = if self.has_contract_cols {
+            "ep.req_contract, ep.res_contract, ep.contract_hash"
+        } else {
+            "'' AS req_contract, '' AS res_contract, '' AS contract_hash"
+        };
+        let mut stmt = self.conn.prepare(&format!(
             "SELECT ep.id, ep.service, ep.repo, ep.method, ep.path_raw, ep.path_norm, ep.file,
-                    ep.line, ep.handler, ep.prefix_state, ep.verified_sha, e.confidence
+                    ep.line, ep.handler, ep.prefix_state, ep.verified_sha,
+                    {ep_contract_cols}, e.confidence
              FROM edges e
              JOIN endpoints ep ON ep.id = e.endpoint_id
              WHERE e.call_id = ?1
-             ORDER BY ep.service, ep.file, ep.line",
-        )?;
+             ORDER BY ep.service, ep.file, ep.line"
+        ))?;
         collect_rows(stmt.query_map(params![call_id], |r| {
             let endpoint = map_endpoint_row(r)?;
-            let conf_raw: String = r.get(11)?;
+            let conf_raw: String = r.get(14)?;
             Ok(ProviderEdge {
                 endpoint,
                 confidence: Confidence::parse(&conf_raw).unwrap_or(Confidence::Suffix),
@@ -597,15 +635,17 @@ impl GraphStore {
     }
 
     pub fn endpoints_in_file(&self, repo: Option<&str>, file: &str) -> Result<Vec<EndpointRow>> {
+        let ep_sel = self.endpoint_select_sql();
         let mut stmt = self.conn.prepare(&format!(
-            "{ENDPOINT_SELECT} WHERE file = ?1 AND (?2 IS NULL OR repo = ?2) ORDER BY repo, line, method"
+            "{ep_sel} WHERE file = ?1 AND (?2 IS NULL OR repo = ?2) ORDER BY repo, line, method"
         ))?;
         collect_rows(stmt.query_map(params![file, repo], map_endpoint_row)?)
     }
 
     pub fn calls_in_file(&self, repo: Option<&str>, file: &str) -> Result<Vec<CallRow>> {
+        let call_sel = self.call_select_sql();
         let mut stmt = self.conn.prepare(&format!(
-            "{CALL_SELECT} WHERE file = ?1 AND (?2 IS NULL OR repo = ?2) ORDER BY repo, line, method"
+            "{call_sel} WHERE file = ?1 AND (?2 IS NULL OR repo = ?2) ORDER BY repo, line, method"
         ))?;
         collect_rows(stmt.query_map(params![file, repo], map_call_row)?)
     }
@@ -615,22 +655,61 @@ impl GraphStore {
         target: &str,
         repo: Option<&str>,
     ) -> Result<Vec<CallRow>> {
+        let call_sel = self.call_select_sql();
         let mut stmt = self.conn.prepare(&format!(
-            "{CALL_SELECT} WHERE (?2 IS NULL OR repo = ?2) AND (service = ?1 OR repo = ?1 OR file = ?1) ORDER BY repo, file, line"
+            "{call_sel} WHERE (?2 IS NULL OR repo = ?2) AND (service = ?1 OR repo = ?1 OR file = ?1) ORDER BY repo, file, line"
         ))?;
         collect_rows(stmt.query_map(params![target, repo], map_call_row)?)
     }
 
     pub fn unresolved_calls(&self, repo: Option<&str>) -> Result<Vec<CallRow>> {
-        let mut stmt = self.conn.prepare(
+        let call_contract_col = if self.has_contract_cols {
+            "c.req_contract"
+        } else {
+            "'' AS req_contract"
+        };
+        let mut stmt = self.conn.prepare(&format!(
             "SELECT c.id, c.service, c.repo, c.method, c.path_raw, c.path_norm, c.file, c.line,
-                    c.base_ref, c.symbol, c.area, c.why, c.external, c.verified_sha
+                    c.base_ref, c.symbol, c.area, c.why, c.external, c.verified_sha, {call_contract_col}
              FROM calls c
              LEFT JOIN edges e ON e.call_id = c.id
              WHERE c.external = 0 AND e.call_id IS NULL AND (?1 IS NULL OR c.repo = ?1)
-             ORDER BY c.repo, c.file, c.line",
-        )?;
+             ORDER BY c.repo, c.file, c.line"
+        ))?;
         collect_rows(stmt.query_map(params![repo], map_call_row)?)
+    }
+
+    pub fn load_endpoints_with_contracts(&self, repo: Option<&str>) -> Result<Vec<EndpointRow>> {
+        if !self.has_contract_cols {
+            return Ok(Vec::new());
+        }
+        let mut stmt = self.conn.prepare(&format!(
+            "{ENDPOINT_SELECT} WHERE (req_contract != '' OR res_contract != '') AND (?1 IS NULL OR repo = ?1) ORDER BY repo, service, method, path_norm"
+        ))?;
+        collect_rows(stmt.query_map(params![repo], map_endpoint_row)?)
+    }
+
+    pub fn load_edge_pairs(&self, repo: Option<&str>) -> Result<Vec<(EndpointRow, CallRow)>> {
+        if !self.has_contract_cols {
+            return Ok(Vec::new());
+        }
+        let mut stmt = self.conn.prepare(
+            "SELECT ep.id, ep.service, ep.repo, ep.method, ep.path_raw, ep.path_norm, ep.file,
+                    ep.line, ep.handler, ep.prefix_state, ep.verified_sha,
+                    ep.req_contract, ep.res_contract, ep.contract_hash,
+                    c.id, c.service, c.repo, c.method, c.path_raw, c.path_norm, c.file, c.line,
+                    c.base_ref, c.symbol, c.area, c.why, c.external, c.verified_sha, c.req_contract
+             FROM edges e
+             JOIN endpoints ep ON ep.id = e.endpoint_id
+             JOIN calls c ON c.id = e.call_id
+             WHERE (?1 IS NULL OR ep.repo = ?1 OR c.repo = ?1)
+             ORDER BY ep.repo, ep.method, ep.path_norm, c.repo, c.file, c.line",
+        )?;
+        collect_rows(stmt.query_map(params![repo], |r| {
+            let ep = map_endpoint_row_at(r, 0)?;
+            let call = map_call_row_at(r, 14)?;
+            Ok((ep, call))
+        })?)
     }
 
     pub fn resolved_call_files(&self) -> Result<HashSet<(String, String)>> {
@@ -679,7 +758,8 @@ impl GraphStore {
         let mut added_stmt = self.conn.prepare(
             "SELECT c.service, c.repo, c.file, c.line,
                     ep.service, ep.repo, ep.file, ep.line,
-                    ep.method, ep.path_norm, e.first_seen_sha, e.seen_count, e.first_seen_at
+                    ep.method, ep.path_norm, e.first_seen_sha, e.seen_count, e.first_seen_at,
+                    0, ''
              FROM edges e
              JOIN calls c ON c.id = e.call_id
              JOIN endpoints ep ON ep.id = e.endpoint_id
@@ -691,15 +771,23 @@ impl GraphStore {
             map_edge_change_row(r, EdgeChangeKind::Added)
         })?)?;
 
-        let mut rem_stmt = self.conn.prepare(
+        let has_breaking_col = table_has_column(&self.conn, TABLE_EDGE_HISTORY, "breaking")?;
+        let extra_cols = if has_breaking_col {
+            "breaking, reason"
+        } else {
+            "0, ''"
+        };
+        let rem_sql = format!(
             "SELECT call_service, call_repo, call_file, call_line,
                     endpoint_service, endpoint_repo, endpoint_file, endpoint_line,
-                    method, path_norm, last_seen_sha, seen_count, removed_at
+                    method, path_norm, last_seen_sha, seen_count, removed_at,
+                    {extra_cols}
              FROM edge_history
              WHERE call_repo != endpoint_repo
                AND removed_at >= ?1
-               AND (?2 IS NULL OR call_repo = ?2 OR endpoint_repo = ?2)",
-        )?;
+               AND (?2 IS NULL OR call_repo = ?2 OR endpoint_repo = ?2)"
+        );
+        let mut rem_stmt = self.conn.prepare(&rem_sql)?;
         out.extend(collect_rows(rem_stmt.query_map(params![since_ms, repo], |r| {
             map_edge_change_row(r, EdgeChangeKind::Removed)
         })?)?);
@@ -791,7 +879,7 @@ impl GraphWriteTx<'_> {
             ))?;
             let snaps = collect_rows(snap_stmt.query_map(params![repo], map_edge_snapshot)?)?;
             for snap in &snaps {
-                insert_history_row(&mut hist_stmt, snap, now_ms)?;
+                insert_history_row(&mut hist_stmt, snap, now_ms, None)?;
                 removed_edges += 1;
             }
             drop(snap_stmt);
@@ -909,11 +997,15 @@ impl GraphWriteTx<'_> {
         service_endpoints: &[(String, Vec<ExtractedEndpoint>)],
     ) -> Result<()> {
         let mut stmt = self.tx.prepare(
-            "INSERT INTO endpoints(service, repo, method, path_raw, path_norm, file, line, handler, prefix_state, verified_sha)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            "INSERT INTO endpoints(
+                service, repo, method, path_raw, path_norm, file, line, handler, prefix_state,
+                verified_sha, req_contract, res_contract, contract_hash
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
         )?;
         for (service, endpoints) in service_endpoints {
             for ep in endpoints {
+                let req_json = serialize_contract(ep.req_contract.as_ref());
+                let res_json = serialize_contract(ep.res_contract.as_ref());
                 stmt.execute(params![
                     service,
                     repo,
@@ -925,6 +1017,9 @@ impl GraphWriteTx<'_> {
                     ep.handler,
                     ep.prefix_state.as_str(),
                     head_sha,
+                    req_json,
+                    res_json,
+                    ep.contract_hash,
                 ])?;
             }
         }
@@ -938,11 +1033,14 @@ impl GraphWriteTx<'_> {
         service_calls: &[(String, Vec<ExtractedCall>)],
     ) -> Result<()> {
         let mut stmt = self.tx.prepare(
-            "INSERT INTO calls(service, repo, method, path_raw, path_norm, file, line, base_ref, symbol, area, why, external, verified_sha)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            "INSERT INTO calls(
+                service, repo, method, path_raw, path_norm, file, line, base_ref, symbol, area,
+                why, external, verified_sha, req_contract
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
         )?;
         for (service, calls) in service_calls {
             for c in calls {
+                let req_json = serialize_contract(c.req_contract.as_ref());
                 stmt.execute(params![
                     service,
                     repo,
@@ -957,6 +1055,7 @@ impl GraphWriteTx<'_> {
                     c.why,
                     i64::from(c.external),
                     head_sha,
+                    req_json,
                 ])?;
             }
         }
@@ -1132,7 +1231,95 @@ impl GraphWriteTx<'_> {
         Ok(by_key.into_values().collect())
     }
 
-    pub fn apply_edge_updates(&self, batch: &EdgeUpdateBatch<'_>) -> Result<(usize, usize)> {
+    pub fn callers_for_endpoint(&self, endpoint_id: i64) -> Result<Vec<CallerEdge>> {
+        callers_for_endpoint_conn(&self.tx, endpoint_id, true)
+    }
+
+    pub fn endpoint_exists(
+        &self,
+        service: &str,
+        file: &str,
+        method: HttpMethod,
+        path_norm: &str,
+    ) -> Result<bool> {
+        let count: i64 = self.tx.query_row(
+            "SELECT COUNT(*) FROM endpoints
+             WHERE service = ?1 AND file = ?2 AND method = ?3 AND path_norm = ?4",
+            params![service, file, method.as_str(), path_norm],
+            |r| r.get(0),
+        )?;
+        Ok(count > 0)
+    }
+
+    pub fn call_site_is_unresolved(
+        &self,
+        repo: &str,
+        file: &str,
+        method: HttpMethod,
+        call_path_norm: &str,
+    ) -> Result<bool> {
+        let count: i64 = self.tx.query_row(
+            "SELECT COUNT(*)
+             FROM calls c
+             LEFT JOIN edges e ON e.call_id = c.id
+             WHERE c.repo = ?1 AND c.file = ?2 AND c.method = ?3 AND c.path_norm = ?4
+               AND c.external = 0 AND e.call_id IS NULL",
+            params![repo, file, method.as_str(), call_path_norm],
+            |r| r.get(0),
+        )?;
+        Ok(count > 0)
+    }
+
+    pub fn load_unresolved_calls_in_file(&self, repo: &str, file: &str) -> Result<Vec<CallRow>> {
+        let mut stmt = self.tx.prepare(
+            "SELECT c.id, c.service, c.repo, c.method, c.path_raw, c.path_norm, c.file, c.line,
+                    c.base_ref, c.symbol, c.area, c.why, c.external, c.verified_sha, c.req_contract
+             FROM calls c
+             LEFT JOIN edges e ON e.call_id = c.id
+             WHERE c.repo = ?1 AND c.file = ?2 AND c.external = 0 AND e.call_id IS NULL
+             ORDER BY c.line, c.id",
+        )?;
+        collect_rows(stmt.query_map(params![repo, file], map_call_row)?)
+    }
+
+    pub fn load_unresolved_call_keys_for_scope(
+        &self,
+        repo_files: &[(String, String)],
+        full_services: &[(String, String)],
+    ) -> Result<HashSet<(String, String, HttpMethod, String)>> {
+        let mut out = HashSet::new();
+        for (repo, file) in repo_files {
+            for c in self.load_unresolved_calls_in_file(repo, file)? {
+                out.insert((c.repo, c.call.file, c.call.method, c.call.path_norm));
+            }
+        }
+        if !full_services.is_empty() {
+            let mut stmt = self.tx.prepare(
+                "SELECT c.repo, c.file, c.method, c.path_norm
+                 FROM calls c
+                 LEFT JOIN edges e ON e.call_id = c.id
+                 WHERE c.repo = ?1 AND c.service = ?2 AND c.external = 0 AND e.call_id IS NULL",
+            )?;
+            for (repo, svc) in full_services {
+                let rows = collect_rows(stmt.query_map(params![repo, svc], |r| {
+                    let m_raw: String = r.get(2)?;
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        HttpMethod::parse(&m_raw).unwrap_or(HttpMethod::Any),
+                        r.get::<_, String>(3)?,
+                    ))
+                })?)?;
+                out.extend(rows);
+            }
+        }
+        Ok(out)
+    }
+
+    pub fn write_edges_and_collect_lost(
+        &self,
+        batch: &EdgeUpdateBatch<'_>,
+    ) -> Result<(usize, Vec<ExistingEdgeSnapshot>)> {
         if batch.full_replace {
             self.tx.execute("DELETE FROM edges", [])?;
         } else if !batch.replace_call_ids.is_empty() {
@@ -1202,14 +1389,32 @@ impl GraphWriteTx<'_> {
         }
         drop(ins_edge);
 
-        let mut removed = 0usize;
-        let mut ins_hist = self.tx.prepare(INSERT_HISTORY_SQL)?;
+        let mut lost = Vec::new();
         for (key, snap) in &old_by_key {
             if !surviving_keys.contains(key) {
-                insert_history_row(&mut ins_hist, snap, batch.now_ms)?;
-                removed += 1;
+                lost.push((*snap).clone());
             }
         }
+        Ok((added, lost))
+    }
+
+    pub fn record_lost_edge_history(
+        &self,
+        lost: &[ExistingEdgeSnapshot],
+        breaking_reasons: &HashMap<EdgeLogicalKey, BreakingKind>,
+        now_ms: i64,
+    ) -> Result<usize> {
+        let mut ins_hist = self.tx.prepare(INSERT_HISTORY_SQL)?;
+        for snap in lost {
+            let reason = breaking_reasons.get(&snap.logical_key()).copied();
+            insert_history_row(&mut ins_hist, snap, now_ms, reason)?;
+        }
+        Ok(lost.len())
+    }
+
+    pub fn apply_edge_updates(&self, batch: &EdgeUpdateBatch<'_>) -> Result<(usize, usize)> {
+        let (added, lost) = self.write_edges_and_collect_lost(batch)?;
+        let removed = self.record_lost_edge_history(&lost, &HashMap::new(), batch.now_ms)?;
         Ok((added, removed))
     }
 
@@ -1292,7 +1497,10 @@ fn insert_history_row(
     stmt: &mut rusqlite::Statement<'_>,
     snap: &ExistingEdgeSnapshot,
     removed_at: i64,
+    breaking_reason: Option<BreakingKind>,
 ) -> Result<()> {
+    let breaking = i64::from(breaking_reason.is_some());
+    let reason = breaking_reason.map_or("", BreakingKind::as_str);
     stmt.execute(params![
         snap.source.service,
         snap.source.repo,
@@ -1309,23 +1517,84 @@ fn insert_history_row(
         snap.last_seen_sha,
         snap.seen_count,
         removed_at,
+        breaking,
+        reason,
     ])?;
     Ok(())
 }
 
-fn migrate_edges_table(conn: &Connection) -> Result<()> {
-    let mut stmt = conn.prepare("PRAGMA table_info(edges)")?;
+fn migrate_schema_columns(conn: &Connection) -> Result<()> {
+    migrate_table_columns(conn, "edges", EDGE_MIGRATION_COLUMNS)?;
+    migrate_table_columns(conn, "endpoints", ENDPOINT_MIGRATION_COLUMNS)?;
+    migrate_table_columns(conn, "calls", CALL_MIGRATION_COLUMNS)?;
+    migrate_table_columns(conn, TABLE_EDGE_HISTORY, EDGE_HISTORY_MIGRATION_COLUMNS)?;
+    Ok(())
+}
+
+fn migrate_table_columns(conn: &Connection, table: &str, columns: &[(&str, &str)]) -> Result<()> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
     let existing: HashSet<String> =
         collect_rows(stmt.query_map([], |r| r.get::<_, String>(1))?)?
             .into_iter()
             .collect();
     drop(stmt);
-    for (col, spec) in EDGE_MIGRATION_COLUMNS {
+    for (col, spec) in columns {
         if !existing.contains(*col) {
-            conn.execute(&format!("ALTER TABLE edges ADD COLUMN {col} {spec}"), [])?;
+            conn.execute(&format!("ALTER TABLE {table} ADD COLUMN {col} {spec}"), [])?;
         }
     }
     Ok(())
+}
+
+fn table_has_column(conn: &Connection, table: &str, col: &str) -> Result<bool> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let cols = collect_rows(stmt.query_map([], |r| r.get::<_, String>(1))?)?;
+    Ok(cols.iter().any(|c| c == col))
+}
+
+fn callers_for_endpoint_conn(
+    conn: &Connection,
+    endpoint_id: i64,
+    has_contract_cols: bool,
+) -> Result<Vec<CallerEdge>> {
+    let req_col = if has_contract_cols {
+        "c.req_contract"
+    } else {
+        "'' AS req_contract"
+    };
+    let mut stmt = conn.prepare(&format!(
+        "SELECT c.id, c.service, c.repo, c.method, c.path_raw, c.path_norm, c.file, c.line,
+                c.base_ref, c.symbol, c.area, c.why, c.external, c.verified_sha, {req_col},
+                COALESCE(s.stack, ?2), e.confidence
+         FROM edges e
+         JOIN calls c ON c.id = e.call_id
+         LEFT JOIN services s ON s.name = c.service
+         WHERE e.endpoint_id = ?1
+         ORDER BY c.service, c.file, c.line"
+    ))?;
+    collect_rows(stmt.query_map(params![endpoint_id, Stack::Axum.as_str()], |r| {
+        let call = map_call_row(r)?;
+        let stack_raw: String = r.get(15)?;
+        let conf_raw: String = r.get(16)?;
+        Ok(CallerEdge {
+            call,
+            service_stack: Stack::parse(&stack_raw).unwrap_or(Stack::Axum),
+            confidence: Confidence::parse(&conf_raw).unwrap_or(Confidence::Suffix),
+        })
+    })?)
+}
+
+fn serialize_contract(contract: Option<&PayloadContract>) -> String {
+    contract
+        .and_then(|c| serde_json::to_string(c).ok())
+        .unwrap_or_default()
+}
+
+fn deserialize_contract(raw: &str) -> Option<PayloadContract> {
+    if raw.is_empty() {
+        return None;
+    }
+    serde_json::from_str(raw).ok()
 }
 
 fn get_meta_conn(conn: &Connection, key: &str) -> Result<Option<String>> {
@@ -1394,12 +1663,20 @@ fn load_all_services_conn(conn: &Connection) -> Result<Vec<ServiceRow>> {
 }
 
 fn load_all_endpoints_conn(conn: &Connection) -> Result<Vec<EndpointRow>> {
-    let mut stmt = conn.prepare(&format!("{ENDPOINT_SELECT} ORDER BY id"))?;
+    load_all_endpoints_with_sql(conn, ENDPOINT_SELECT)
+}
+
+fn load_all_endpoints_with_sql(conn: &Connection, select_sql: &str) -> Result<Vec<EndpointRow>> {
+    let mut stmt = conn.prepare(&format!("{select_sql} ORDER BY id"))?;
     collect_rows(stmt.query_map([], map_endpoint_row)?)
 }
 
 fn load_all_calls_conn(conn: &Connection) -> Result<Vec<CallRow>> {
-    let mut stmt = conn.prepare(&format!("{CALL_SELECT} ORDER BY id"))?;
+    load_all_calls_with_sql(conn, CALL_SELECT)
+}
+
+fn load_all_calls_with_sql(conn: &Connection, select_sql: &str) -> Result<Vec<CallRow>> {
+    let mut stmt = conn.prepare(&format!("{select_sql} ORDER BY id"))?;
     collect_rows(stmt.query_map([], map_call_row)?)
 }
 
@@ -1437,74 +1714,93 @@ fn map_site_ref(r: &rusqlite::Row<'_>, offset: usize) -> rusqlite::Result<SiteRe
     })
 }
 
-fn map_route_common(
+fn map_route_common_at(
     r: &rusqlite::Row<'_>,
+    offset: usize,
 ) -> rusqlite::Result<(HttpMethod, String, String, String, usize)> {
-    let method_raw: String = r.get(3)?;
+    let method_raw: String = r.get(offset + 3)?;
     Ok((
         HttpMethod::parse(&method_raw).unwrap_or(HttpMethod::Any),
-        r.get(4)?,
-        r.get(5)?,
-        r.get(6)?,
-        r.get::<_, i64>(7)?.max(0) as usize,
+        r.get(offset + 4)?,
+        r.get(offset + 5)?,
+        r.get(offset + 6)?,
+        r.get::<_, i64>(offset + 7)?.max(0) as usize,
     ))
 }
 
 fn map_endpoint_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<EndpointRow> {
-    let (method, path_raw, path_norm, file, line) = map_route_common(r)?;
-    let prefix_raw: String = r.get(9)?;
+    map_endpoint_row_at(r, 0)
+}
+
+fn map_endpoint_row_at(r: &rusqlite::Row<'_>, offset: usize) -> rusqlite::Result<EndpointRow> {
+    let (method, path_raw, path_norm, file, line) = map_route_common_at(r, offset)?;
+    let prefix_raw: String = r.get(offset + 9)?;
+    let req_raw: String = r.get(offset + 11)?;
+    let res_raw: String = r.get(offset + 12)?;
     Ok(EndpointRow {
-        id: r.get(0)?,
-        service: r.get(1)?,
-        repo: r.get(2)?,
-        verified_sha: r.get(10)?,
+        id: r.get(offset)?,
+        service: r.get(offset + 1)?,
+        repo: r.get(offset + 2)?,
+        verified_sha: r.get(offset + 10)?,
         ep: ExtractedEndpoint {
             method,
             path_raw,
             path_norm,
             file,
             line,
-            handler: r.get(8)?,
+            handler: r.get(offset + 8)?,
             prefix_state: PrefixState::parse(&prefix_raw).unwrap_or(PrefixState::Partial),
+            req_contract: deserialize_contract(&req_raw),
+            res_contract: deserialize_contract(&res_raw),
+            contract_hash: r.get(offset + 13)?,
         },
     })
 }
 
 fn map_call_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<CallRow> {
-    let (method, path_raw, path_norm, file, line) = map_route_common(r)?;
+    map_call_row_at(r, 0)
+}
+
+fn map_call_row_at(r: &rusqlite::Row<'_>, offset: usize) -> rusqlite::Result<CallRow> {
+    let (method, path_raw, path_norm, file, line) = map_route_common_at(r, offset)?;
+    let req_raw: String = r.get(offset + 14)?;
     Ok(CallRow {
-        id: r.get(0)?,
-        service: r.get(1)?,
-        repo: r.get(2)?,
-        verified_sha: r.get(13)?,
+        id: r.get(offset)?,
+        service: r.get(offset + 1)?,
+        repo: r.get(offset + 2)?,
+        verified_sha: r.get(offset + 13)?,
         call: ExtractedCall {
             method,
             path_raw,
             path_norm,
             file,
             line,
-            base_ref: r.get(8)?,
-            symbol: r.get(9)?,
-            area: r.get(10)?,
-            why: r.get(11)?,
-            external: r.get::<_, i64>(12)? != 0,
+            base_ref: r.get(offset + 8)?,
+            symbol: r.get(offset + 9)?,
+            area: r.get(offset + 10)?,
+            why: r.get(offset + 11)?,
+            external: r.get::<_, i64>(offset + 12)? != 0,
+            req_contract: deserialize_contract(&req_raw),
         },
     })
 }
 
 fn map_edge_snapshot(r: &rusqlite::Row<'_>) -> rusqlite::Result<ExistingEdgeSnapshot> {
     let method_raw: String = r.get(8)?;
-    let conf_raw: String = r.get(10)?;
+    let conf_raw: String = r.get(11)?;
+    let call_method_raw: String = r.get(16)?;
     Ok(ExistingEdgeSnapshot {
         source: map_site_ref(r, 0)?,
         target: map_site_ref(r, 4)?,
         method: HttpMethod::parse(&method_raw).unwrap_or(HttpMethod::Any),
+        call_method: HttpMethod::parse(&call_method_raw).unwrap_or(HttpMethod::Any),
         path_norm: r.get(9)?,
+        call_path_norm: r.get(10)?,
         confidence: Confidence::parse(&conf_raw).unwrap_or(Confidence::Suffix),
-        first_seen_sha: r.get(11)?,
-        last_seen_sha: r.get(12)?,
-        seen_count: r.get(13)?,
-        first_seen_at: r.get(14)?,
+        first_seen_sha: r.get(12)?,
+        last_seen_sha: r.get(13)?,
+        seen_count: r.get(14)?,
+        first_seen_at: r.get(15)?,
     })
 }
 
@@ -1532,6 +1828,8 @@ fn map_edge_change_row(
         sha: r.get(10)?,
         seen_count: r.get(11)?,
         timestamp_ms: r.get(12)?,
+        breaking: r.get::<_, i64>(13)? != 0,
+        reason: r.get(14)?,
     })
 }
 
@@ -1595,15 +1893,14 @@ mod tests {
             &repo.head_sha,
             &[(
                 "shop-api".to_owned(),
-                vec![ExtractedEndpoint {
-                    method: HttpMethod::Post,
-                    path_raw: "/api/internal/invoices".to_owned(),
-                    path_norm: "/api/internal/invoices".to_owned(),
-                    file: "src/api.rs".to_owned(),
-                    line: 12,
-                    handler: "create".to_owned(),
-                    prefix_state: PrefixState::Full,
-                }],
+                vec![ExtractedEndpoint::simple(
+                    HttpMethod::Post,
+                    "/api/internal/invoices",
+                    "src/api.rs",
+                    12,
+                    "create",
+                    PrefixState::Full,
+                )],
             )],
         )
         .unwrap();
@@ -1612,18 +1909,15 @@ mod tests {
             "111111222222",
             &[(
                 "billing-svc".to_owned(),
-                vec![ExtractedCall {
-                    method: HttpMethod::Post,
-                    path_raw: "/api/internal/invoices".to_owned(),
-                    path_norm: "/api/internal/invoices".to_owned(),
-                    file: "src/client.rs".to_owned(),
-                    line: 40,
-                    base_ref: "self.url".to_owned(),
-                    symbol: "issue".to_owned(),
-                    area: String::new(),
-                    why: "issue".to_owned(),
-                    external: false,
-                }],
+                vec![ExtractedCall::simple(
+                    HttpMethod::Post,
+                    "/api/internal/invoices",
+                    "src/client.rs",
+                    40,
+                    "self.url",
+                    "issue",
+                    "issue",
+                )],
             )],
         )
         .unwrap();
@@ -1660,5 +1954,59 @@ mod tests {
         assert_eq!(changes.len(), 1);
         assert_eq!(changes[0].kind, EdgeChangeKind::Removed);
         assert_eq!(changes[0].sha, "abcdef123456");
+    }
+
+    #[test]
+    fn readonly_open_reads_v2_schema_without_contract_columns() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("graph-v2.db");
+        let conn = Connection::open(&db).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE repos (repo TEXT PRIMARY KEY, repo_path TEXT NOT NULL, head_sha TEXT NOT NULL, extractor_ver INTEGER NOT NULL, dirty INTEGER NOT NULL DEFAULT 0, refreshed_at INTEGER NOT NULL);
+             CREATE TABLE services (name TEXT PRIMARY KEY, repo TEXT NOT NULL, root TEXT NOT NULL, stack TEXT NOT NULL, base_service TEXT, base_prefix TEXT);
+             CREATE TABLE endpoints (id INTEGER PRIMARY KEY AUTOINCREMENT, service TEXT NOT NULL, repo TEXT NOT NULL, method TEXT NOT NULL, path_raw TEXT NOT NULL, path_norm TEXT NOT NULL, file TEXT NOT NULL, line INTEGER NOT NULL, handler TEXT NOT NULL, prefix_state TEXT NOT NULL, verified_sha TEXT NOT NULL);
+             CREATE TABLE calls (id INTEGER PRIMARY KEY AUTOINCREMENT, service TEXT NOT NULL, repo TEXT NOT NULL, method TEXT NOT NULL, path_raw TEXT NOT NULL, path_norm TEXT NOT NULL, file TEXT NOT NULL, line INTEGER NOT NULL, base_ref TEXT NOT NULL, symbol TEXT NOT NULL, area TEXT NOT NULL, why TEXT NOT NULL, external INTEGER NOT NULL DEFAULT 0, verified_sha TEXT NOT NULL);
+             CREATE TABLE edges (call_id INTEGER NOT NULL, endpoint_id INTEGER NOT NULL, confidence TEXT NOT NULL, first_seen_sha TEXT NOT NULL DEFAULT '', last_seen_sha TEXT NOT NULL DEFAULT '', seen_count INTEGER NOT NULL DEFAULT 1, first_seen_at INTEGER NOT NULL DEFAULT 0, last_seen_at INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (call_id, endpoint_id));
+             CREATE TABLE edge_history (id INTEGER PRIMARY KEY AUTOINCREMENT, call_service TEXT NOT NULL, call_repo TEXT NOT NULL, call_file TEXT NOT NULL, call_line INTEGER NOT NULL, endpoint_service TEXT NOT NULL, endpoint_repo TEXT NOT NULL, endpoint_file TEXT NOT NULL, endpoint_line INTEGER NOT NULL, method TEXT NOT NULL, path_norm TEXT NOT NULL, confidence TEXT NOT NULL, first_seen_sha TEXT NOT NULL, last_seen_sha TEXT NOT NULL, seen_count INTEGER NOT NULL, removed_at INTEGER NOT NULL);
+             PRAGMA user_version = 2;",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO services VALUES (?1, ?2, '', ?3, NULL, NULL)",
+            params!["api", "shop", Stack::Axum.as_str()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO endpoints VALUES (1, ?1, ?2, ?3, ?4, ?4, ?5, 10, ?6, ?7, ?8)",
+            params!["api", "shop", HttpMethod::Get.as_str(), "/health", "src/api.rs", "health", PrefixState::Full.as_str(), "aaa"],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO calls VALUES (1, ?1, ?2, ?3, ?4, ?4, ?5, 5, ?6, ?7, '', '', 0, ?8)",
+            params!["cli", "addon", HttpMethod::Get.as_str(), "/health", "src/c.rs", "u", "get", "bbb"],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO calls VALUES (2, ?1, ?2, ?3, ?4, ?4, ?5, 9, ?6, ?7, '', '', 0, ?8)",
+            params!["cli", "addon", HttpMethod::Get.as_str(), "/miss", "src/c.rs", "u", "get", "bbb"],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO edges VALUES (1, 1, ?1, ?2, ?2, 1, 100, 100)",
+            params![Confidence::Unique.as_str(), "bbb"],
+        )
+        .unwrap();
+        drop(conn);
+
+        let ro = GraphStore::open_readonly(&db).unwrap().unwrap();
+        let eps = ro.find_endpoints(Some(HttpMethod::Get), "/health", None).unwrap();
+        assert_eq!(eps.len(), 1);
+        assert!(eps[0].req_contract.is_none());
+        assert_eq!(ro.callers_for_endpoint(1).unwrap().len(), 1);
+        assert_eq!(ro.providers_for_call(1).unwrap().len(), 1);
+        assert_eq!(ro.unresolved_calls(None).unwrap().len(), 1);
+        assert!(ro.load_endpoints_with_contracts(None).unwrap().is_empty());
+        assert!(ro.load_edge_pairs(None).unwrap().is_empty());
+        assert_eq!(ro.load_cross_repo_changes(0, None).unwrap().len(), 1);
     }
 }

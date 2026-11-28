@@ -6,6 +6,9 @@ use anyhow::Result;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
+use super::contracts::{
+    CrateStructIndex, HandlerIndex, PayloadContract, PayloadKind, compute_contract_hash,
+};
 use super::scan::{
     LineIndex, enclosing_fn_name, find_matching_delim, find_rust_functions,
     find_semicolon_at_depth_zero, for_each_dot_call, for_each_masked_ident, is_ident_byte,
@@ -44,6 +47,10 @@ pub struct AxumServiceContext {
     pub global_consts: BTreeMap<String, String>,
     pub entry_module_prefixes: BTreeMap<String, String>,
     pub inter_fn_prefixes: BTreeMap<String, BTreeMap<String, (String, bool)>>,
+    #[serde(default)]
+    pub structs: CrateStructIndex,
+    #[serde(default)]
+    pub handlers: HandlerIndex,
 }
 
 impl AxumServiceContext {
@@ -51,6 +58,8 @@ impl AxumServiceContext {
         consts: &ConstTables,
         entry_module_prefixes: BTreeMap<String, String>,
         inter_fn: &HashMap<(String, String), (String, bool)>,
+        structs: CrateStructIndex,
+        handlers: HandlerIndex,
     ) -> Self {
         let mut scoped_consts: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
         for ((ck, name), val) in &consts.0 {
@@ -77,6 +86,8 @@ impl AxumServiceContext {
             global_consts,
             entry_module_prefixes,
             inter_fn_prefixes,
+            structs,
+            handlers,
         }
     }
 
@@ -193,13 +204,29 @@ pub fn extract_service_with_context(
         }
         parsed_files.push(parsed);
     }
+    let structs = CrateStructIndex::from_sources(sources, |rel| crate_key_for(rel, service_root));
+    let handlers = HandlerIndex::from_sources(sources, |rel| crate_key_for(rel, service_root));
     let entry_rel = entry.map(|e| qualify_under_root(service_root, e));
     let entry_module_prefixes = collect_entry_module_prefixes(&parsed_files, entry_rel.as_deref());
     let inter_fn = collect_inter_fn_prefixes(&parsed_files, entry_rel.as_deref());
-    let ctx = AxumServiceContext::from_parts(&consts, entry_module_prefixes, &inter_fn);
+    let ctx = AxumServiceContext::from_parts(
+        &consts,
+        entry_module_prefixes,
+        &inter_fn,
+        structs,
+        handlers,
+    );
     let mut endpoints = Vec::new();
     for file in &parsed_files {
-        append_resolved_file_routes(file, entry_rel.as_deref(), &ctx, &mut endpoints);
+        append_resolved_file_routes(
+            file,
+            entry_rel.as_deref(),
+            &ctx,
+            &ctx.structs,
+            &ctx.handlers,
+            Some(&mut router_dep_files),
+            &mut endpoints,
+        );
     }
     sort_extracted_endpoints(&mut endpoints);
     (endpoints, ctx, router_dep_files)
@@ -213,16 +240,22 @@ pub fn extract_single_file(
     ctx: &AxumServiceContext,
 ) -> (Vec<ExtractedEndpoint>, bool) {
     let consts = ctx.to_const_tables();
-    let parsed = parse_file(
-        rel_file,
-        &crate_key_for(rel_file, service_root),
-        stripped_source,
-        &consts,
-    );
+    let crate_key = crate_key_for(rel_file, service_root);
+    let parsed = parse_file(rel_file, &crate_key, stripped_source, &consts);
     let has_deps = parse_has_router_deps(&parsed, stripped_source);
+    let local_structs = ctx.structs.with_file_override(rel_file, &crate_key, stripped_source);
+    let local_handlers = ctx.handlers.with_file_override(rel_file, &crate_key, stripped_source);
     let entry_rel = entry.map(|e| qualify_under_root(service_root, e));
     let mut endpoints = Vec::new();
-    append_resolved_file_routes(&parsed, entry_rel.as_deref(), ctx, &mut endpoints);
+    append_resolved_file_routes(
+        &parsed,
+        entry_rel.as_deref(),
+        ctx,
+        &local_structs,
+        &local_handlers,
+        None,
+        &mut endpoints,
+    );
     sort_extracted_endpoints(&mut endpoints);
     (endpoints, has_deps)
 }
@@ -239,7 +272,7 @@ fn has_prefix_const(source: &str) -> bool {
     })
 }
 
-fn crate_key_for(rel: &str, service_root: &str) -> String {
+pub fn crate_key_for(rel: &str, service_root: &str) -> String {
     if let Some(pos) = rel.find("crates/") {
         let after = &rel[pos + 7..];
         if let Some(slash) = after.find('/') {
@@ -552,6 +585,9 @@ fn append_resolved_file_routes(
     file: &FileParse,
     entry_rel: Option<&str>,
     ctx: &AxumServiceContext,
+    structs: &CrateStructIndex,
+    handlers: &HandlerIndex,
+    mut dep_files: Option<&mut HashSet<String>>,
     endpoints: &mut Vec<ExtractedEndpoint>,
 ) {
     let local_prefixes = compute_local_var_prefixes(file);
@@ -582,6 +618,14 @@ fn append_resolved_file_routes(
         );
         let path_norm = normalize_path(&full_raw);
         if !path_norm.is_empty() {
+            let (req_contract, res_contract) = resolve_route_contracts(
+                file,
+                &route.handler,
+                structs,
+                handlers,
+                dep_files.as_deref_mut(),
+            );
+            let contract_hash = compute_contract_hash(req_contract.as_ref(), res_contract.as_ref());
             endpoints.push(ExtractedEndpoint {
                 method: route.method,
                 path_raw: full_raw,
@@ -590,9 +634,48 @@ fn append_resolved_file_routes(
                 line: route.line,
                 handler: route.handler.clone(),
                 prefix_state,
+                req_contract,
+                res_contract,
+                contract_hash,
             });
         }
     }
+}
+
+fn resolve_route_contracts(
+    file: &FileParse,
+    handler_name: &str,
+    structs: &CrateStructIndex,
+    handlers: &HandlerIndex,
+    mut dep_files: Option<&mut HashSet<String>>,
+) -> (Option<PayloadContract>, Option<PayloadContract>) {
+    let Some(sig) = handlers.lookup(&file.crate_key, &file.rel_file, handler_name) else {
+        return (None, None);
+    };
+    if sig.file != file.rel_file
+        && let Some(deps) = dep_files.as_deref_mut()
+    {
+        deps.insert(sig.file.clone());
+    }
+    let req = sig.req.as_ref().map(|(kind, ty)| {
+        if let Some(sf) = structs.find_struct_file(&sig.crate_key, &sig.file, ty)
+            && sf != file.rel_file
+            && let Some(deps) = dep_files.as_deref_mut()
+        {
+            deps.insert(sf.to_owned());
+        }
+        structs.resolve_struct_contract(&sig.crate_key, &sig.file, ty, *kind, true)
+    });
+    let res = sig.res.as_ref().map(|ty| {
+        if let Some(sf) = structs.find_struct_file(&sig.crate_key, &sig.file, ty)
+            && sf != file.rel_file
+            && let Some(deps) = dep_files
+        {
+            deps.insert(sf.to_owned());
+        }
+        structs.resolve_struct_contract(&sig.crate_key, &sig.file, ty, PayloadKind::Json, false)
+    });
+    (req, res)
 }
 
 fn collect_entry_module_prefixes(

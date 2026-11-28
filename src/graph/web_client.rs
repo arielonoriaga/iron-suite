@@ -7,6 +7,7 @@ use regex::Regex;
 
 pub type WebExportsMap = BTreeMap<String, BTreeMap<String, String>>;
 
+use super::contracts::extract_ts_call_opts;
 use super::scan::{
     LineIndex, ROOT_SLASH, extract_ts_area, extract_url_host, extract_why_ts, find_matching_delim,
     for_each_masked_ident, is_ident_byte, is_test_file, is_web_source, join_paths,
@@ -14,16 +15,12 @@ use super::scan::{
     resolve_ts_relative_import, skip_ascii_ws, sort_extracted_calls, split_top_level_args,
     split_ts_import_clause, ts_code_mask, under_root, unquote_ts_string,
 };
-use super::types::{ExtractedCall, HttpMethod};
+use super::types::ExtractedCall;
 
 const FETCH_FN: &str = "fetch";
 const FETCH_IMPL_SUFFIX: &str = "typeof fetch = fetch";
 const ASTRO_EXT: &str = ".astro";
 const FRONTMATTER_FENCE: &str = "---";
-
-static METHOD_PROP_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"\bmethod\s*:\s*["'`]([A-Za-z]+)["'`]"#).expect("valid web method prop regex")
-});
 
 static ENV_FALLBACK_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
@@ -214,11 +211,7 @@ pub fn extract_calls_from_file(
         {
             let path_norm = normalize_path(&path_raw);
             if !path_norm.is_empty() {
-                let method = args
-                    .get(1)
-                    .and_then(|(_, opts)| METHOD_PROP_RE.captures(opts))
-                    .and_then(|c| HttpMethod::parse(&c[1]))
-                    .unwrap_or(HttpMethod::Get);
+                let (method, req_contract) = extract_ts_call_opts(&args);
                 out.push(ExtractedCall {
                     method,
                     path_raw,
@@ -230,6 +223,7 @@ pub fn extract_calls_from_file(
                     area: area.to_owned(),
                     why: extract_why_ts(&source, &lines, start),
                     external,
+                    req_contract,
                 });
             }
         }
@@ -456,6 +450,7 @@ fn find_astro_frontmatter(raw: &str) -> Option<(usize, usize)> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::types::HttpMethod;
     use super::*;
 
     #[test]

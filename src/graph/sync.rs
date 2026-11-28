@@ -10,6 +10,11 @@ use sha2::{Digest, Sha256};
 use crate::intelligence::now_ms;
 
 use super::axum::{self, AxumServiceContext};
+use super::contracts::{
+    AlertTarget, BreakingAlert, BreakingKind, CallerSite, ContractChangeAlert,
+    diff_payload_contracts,
+};
+use super::express;
 use super::hono;
 use super::nginx::{self, NginxRoute};
 use super::query;
@@ -17,8 +22,8 @@ use super::resolve;
 use super::rust_client;
 use super::scan;
 use super::store::{
-    CallRow, EdgeUpdateBatch, EndpointRow, ExistingEdgeSnapshot, FileHashRow, GraphStore,
-    GraphWriteTx, RepoRow, ServiceRow, lock_graph_file,
+    CallRow, EdgeLogicalKey, EdgeUpdateBatch, EndpointRow, ExistingEdgeSnapshot, FileHashRow,
+    GraphStore, GraphWriteTx, RepoRow, ServiceRow, lock_graph_file,
 };
 use super::ts_client::{self, TsServiceSpec, WrapperEndpoint};
 use super::types::{
@@ -32,6 +37,29 @@ pub(crate) const META_CONFIG_HASH: &str = "config_hash";
 type TouchTargets = (BTreeMap<String, BTreeSet<String>>, Vec<(String, String)>);
 type HashDiff = (Vec<(String, String, String)>, Vec<(String, String)>, usize);
 type AxumFileExtract = (String, String, Vec<ExtractedEndpoint>, bool, Vec<ExtractedCall>);
+
+const GENERIC_HANDLERS: &[&str] = &[
+    "",
+    "<closure>",
+    "<unknown>",
+    "<expr>",
+    "hono_handler",
+    "express_handler",
+];
+
+#[derive(Debug, Clone, Default)]
+struct SyncDelta {
+    edges_added: usize,
+    edges_removed: usize,
+    breaking: Vec<BreakingAlert>,
+    contract_changes: Vec<ContractChangeAlert>,
+}
+
+struct PreWriteSnapshot {
+    old_endpoints: Vec<EndpointRow>,
+    old_snapshots: Vec<ExistingEdgeSnapshot>,
+    old_unresolved: HashSet<(String, String, HttpMethod, String)>,
+}
 
 #[derive(Debug, Clone)]
 pub struct TouchReport {
@@ -167,12 +195,12 @@ pub fn refresh_graph(
         tx.sync_services(&config.services)?;
     }
     let full_resolve = needs_full_resolve(&plans, config_changed, pruned);
-    if summary.any_work || config_changed || pruned {
+    let delta = if summary.any_work || config_changed || pruned {
         let active_plans: Vec<&RepoPlan> = plans
             .iter()
             .filter(|p| p.status != RefreshStatus::Skipped)
             .collect();
-        apply_plans_and_resolve(
+        let d = apply_plans_and_resolve(
             &tx,
             config,
             &active_repos,
@@ -187,11 +215,13 @@ pub fn refresh_graph(
             }
         }
         tx.set_meta(META_CONFIG_HASH, config_hash)?;
+        d
     } else {
         for plan in &plans {
             tx.upsert_repo(&plan.repo_row, refreshed_at)?;
         }
-    }
+        SyncDelta::default()
+    };
     tx.commit()?;
 
     let counts = store.counts()?;
@@ -206,6 +236,8 @@ pub fn refresh_graph(
         "edges": counts.edges,
         "fog": counts.fog,
         "fog_by_repo": counts.fog_by_repo,
+        "breaking": delta.breaking,
+        "contract_changes": delta.contract_changes,
         "repos": summary.repo_status,
         "elapsed_ms": started.elapsed().as_millis(),
     }))
@@ -253,12 +285,12 @@ pub fn touch_paths(
         .iter()
         .any(|p| p.compose_env_changed || p.nginx_routes_changed || p.is_initial_scan);
 
-    let (edges_added, edges_removed) = if !plan_refs.is_empty() {
+    let delta = if !plan_refs.is_empty() {
         let tx = store.begin_write()?;
         if tx.load_all_services()?.is_empty() {
             tx.sync_services(&config.services)?;
         }
-        let delta = apply_plans_and_resolve(
+        let d = apply_plans_and_resolve(
             &tx,
             config,
             &active_repos,
@@ -271,21 +303,28 @@ pub fn touch_paths(
             tx.set_meta(META_CONFIG_HASH, config_hash)?;
         }
         tx.commit()?;
-        delta
+        d
     } else {
-        (0, 0)
+        SyncDelta::default()
     };
 
-    let (impact_text, cross_repo_edges) = build_touch_impact(&store, &touched_pairs)?;
+    let (impact_text, cross_repo_edges) = build_touch_impact(
+        &store,
+        &touched_pairs,
+        &delta.breaking,
+        &delta.contract_changes,
+    )?;
     let elapsed_ms = started.elapsed().as_millis();
     Ok(TouchReport {
         impact_text: impact_text.clone(),
         json_value: json!({
             "files_scanned": files_scanned,
             "services_rescanned": services_rescanned,
-            "edges_added": edges_added,
-            "edges_removed": edges_removed,
+            "edges_added": delta.edges_added,
+            "edges_removed": delta.edges_removed,
             "cross_repo_edges": cross_repo_edges,
+            "breaking": delta.breaking,
+            "contract_changes": delta.contract_changes,
             "impact": impact_text,
             "elapsed_ms": elapsed_ms,
         }),
@@ -312,6 +351,8 @@ fn empty_touch_report(elapsed_ms: u128) -> TouchReport {
             "edges_added": 0,
             "edges_removed": 0,
             "cross_repo_edges": 0,
+            "breaking": [],
+            "contract_changes": [],
             "impact": "",
             "elapsed_ms": elapsed_ms,
         }),
@@ -354,6 +395,8 @@ fn collect_touch_targets(
 fn build_touch_impact(
     store: &GraphStore,
     touched_pairs: &[(String, String)],
+    breaking: &[BreakingAlert],
+    contract_changes: &[ContractChangeAlert],
 ) -> Result<(String, usize)> {
     let mut impact_items = Vec::new();
     let mut cross_repo_edges = 0usize;
@@ -365,7 +408,7 @@ fn build_touch_impact(
         }
     }
     Ok((
-        query::format_touch_impact(&impact_items, TOUCH_MAX_BYTES),
+        query::format_touch_output(breaking, contract_changes, &impact_items, TOUCH_MAX_BYTES),
         cross_repo_edges,
     ))
 }
@@ -497,7 +540,7 @@ fn service_for_file<'a>(
             scan::under_root(rel, &cfg.root)
                 && match cfg.stack {
                     Stack::Axum => scan::is_rust_source(rel),
-                    Stack::Spa | Stack::Hono => scan::is_ts_source(rel),
+                    Stack::Spa | Stack::Hono | Stack::Express => scan::is_ts_source(rel),
                     Stack::Nginx => scan::is_nginx_conf(rel),
                     Stack::Web => scan::is_web_source(rel),
                 }
@@ -508,7 +551,7 @@ fn service_for_file<'a>(
 
 fn is_service_special_file(rel: &str, svc: &ServiceConfig) -> bool {
     match svc.stack {
-        Stack::Axum | Stack::Hono => svc
+        Stack::Axum | Stack::Hono | Stack::Express => svc
             .entry
             .as_deref()
             .is_some_and(|e| scan::qualify_under_root(&svc.root, e) == rel),
@@ -1004,7 +1047,7 @@ fn try_incremental_service_extract(
         Stack::Axum => try_incremental_axum(store, config, work, plan),
         Stack::Spa => try_incremental_spa(store, config, work, plan),
         Stack::Web => try_incremental_web(store, config, work, plan),
-        Stack::Hono | Stack::Nginx => Ok(false),
+        Stack::Hono | Stack::Nginx | Stack::Express => Ok(false),
     }
 }
 
@@ -1073,8 +1116,11 @@ fn try_incremental_axum(
                 work.svc_cfg.entry.as_deref(),
                 &axum_ctx,
             );
+            let crate_key = axum::crate_key_for(rel, &work.svc_cfg.root);
+            let local_structs = axum_ctx.structs.with_file_override(rel, &crate_key, stripped);
             let external = scan::matches_external_glob(&config.external, work.repo_name, rel);
-            let calls = rust_client::extract_file(rel, stripped, external);
+            let calls =
+                rust_client::extract_file_with_structs(rel, stripped, external, &crate_key, &local_structs);
             (rel.clone(), hash.clone(), eps, has_deps, calls)
         });
     if extracted.iter().any(|(_, _, _, has_deps, _)| *has_deps) {
@@ -1178,8 +1224,13 @@ fn extract_full_service(
                 &work.svc_cfg.root,
                 work.svc_cfg.entry.as_deref(),
             );
-            let calls =
-                rust_client::extract_from_sources(work.repo_name, &config.external, &sources);
+            let calls = rust_client::extract_from_sources_with_structs(
+                work.repo_name,
+                &config.external,
+                &sources,
+                &work.svc_cfg.root,
+                &ctx.structs,
+            );
             plan.meta_updates.push((
                 format!("axum_ctx:{}", work.svc_name),
                 serde_json::to_string(&ctx)?,
@@ -1235,6 +1286,13 @@ fn extract_full_service(
             plan.service_calls.push((work.svc_name.to_owned(), calls));
             deps
         }
+        Stack::Express => {
+            let (endpoints, deps) =
+                express::extract_service_with_deps(work.canon_dir, &work.svc_cfg.root, &rel_paths)?;
+            plan.service_endpoints
+                .push((work.svc_name.to_owned(), endpoints));
+            deps
+        }
     };
     plan.meta_updates.push((
         format!("svc_cfg_hash:{}", work.svc_name),
@@ -1260,10 +1318,9 @@ fn apply_plans_and_resolve(
     full_resolve: bool,
     config_changed: bool,
     now_ms: i64,
-) -> Result<(usize, usize)> {
+) -> Result<SyncDelta> {
     let (changed_repos, affected_files, full_services) = collect_plan_scopes(plans);
-    let (old_endpoints, mut old_snapshots) =
-        snapshot_before_write(tx, full_resolve, &affected_files, &full_services)?;
+    let mut pre = snapshot_before_write(tx, full_resolve, &affected_files, &full_services)?;
 
     write_plans_to_tx(tx, plans, now_ms)?;
     if config_changed {
@@ -1274,31 +1331,78 @@ fn apply_plans_and_resolve(
     let active_services: HashSet<String> = config.services.keys().cloned().collect();
     let nginx_routes = tx.load_all_nginx_routes(&active_services)?;
     let services = tx.load_all_services()?;
-    if full_resolve {
-        return run_full_resolve(
+    let (edges_added, lost_snapshots, new_endpoints) = if full_resolve {
+        let (added, lost) = run_full_resolve(
             tx,
             config,
             &auto_env,
             &nginx_routes,
             &services,
-            &old_snapshots,
+            &pre.old_snapshots,
             &changed_repos,
             now_ms,
-        );
-    }
-    run_incremental_resolve(
+        )?;
+        let new_eps = load_new_endpoints_for_scope(tx, plans, &full_services)?;
+        (added, lost, new_eps)
+    } else {
+        run_incremental_resolve(
+            tx,
+            config,
+            &auto_env,
+            &nginx_routes,
+            &services,
+            plans,
+            &full_services,
+            &pre.old_endpoints,
+            &mut pre.old_snapshots,
+            &changed_repos,
+            now_ms,
+        )?
+    };
+
+    let modified_files: HashSet<(String, String)> = affected_files.into_iter().collect();
+    let rescanned_svcs: HashSet<(String, String)> = full_services.into_iter().collect();
+    let (breaking, breaking_reasons) = detect_breaking_changes(
         tx,
-        config,
-        &auto_env,
-        &nginx_routes,
-        &services,
-        plans,
-        &full_services,
-        &old_endpoints,
-        &mut old_snapshots,
-        &changed_repos,
-        now_ms,
-    )
+        &lost_snapshots,
+        &pre.old_endpoints,
+        &new_endpoints,
+        &pre.old_unresolved,
+        &modified_files,
+        &rescanned_svcs,
+    )?;
+    let edges_removed = tx.record_lost_edge_history(&lost_snapshots, &breaking_reasons, now_ms)?;
+    let contract_changes = detect_contract_changes(tx, &pre.old_endpoints, &new_endpoints)?;
+    Ok(SyncDelta {
+        edges_added,
+        edges_removed,
+        breaking,
+        contract_changes,
+    })
+}
+
+fn collect_changed_file_pairs(plans: &[&RepoPlan]) -> Vec<(String, String)> {
+    plans
+        .iter()
+        .flat_map(|p| {
+            p.changed_files
+                .iter()
+                .map(|f| (p.repo_row.repo.clone(), f.clone()))
+        })
+        .collect()
+}
+
+fn load_new_endpoints_for_scope(
+    tx: &GraphWriteTx<'_>,
+    plans: &[&RepoPlan],
+    full_services: &[(String, String)],
+) -> Result<Vec<EndpointRow>> {
+    let changed_files = collect_changed_file_pairs(plans);
+    let mut out = tx.load_endpoints_for_files(&changed_files)?;
+    for (repo, svc) in full_services {
+        out.extend(tx.load_endpoints_for_service(repo, svc)?);
+    }
+    Ok(out)
 }
 
 #[allow(clippy::type_complexity)]
@@ -1327,20 +1431,26 @@ fn snapshot_before_write(
     full_resolve: bool,
     affected_files: &[(String, String)],
     full_services: &[(String, String)],
-) -> Result<(Vec<EndpointRow>, Vec<ExistingEdgeSnapshot>)> {
-    if full_resolve {
-        return Ok((Vec::new(), tx.snapshot_all_edges()?));
-    }
+) -> Result<PreWriteSnapshot> {
     let mut old_endpoints = tx.load_endpoints_for_files(affected_files)?;
     let mut old_calls = tx.load_calls_for_files(affected_files)?;
     for (repo, svc) in full_services {
         old_endpoints.extend(tx.load_endpoints_for_service(repo, svc)?);
         old_calls.extend(tx.load_calls_for_service(repo, svc)?);
     }
-    let ep_ids: Vec<i64> = old_endpoints.iter().map(|e| e.id).collect();
-    let call_ids: Vec<i64> = old_calls.iter().map(|c| c.id).collect();
-    let snaps = tx.snapshot_edges_for_ids(&ep_ids, &call_ids)?;
-    Ok((old_endpoints, snaps))
+    let old_unresolved = tx.load_unresolved_call_keys_for_scope(affected_files, full_services)?;
+    let old_snapshots = if full_resolve {
+        tx.snapshot_all_edges()?
+    } else {
+        let ep_ids: Vec<i64> = old_endpoints.iter().map(|e| e.id).collect();
+        let call_ids: Vec<i64> = old_calls.iter().map(|c| c.id).collect();
+        tx.snapshot_edges_for_ids(&ep_ids, &call_ids)?
+    };
+    Ok(PreWriteSnapshot {
+        old_endpoints,
+        old_snapshots,
+        old_unresolved,
+    })
 }
 
 fn write_plans_to_tx(tx: &GraphWriteTx<'_>, plans: &[&RepoPlan], now_ms: i64) -> Result<()> {
@@ -1373,7 +1483,7 @@ fn write_plans_to_tx(tx: &GraphWriteTx<'_>, plans: &[&RepoPlan], now_ms: i64) ->
 }
 
 #[allow(clippy::too_many_arguments)]
-fn resolve_and_commit_edges(
+fn resolve_and_write_edges(
     tx: &GraphWriteTx<'_>,
     inputs: &resolve::ResolveInputs<'_>,
     full_replace: bool,
@@ -1381,11 +1491,11 @@ fn resolve_and_commit_edges(
     old_snapshots: &[ExistingEdgeSnapshot],
     changed_repos: &HashSet<String>,
     now_ms: i64,
-) -> Result<(usize, usize)> {
+) -> Result<(usize, Vec<ExistingEdgeSnapshot>)> {
     let new_edges = resolve::resolve_edges(inputs);
     let calls_map: HashMap<i64, &CallRow> = inputs.calls.iter().map(|c| (c.id, c)).collect();
     let eps_map: HashMap<i64, &EndpointRow> = inputs.endpoints.iter().map(|e| (e.id, e)).collect();
-    tx.apply_edge_updates(&EdgeUpdateBatch {
+    tx.write_edges_and_collect_lost(&EdgeUpdateBatch {
         full_replace,
         replace_call_ids,
         old_snapshots,
@@ -1407,7 +1517,7 @@ fn run_full_resolve(
     old_snapshots: &[ExistingEdgeSnapshot],
     changed_repos: &HashSet<String>,
     now_ms: i64,
-) -> Result<(usize, usize)> {
+) -> Result<(usize, Vec<ExistingEdgeSnapshot>)> {
     let endpoints = tx.load_all_endpoints()?;
     let calls = tx.load_all_calls()?;
     let inputs = resolve::ResolveInputs {
@@ -1418,7 +1528,7 @@ fn run_full_resolve(
         endpoints: &endpoints,
         calls: &calls,
     };
-    resolve_and_commit_edges(tx, &inputs, true, &[], old_snapshots, changed_repos, now_ms)
+    resolve_and_write_edges(tx, &inputs, true, &[], old_snapshots, changed_repos, now_ms)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1434,15 +1544,8 @@ fn run_incremental_resolve(
     old_snapshots: &mut Vec<ExistingEdgeSnapshot>,
     changed_repos: &HashSet<String>,
     now_ms: i64,
-) -> Result<(usize, usize)> {
-    let changed_files: Vec<(String, String)> = plans
-        .iter()
-        .flat_map(|p| {
-            p.changed_files
-                .iter()
-                .map(|f| (p.repo_row.repo.clone(), f.clone()))
-        })
-        .collect();
+) -> Result<(usize, Vec<ExistingEdgeSnapshot>, Vec<EndpointRow>)> {
+    let changed_files = collect_changed_file_pairs(plans);
     let mut new_endpoints = tx.load_endpoints_for_files(&changed_files)?;
     let mut affected_calls = tx.load_calls_for_files(&changed_files)?;
     for (repo, svc) in full_services {
@@ -1463,7 +1566,7 @@ fn run_incremental_resolve(
     )?;
 
     if affected_calls.is_empty() && old_snapshots.is_empty() {
-        return Ok((0, 0));
+        return Ok((0, Vec::new(), new_endpoints));
     }
 
     let needed_ep_keys = collect_needed_endpoint_keys(config, nginx_routes, &affected_calls);
@@ -1477,7 +1580,7 @@ fn run_incremental_resolve(
         endpoints: &needed_endpoints,
         calls: &affected_calls,
     };
-    resolve_and_commit_edges(
+    let (added, lost) = resolve_and_write_edges(
         tx,
         &inputs,
         false,
@@ -1485,7 +1588,380 @@ fn run_incremental_resolve(
         old_snapshots,
         changed_repos,
         now_ms,
-    )
+    )?;
+    Ok((added, lost, new_endpoints))
+}
+
+type ProviderBreakKey = (String, String, String, HttpMethod, String);
+type ProviderBreakVal = (BreakingKind, Option<String>, Vec<CallerSite>);
+
+struct BreakAnalysisCtx<'a> {
+    old_ep_keys: HashSet<(&'a str, &'a str, HttpMethod, &'a str)>,
+    old_handlers: HashMap<(&'a str, &'a str, HttpMethod, &'a str), &'a str>,
+    new_endpoints: &'a [EndpointRow],
+    old_unresolved: &'a HashSet<(String, String, HttpMethod, String)>,
+    modified_files: &'a HashSet<(String, String)>,
+    rescanned_services: &'a HashSet<(String, String)>,
+}
+
+impl<'a> BreakAnalysisCtx<'a> {
+    fn site_touched(&self, site: &super::store::SiteRef) -> bool {
+        self.modified_files
+            .contains(&(site.repo.clone(), site.file.clone()))
+            || self
+                .rescanned_services
+                .contains(&(site.repo.clone(), site.service.clone()))
+    }
+}
+
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+fn detect_breaking_changes(
+    tx: &GraphWriteTx<'_>,
+    lost_snapshots: &[ExistingEdgeSnapshot],
+    old_endpoints: &[EndpointRow],
+    new_endpoints: &[EndpointRow],
+    old_unresolved: &HashSet<(String, String, HttpMethod, String)>,
+    modified_files: &HashSet<(String, String)>,
+    rescanned_services: &HashSet<(String, String)>,
+) -> Result<(Vec<BreakingAlert>, HashMap<EdgeLogicalKey, BreakingKind>)> {
+    if lost_snapshots.is_empty() {
+        return Ok((Vec::new(), HashMap::new()));
+    }
+    let ctx = BreakAnalysisCtx {
+        old_ep_keys: old_endpoints
+            .iter()
+            .map(|e| (e.repo.as_str(), e.file.as_str(), e.method, e.path_norm.as_str()))
+            .collect(),
+        old_handlers: old_endpoints
+            .iter()
+            .map(|e| {
+                (
+                    (e.service.as_str(), e.file.as_str(), e.method, e.path_norm.as_str()),
+                    e.handler.as_str(),
+                )
+            })
+            .collect(),
+        new_endpoints,
+        old_unresolved,
+        modified_files,
+        rescanned_services,
+    };
+
+    let mut provider_groups: BTreeMap<ProviderBreakKey, ProviderBreakVal> = BTreeMap::new();
+    let mut caller_alerts = Vec::new();
+    let mut breaking_reasons = HashMap::new();
+    let mut unresolved_cache: HashMap<(String, String), Vec<CallRow>> = HashMap::new();
+
+    for snap in lost_snapshots {
+        if record_provider_break(tx, &ctx, snap, &mut provider_groups, &mut breaking_reasons)? {
+            continue;
+        }
+        record_caller_break(
+            tx,
+            &ctx,
+            snap,
+            &mut unresolved_cache,
+            &mut caller_alerts,
+            &mut breaking_reasons,
+        )?;
+    }
+
+    let alerts = assemble_breaking_alerts(provider_groups, caller_alerts);
+    Ok((alerts, breaking_reasons))
+}
+
+fn record_provider_break(
+    tx: &GraphWriteTx<'_>,
+    ctx: &BreakAnalysisCtx<'_>,
+    snap: &ExistingEdgeSnapshot,
+    provider_groups: &mut BTreeMap<ProviderBreakKey, ProviderBreakVal>,
+    breaking_reasons: &mut HashMap<EdgeLogicalKey, BreakingKind>,
+) -> Result<bool> {
+    if !ctx.site_touched(&snap.target)
+        || tx.endpoint_exists(
+            &snap.target.service,
+            &snap.target.file,
+            snap.method,
+            &snap.path_norm,
+        )?
+        || !tx.call_site_is_unresolved(
+            &snap.source.repo,
+            &snap.source.file,
+            snap.call_method,
+            &snap.call_path_norm,
+        )?
+    {
+        return Ok(false);
+    }
+    let old_handler = ctx
+        .old_handlers
+        .get(&(
+            snap.target.service.as_str(),
+            snap.target.file.as_str(),
+            snap.method,
+            snap.path_norm.as_str(),
+        ))
+        .copied();
+    let renamed_to = detect_likely_rename(snap, old_handler, ctx.new_endpoints, &ctx.old_ep_keys);
+    let kind = if renamed_to.is_some() {
+        BreakingKind::EndpointRenamed
+    } else {
+        BreakingKind::EndpointRemoved
+    };
+    breaking_reasons.insert(snap.logical_key(), kind);
+    let group_key = (
+        snap.target.service.clone(),
+        snap.target.repo.clone(),
+        snap.target.file.clone(),
+        snap.method,
+        snap.path_norm.clone(),
+    );
+    let entry = provider_groups
+        .entry(group_key)
+        .or_insert_with(|| (kind, renamed_to, Vec::new()));
+    entry.2.push(CallerSite {
+        repo: snap.source.repo.clone(),
+        service: snap.source.service.clone(),
+        file: snap.source.file.clone(),
+        line: snap.source.line,
+    });
+    Ok(true)
+}
+
+fn record_caller_break(
+    tx: &GraphWriteTx<'_>,
+    ctx: &BreakAnalysisCtx<'_>,
+    snap: &ExistingEdgeSnapshot,
+    unresolved_cache: &mut HashMap<(String, String), Vec<CallRow>>,
+    caller_alerts: &mut Vec<BreakingAlert>,
+    breaking_reasons: &mut HashMap<EdgeLogicalKey, BreakingKind>,
+) -> Result<()> {
+    if !ctx.site_touched(&snap.source) {
+        return Ok(());
+    }
+    let file_key = (snap.source.repo.clone(), snap.source.file.clone());
+    if !unresolved_cache.contains_key(&file_key) {
+        let rows = tx.load_unresolved_calls_in_file(&snap.source.repo, &snap.source.file)?;
+        unresolved_cache.insert(file_key.clone(), rows);
+    }
+    let Some(new_unres) = unresolved_cache
+        .get(&file_key)
+        .and_then(|rows| find_newly_unresolved_call(rows, snap, ctx.old_unresolved))
+    else {
+        return Ok(());
+    };
+    breaking_reasons.insert(snap.logical_key(), BreakingKind::CallUnresolved);
+    caller_alerts.push(BreakingAlert {
+        kind: BreakingKind::CallUnresolved,
+        target: AlertTarget {
+            cross_repo: snap.source.repo != snap.target.repo,
+            method: snap.call_method,
+            path_norm: snap.path_norm.clone(),
+            provider_repo: snap.target.repo.clone(),
+            provider_service: snap.target.service.clone(),
+            provider_file: snap.target.file.clone(),
+        },
+        renamed_to: None,
+        new_call_method: Some(new_unres.method),
+        new_call_path: Some(new_unres.path_norm.clone()),
+        callers: vec![CallerSite {
+            repo: snap.source.repo.clone(),
+            service: snap.source.service.clone(),
+            file: snap.source.file.clone(),
+            line: new_unres.line,
+        }],
+    });
+    Ok(())
+}
+
+fn assemble_breaking_alerts(
+    provider_groups: BTreeMap<ProviderBreakKey, ProviderBreakVal>,
+    caller_alerts: Vec<BreakingAlert>,
+) -> Vec<BreakingAlert> {
+    let mut alerts = Vec::with_capacity(provider_groups.len() + caller_alerts.len());
+    for (
+        (provider_service, provider_repo, provider_file, method, path_norm),
+        (kind, renamed_to, mut callers),
+    ) in provider_groups
+    {
+        sort_and_dedup_callers(&mut callers, &provider_repo);
+        let cross_repo = callers.iter().any(|c| c.repo != provider_repo);
+        alerts.push(BreakingAlert {
+            kind,
+            target: AlertTarget {
+                cross_repo,
+                method,
+                path_norm,
+                provider_repo,
+                provider_service,
+                provider_file,
+            },
+            renamed_to,
+            new_call_method: None,
+            new_call_path: None,
+            callers,
+        });
+    }
+    alerts.extend(caller_alerts);
+    sort_by_alert_target(&mut alerts, |a| &a.target);
+    alerts
+}
+
+fn sort_by_alert_target<T>(items: &mut [T], target_of: impl Fn(&T) -> &AlertTarget) {
+    items.sort_by(|a, b| {
+        let ta = target_of(a);
+        let tb = target_of(b);
+        tb.cross_repo
+            .cmp(&ta.cross_repo)
+            .then_with(|| ta.provider_repo.cmp(&tb.provider_repo))
+            .then_with(|| ta.method.cmp(&tb.method))
+            .then_with(|| ta.path_norm.cmp(&tb.path_norm))
+    });
+}
+
+fn detect_likely_rename(
+    snap: &ExistingEdgeSnapshot,
+    old_handler: Option<&str>,
+    new_endpoints: &[EndpointRow],
+    old_ep_keys: &HashSet<(&str, &str, HttpMethod, &str)>,
+) -> Option<String> {
+    let handler = old_handler?;
+    if GENERIC_HANDLERS.contains(&handler) {
+        return None;
+    }
+    let candidate = new_endpoints.iter().find(|ep| {
+        ep.repo == snap.target.repo
+            && ep.file == snap.target.file
+            && ep.handler == handler
+            && !old_ep_keys.contains(&(
+                ep.repo.as_str(),
+                ep.file.as_str(),
+                ep.method,
+                ep.path_norm.as_str(),
+            ))
+    })?;
+    if candidate.method == snap.method {
+        Some(candidate.path_norm.clone())
+    } else {
+        Some(format!("{} {}", candidate.method.as_str(), candidate.path_norm))
+    }
+}
+
+fn find_newly_unresolved_call<'a>(
+    unresolved_rows: &'a [CallRow],
+    snap: &ExistingEdgeSnapshot,
+    old_unresolved: &HashSet<(String, String, HttpMethod, String)>,
+) -> Option<&'a CallRow> {
+    let fresh: Vec<&CallRow> = unresolved_rows
+        .iter()
+        .filter(|c| {
+            !old_unresolved.contains(&(
+                c.repo.clone(),
+                c.file.clone(),
+                c.method,
+                c.path_norm.clone(),
+            ))
+        })
+        .collect();
+    fresh
+        .iter()
+        .copied()
+        .min_by_key(|c| {
+            (
+                usize::from(c.method != snap.call_method),
+                c.line.abs_diff(snap.source.line),
+            )
+        })
+}
+
+fn detect_contract_changes(
+    tx: &GraphWriteTx<'_>,
+    old_endpoints: &[EndpointRow],
+    new_endpoints: &[EndpointRow],
+) -> Result<Vec<ContractChangeAlert>> {
+    if old_endpoints.is_empty() || new_endpoints.is_empty() {
+        return Ok(Vec::new());
+    }
+    let old_by_key: HashMap<(&str, &str, &str, HttpMethod, &str), &EndpointRow> = old_endpoints
+        .iter()
+        .map(|e| {
+            (
+                (
+                    e.service.as_str(),
+                    e.repo.as_str(),
+                    e.file.as_str(),
+                    e.method,
+                    e.path_norm.as_str(),
+                ),
+                e,
+            )
+        })
+        .collect();
+    let mut alerts = Vec::new();
+    for new_ep in new_endpoints {
+        let Some(old_ep) = old_by_key.get(&(
+            new_ep.service.as_str(),
+            new_ep.repo.as_str(),
+            new_ep.file.as_str(),
+            new_ep.method,
+            new_ep.path_norm.as_str(),
+        )) else {
+            continue;
+        };
+        if old_ep.contract_hash == new_ep.contract_hash {
+            continue;
+        }
+        let req_diff =
+            diff_payload_contracts(old_ep.req_contract.as_ref(), new_ep.req_contract.as_ref());
+        let res_diff =
+            diff_payload_contracts(old_ep.res_contract.as_ref(), new_ep.res_contract.as_ref());
+        if req_diff.is_empty() && res_diff.is_empty() {
+            continue;
+        }
+        let edges = tx.callers_for_endpoint(new_ep.id)?;
+        if edges.is_empty() {
+            continue;
+        }
+        let mut callers: Vec<CallerSite> = edges
+            .into_iter()
+            .map(|e| CallerSite {
+                repo: e.call.repo,
+                service: e.call.service,
+                file: e.call.call.file,
+                line: e.call.call.line,
+            })
+            .collect();
+        sort_and_dedup_callers(&mut callers, &new_ep.repo);
+        let cross_repo = callers.iter().any(|c| c.repo != new_ep.repo);
+        alerts.push(ContractChangeAlert {
+            target: AlertTarget {
+                cross_repo,
+                method: new_ep.method,
+                path_norm: new_ep.path_norm.clone(),
+                provider_repo: new_ep.repo.clone(),
+                provider_service: new_ep.service.clone(),
+                provider_file: new_ep.file.clone(),
+            },
+            request_diff: req_diff,
+            response_diff: res_diff,
+            callers,
+        });
+    }
+    sort_by_alert_target(&mut alerts, |a| &a.target);
+    Ok(alerts)
+}
+
+fn sort_and_dedup_callers(callers: &mut Vec<CallerSite>, provider_repo: &str) {
+    callers.sort_by(|a, b| {
+        let a_cross = a.repo != provider_repo;
+        let b_cross = b.repo != provider_repo;
+        b_cross
+            .cmp(&a_cross)
+            .then_with(|| a.repo.cmp(&b.repo))
+            .then_with(|| a.file.cmp(&b.file))
+            .then_with(|| a.line.cmp(&b.line))
+    });
+    callers.dedup_by(|a, b| a.repo == b.repo && a.file == b.file && a.line == b.line);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1648,5 +2124,179 @@ mod tests {
         let expanded = expand_prefixed_call_keys(&affected, &config, &[]);
         assert!(expanded.contains(&(HttpMethod::Get, "/".to_owned())));
         assert!(expanded.contains(&(HttpMethod::Post, "/v1/items".to_owned())));
+    }
+
+    #[test]
+    fn breaking_detection_catches_provider_rename_and_caller_side_unresolved() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let db = tmp.path().join("graph.db");
+        let mut store = GraphStore::open_writable(&db).unwrap();
+        let tx = store.begin_write().unwrap();
+        tx.insert_endpoints(
+            "shop",
+            "aaaaaaa",
+            &[(
+                "shop-api".to_owned(),
+                vec![ExtractedEndpoint::simple(
+                    HttpMethod::Post,
+                    "/api/internal/invoices-v2",
+                    "src/api.rs",
+                    10,
+                    "create_invoice",
+                    PrefixState::Full,
+                )],
+            )],
+        )
+        .unwrap();
+        tx.insert_calls(
+            "addon",
+            "bbbbbbb",
+            &[(
+                "addon-api".to_owned(),
+                vec![
+                    ExtractedCall::simple(
+                        HttpMethod::Post,
+                        "/api/internal/invoices",
+                        "src/client.rs",
+                        42,
+                        "self.url",
+                        "issue",
+                        "",
+                    ),
+                    ExtractedCall::simple(
+                        HttpMethod::Get,
+                        "/api/v1/broken-call",
+                        "src/edited_client.rs",
+                        15,
+                        "self.url",
+                        "fetch",
+                        "",
+                    ),
+                ],
+            )],
+        )
+        .unwrap();
+
+        let new_eps = tx.load_all_endpoints().unwrap();
+        let old_eps = vec![EndpointRow {
+            id: 99,
+            service: "shop-api".to_owned(),
+            repo: "shop".to_owned(),
+            verified_sha: "aaaaaaa".to_owned(),
+            ep: ExtractedEndpoint::simple(
+                HttpMethod::Post,
+                "/api/internal/invoices",
+                "src/api.rs",
+                10,
+                "create_invoice",
+                PrefixState::Full,
+            ),
+        }];
+        let make_snap = |src_file: &str, src_line: usize, dst_file: &str, dst_line: usize, ep_method: HttpMethod, call_method: HttpMethod, path: &str| {
+            ExistingEdgeSnapshot {
+                source: super::super::store::SiteRef {
+                    service: "addon-api".to_owned(),
+                    repo: "addon".to_owned(),
+                    file: src_file.to_owned(),
+                    line: src_line,
+                },
+                target: super::super::store::SiteRef {
+                    service: "shop-api".to_owned(),
+                    repo: "shop".to_owned(),
+                    file: dst_file.to_owned(),
+                    line: dst_line,
+                },
+                method: ep_method,
+                call_method,
+                path_norm: path.to_owned(),
+                call_path_norm: path.to_owned(),
+                confidence: super::super::types::Confidence::Configured,
+                first_seen_sha: "aaaaaaa".to_owned(),
+                last_seen_sha: "aaaaaaa".to_owned(),
+                seen_count: 1,
+                first_seen_at: 1000,
+            }
+        };
+        let lost = vec![
+            make_snap("src/client.rs", 42, "src/api.rs", 10, HttpMethod::Post, HttpMethod::Post, "/api/internal/invoices"),
+            make_snap("src/edited_client.rs", 15, "src/other.rs", 5, HttpMethod::Get, HttpMethod::Get, "/api/v1/working-call"),
+        ];
+        let modified_files: HashSet<(String, String)> = [
+            ("shop".to_owned(), "src/api.rs".to_owned()),
+            ("addon".to_owned(), "src/edited_client.rs".to_owned()),
+        ]
+        .into_iter()
+        .collect();
+        let (alerts, reasons) = detect_breaking_changes(
+            &tx,
+            &lost,
+            &old_eps,
+            &new_eps,
+            &HashSet::new(),
+            &modified_files,
+            &HashSet::new(),
+        )
+        .unwrap();
+        assert_eq!(alerts.len(), 2, "alerts={alerts:?}");
+        assert_eq!(reasons.len(), 2);
+        let rename_alert = alerts
+            .iter()
+            .find(|a| a.kind == BreakingKind::EndpointRenamed)
+            .unwrap();
+        assert_eq!(rename_alert.renamed_to.as_deref(), Some("/api/internal/invoices-v2"));
+        let caller_alert = alerts
+            .iter()
+            .find(|a| a.kind == BreakingKind::CallUnresolved)
+            .unwrap();
+        assert_eq!(caller_alert.new_call_path.as_deref(), Some("/api/v1/broken-call"));
+
+        const FULL_SVC_FILE: &str = "src/full_svc.rs";
+        const WEBHOOK_ANY_PATH: &str = "/webhooks/any";
+        tx.insert_calls(
+            "addon",
+            "bbbbbbb",
+            &[(
+                "addon-api".to_owned(),
+                vec![
+                    ExtractedCall::simple(HttpMethod::Post, WEBHOOK_ANY_PATH, "src/any_client.rs", 20, "u", "hook", ""),
+                    ExtractedCall::simple(HttpMethod::Put, "/api/v1/method-edit", "src/method_client.rs", 30, "u", "put", ""),
+                    ExtractedCall::simple(HttpMethod::Get, "/preexisting/fog", FULL_SVC_FILE, 5, "u", "fog", ""),
+                ],
+            )],
+        )
+        .unwrap();
+        let any_and_method_lost = vec![
+            make_snap("src/any_client.rs", 20, "src/api.rs", 99, HttpMethod::Any, HttpMethod::Post, WEBHOOK_ANY_PATH),
+            make_snap("src/method_client.rs", 30, "src/other.rs", 8, HttpMethod::Post, HttpMethod::Post, "/api/v1/method-edit"),
+            make_snap(FULL_SVC_FILE, 12, "src/other.rs", 9, HttpMethod::Get, HttpMethod::Get, "/intentionally/deleted"),
+        ];
+        let full_svcs: HashSet<(String, String)> =
+            [("addon".to_owned(), "addon-api".to_owned())].into_iter().collect();
+        let old_unres = tx
+            .load_unresolved_call_keys_for_scope(&[], &[("addon".to_owned(), "addon-api".to_owned())])
+            .unwrap();
+        let old_unres_only_fog: HashSet<_> = old_unres
+            .into_iter()
+            .filter(|(_, f, _, _)| f == FULL_SVC_FILE)
+            .collect();
+        let (edge_alerts, _) = detect_breaking_changes(
+            &tx,
+            &any_and_method_lost,
+            &[],
+            &[],
+            &old_unres_only_fog,
+            &modified_files,
+            &full_svcs,
+        )
+        .unwrap();
+        assert_eq!(edge_alerts.len(), 2, "edge_alerts={edge_alerts:?}");
+        assert!(edge_alerts.iter().any(|a| a.kind == BreakingKind::EndpointRemoved && a.target.path_norm == WEBHOOK_ANY_PATH));
+        let method_alert = edge_alerts
+            .iter()
+            .find(|a| a.kind == BreakingKind::CallUnresolved)
+            .unwrap();
+        let formatted = super::super::contracts::format_breaking_alert(method_alert);
+        assert!(formatted.contains("PUT /api/v1/method-edit no longer resolves"), "formatted={formatted}");
+        assert!(formatted.contains("(was POST /api/v1/method-edit -> shop-api)"), "formatted={formatted}");
     }
 }

@@ -734,30 +734,11 @@ mod tests {
     }
 
     fn resolved_ep(method: HttpMethod, path: &str, file: &str, handler: &str) -> ExtractedEndpoint {
-        ExtractedEndpoint {
-            method,
-            path_raw: path.to_owned(),
-            path_norm: path.to_owned(),
-            file: file.to_owned(),
-            line: 10,
-            handler: handler.to_owned(),
-            prefix_state: PrefixState::Resolved,
-        }
+        ExtractedEndpoint::simple(method, path, file, 10, handler, PrefixState::Resolved)
     }
 
     fn fog_call(method: HttpMethod, path: &str, file: &str) -> ExtractedCall {
-        ExtractedCall {
-            method,
-            path_raw: path.to_owned(),
-            path_norm: path.to_owned(),
-            file: file.to_owned(),
-            line: 10,
-            base_ref: "self.base_url".to_owned(),
-            symbol: "call".to_owned(),
-            area: String::new(),
-            why: "call".to_owned(),
-            external: false,
-        }
+        ExtractedCall::simple(method, path, file, 10, "self.base_url", "call", "call")
     }
 
     #[test]

@@ -1,4 +1,6 @@
 pub mod axum;
+pub mod contracts;
+pub mod express;
 pub mod hono;
 pub mod memory;
 pub mod nginx;
@@ -369,6 +371,18 @@ pub fn query_changes(
 ) -> Result<String> {
     with_readonly_graph(db, |store| {
         query::changes(store, since_days, repo, limit, max_bytes, now_ms())
+    })
+}
+
+pub fn query_contracts(
+    db: &Path,
+    repo: Option<&str>,
+    mismatches_only: bool,
+    limit: Option<usize>,
+    max_bytes: usize,
+) -> Result<String> {
+    with_readonly_graph(db, |store| {
+        query::contracts(store, repo, mismatches_only, limit, max_bytes)
     })
 }
 

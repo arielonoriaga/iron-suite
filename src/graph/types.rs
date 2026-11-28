@@ -3,7 +3,9 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-pub const EXTRACTOR_VERSION: i64 = 3;
+use super::contracts::PayloadContract;
+
+pub const EXTRACTOR_VERSION: i64 = 4;
 pub const DEFAULT_MAX_BYTES: usize = 1200;
 pub const TOUCH_MAX_BYTES: usize = 300;
 
@@ -76,6 +78,7 @@ pub enum Stack {
     Hono,
     Nginx,
     Web,
+    Express,
 }
 
 impl Stack {
@@ -86,6 +89,7 @@ impl Stack {
             Self::Hono => "hono",
             Self::Nginx => "nginx",
             Self::Web => "web",
+            Self::Express => "express",
         }
     }
 
@@ -96,6 +100,7 @@ impl Stack {
             "hono" => Some(Self::Hono),
             "nginx" => Some(Self::Nginx),
             "web" => Some(Self::Web),
+            "express" => Some(Self::Express),
             _ => None,
         }
     }
@@ -259,6 +264,34 @@ pub struct ExtractedEndpoint {
     pub line: usize,
     pub handler: String,
     pub prefix_state: PrefixState,
+    pub req_contract: Option<PayloadContract>,
+    pub res_contract: Option<PayloadContract>,
+    pub contract_hash: String,
+}
+
+impl ExtractedEndpoint {
+    pub fn simple(
+        method: HttpMethod,
+        path: &str,
+        file: &str,
+        line: usize,
+        handler: &str,
+        prefix_state: PrefixState,
+    ) -> Self {
+        let p = path.to_owned();
+        Self {
+            method,
+            path_raw: p.clone(),
+            path_norm: p,
+            file: file.to_owned(),
+            line,
+            handler: handler.to_owned(),
+            prefix_state,
+            req_contract: None,
+            res_contract: None,
+            contract_hash: String::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -273,6 +306,33 @@ pub struct ExtractedCall {
     pub area: String,
     pub why: String,
     pub external: bool,
+    pub req_contract: Option<PayloadContract>,
+}
+
+impl ExtractedCall {
+    pub fn simple(
+        method: HttpMethod,
+        path: &str,
+        file: &str,
+        line: usize,
+        base_ref: &str,
+        symbol: &str,
+        why: &str,
+    ) -> Self {
+        Self {
+            base_ref: base_ref.to_owned(),
+            symbol: symbol.to_owned(),
+            area: String::new(),
+            why: why.to_owned(),
+            external: false,
+            req_contract: None,
+            method,
+            path_raw: path.to_owned(),
+            path_norm: path.to_owned(),
+            file: file.to_owned(),
+            line,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -315,6 +375,7 @@ mod tests {
             Stack::Hono,
             Stack::Nginx,
             Stack::Web,
+            Stack::Express,
         ] {
             assert_eq!(Stack::parse(stack.as_str()), Some(stack));
         }

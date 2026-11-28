@@ -502,6 +502,9 @@ mod tests {
                 line: 10,
                 handler: "handler".to_owned(),
                 prefix_state,
+                req_contract: None,
+                res_contract: None,
+                contract_hash: String::new(),
             },
         }
     }
@@ -531,6 +534,7 @@ mod tests {
                 area: String::new(),
                 why: "test".to_owned(),
                 external: false,
+                req_contract: None,
             },
         }
     }

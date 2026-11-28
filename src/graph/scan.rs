@@ -1,12 +1,40 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 use std::process::Command;
+use std::sync::LazyLock;
 use std::thread;
 
 use anyhow::{Context, Result, bail};
+use regex::Regex;
 
 use crate::output;
+
+const MAX_CHAIN_HOPS: usize = 16;
+
+static TS_LOCAL_PATH_CONST_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r#"\b(?:export\s+)?const\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*(?::[^=]+)?=\s*["'`](/[^"'`\s]*)["'`]"#,
+    )
+    .expect("valid local path const regex")
+});
+
+static TS_IMPORT_STMT_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r#"(?ms)\bimport\s+(?:type\s+)?(?:\{([^}]+)\}|([A-Za-z_$][A-Za-z0-9_$]*))\s+from\s+["']([^"']+)["']"#,
+    )
+    .expect("valid ts import regex")
+});
+
+static TS_METHOD_PROP_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"\bmethod\s*:\s*["'`]([A-Za-z]+)["'`]"#).expect("valid ts method prop regex")
+});
+
+#[derive(Debug, Clone)]
+pub struct TsImportedSymbol {
+    pub file: String,
+    pub exported_name: String,
+}
 
 const MAX_WHY_BYTES: usize = 80;
 pub(crate) const DYNAMIC_SEG: &str = "{}";
@@ -850,30 +878,51 @@ pub fn split_top_level_args<'a>(
     start: usize,
     end: usize,
 ) -> Vec<(usize, &'a str)> {
+    split_top_level_delimited(source, mask, base_offset, start, end, false)
+}
+
+pub fn split_top_level_delimited<'a>(
+    source: &'a str,
+    mask: &[bool],
+    base_offset: usize,
+    start: usize,
+    end: usize,
+    track_angles: bool,
+) -> Vec<(usize, &'a str)> {
     let bytes = source.as_bytes();
     let mut parts = Vec::new();
-    let mut depth = (0usize, 0usize, 0usize);
+    let mut depth = [0usize; 4];
     let mut seg_start = start;
     for i in start..end {
         if !mask[base_offset + i] {
             continue;
         }
-        match bytes[i] {
-            b'(' => depth.0 += 1,
-            b')' => depth.0 = depth.0.saturating_sub(1),
-            b'{' => depth.1 += 1,
-            b'}' => depth.1 = depth.1.saturating_sub(1),
-            b'[' => depth.2 += 1,
-            b']' => depth.2 = depth.2.saturating_sub(1),
-            b',' if depth == (0, 0, 0) => {
-                push_trimmed_arg(&mut parts, source, seg_start, i);
-                seg_start = i + 1;
-            }
-            _ => {}
+        let prev = if i > 0 { bytes[i - 1] } else { 0 };
+        if bytes[i] == b',' && depth == [0, 0, 0, 0] {
+            push_trimmed_arg(&mut parts, source, seg_start, i);
+            seg_start = i + 1;
+        } else {
+            update_delim_depth(bytes[i], prev, track_angles, &mut depth);
         }
     }
     push_trimmed_arg(&mut parts, source, seg_start, end);
     parts
+}
+
+fn update_delim_depth(byte: u8, prev: u8, track_angles: bool, depth: &mut [usize; 4]) {
+    match byte {
+        b'(' => depth[0] += 1,
+        b')' => depth[0] = depth[0].saturating_sub(1),
+        b'{' => depth[1] += 1,
+        b'}' => depth[1] = depth[1].saturating_sub(1),
+        b'[' => depth[2] += 1,
+        b']' => depth[2] = depth[2].saturating_sub(1),
+        b'<' if track_angles => depth[3] += 1,
+        b'>' if track_angles && !matches!(prev, b'-' | b'=') => {
+            depth[3] = depth[3].saturating_sub(1);
+        }
+        _ => {}
+    }
 }
 
 fn push_trimmed_arg<'a>(
@@ -926,6 +975,126 @@ pub fn sort_extracted_calls(calls: &mut [super::types::ExtractedCall]) {
 
 pub fn sort_extracted_endpoints(endpoints: &mut [super::types::ExtractedEndpoint]) {
     endpoints.sort_by_key(|e| (e.file.clone(), e.line, e.method, e.path_norm.clone()));
+}
+
+pub fn dedup_and_sort_endpoints(endpoints: &mut Vec<super::types::ExtractedEndpoint>) {
+    sort_extracted_endpoints(endpoints);
+    endpoints.dedup_by(|a, b| {
+        a.file == b.file
+            && a.line == b.line
+            && a.method == b.method
+            && a.path_norm == b.path_norm
+            && a.prefix_state == b.prefix_state
+    });
+}
+
+pub fn read_ts_service_sources(
+    repo_dir: &Path,
+    service_root: &str,
+    tracked_files: &[String],
+) -> Vec<(String, String)> {
+    let candidates: Vec<String> = tracked_files
+        .iter()
+        .filter(|rel| is_ts_source(rel) && under_root(rel, service_root) && !is_test_file(rel))
+        .cloned()
+        .collect();
+    read_files_parallel(repo_dir, &candidates)
+}
+
+pub fn extract_ts_method_opt(opts: &str) -> super::types::HttpMethod {
+    TS_METHOD_PROP_RE
+        .captures(opts)
+        .and_then(|c| super::types::HttpMethod::parse(&c[1]))
+        .unwrap_or(super::types::HttpMethod::Get)
+}
+
+pub fn extract_ts_handler_name(args: &[(usize, &str)], fallback: &str) -> String {
+    if let Some((_, last)) = args.last() {
+        let trimmed = last.trim();
+        if !trimmed.is_empty() && trimmed.bytes().all(is_ts_ident_byte) {
+            return trimmed.to_owned();
+        }
+    }
+    fallback.to_owned()
+}
+
+pub fn read_ts_ident_prefix(text: &str) -> Option<(&str, &str)> {
+    let bytes = text.as_bytes();
+    let mut pos = 0usize;
+    while pos < bytes.len() && is_ts_ident_byte(bytes[pos]) {
+        pos += 1;
+    }
+    (pos > 0).then(|| (&text[..pos], &text[pos..]))
+}
+
+#[derive(Debug, Clone)]
+pub struct RawTsRoute {
+    pub method: super::types::HttpMethod,
+    pub path_raw: String,
+    pub file: String,
+    pub line: usize,
+    pub handler: String,
+    pub is_root_app: bool,
+}
+
+pub fn parse_ts_source_map<T, F, K>(
+    sources: &[(String, String)],
+    parse_one: F,
+    key_of: K,
+) -> HashMap<String, T>
+where
+    T: Send,
+    F: Fn(&str, &str, &HashSet<String>) -> T + Sync,
+    K: Fn(&T) -> String,
+{
+    let known_files: HashSet<String> = sources.iter().map(|(f, _)| f.clone()).collect();
+    let parsed_list = parallel_map(sources, |(rel, src)| parse_one(rel, src, &known_files));
+    parsed_list
+        .into_iter()
+        .map(|p| (key_of(&p), p))
+        .collect()
+}
+
+pub fn first_ts_route_path(
+    args: &[(usize, &str)],
+    local_paths: &HashMap<String, String>,
+) -> Option<String> {
+    args.first()
+        .and_then(|(_, a)| extract_ts_path_with_consts(a, local_paths))
+        .filter(|p| p.starts_with('/'))
+}
+
+pub fn push_ts_route(
+    out: &mut Vec<super::types::ExtractedEndpoint>,
+    route: &RawTsRoute,
+    mount_prefix: &str,
+    prefix_state: super::types::PrefixState,
+    upgrade_api_prefix: bool,
+) {
+    let full_raw = if mount_prefix.is_empty() || mount_prefix == ROOT_SLASH {
+        route.path_raw.clone()
+    } else {
+        join_paths(mount_prefix, &route.path_raw)
+    };
+    let path_norm = normalize_path(&full_raw);
+    if path_norm.is_empty() {
+        return;
+    }
+    let state = if upgrade_api_prefix && full_raw.starts_with("/api/") {
+        super::types::PrefixState::Full
+    } else {
+        prefix_state
+    };
+    let mut ep = super::types::ExtractedEndpoint::simple(
+        route.method,
+        &path_norm,
+        &route.file,
+        route.line,
+        &route.handler,
+        state,
+    );
+    ep.path_raw = full_raw;
+    out.push(ep);
 }
 
 pub fn find_semicolon_at_depth_zero(
@@ -990,6 +1159,148 @@ pub fn skip_angle_generics(
 
 pub fn is_ident_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'
+}
+
+pub fn is_ts_ident_byte(b: u8) -> bool {
+    is_ident_byte(b) || b == b'$'
+}
+
+pub fn collect_local_path_consts(source: &str, mask: &[bool]) -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    for caps in TS_LOCAL_PATH_CONST_RE.captures_iter(source) {
+        let m0 = caps.get(0).unwrap();
+        if mask[m0.start()] {
+            map.insert(caps[1].to_owned(), caps[2].to_owned());
+        }
+    }
+    map
+}
+
+pub fn extract_ts_path_with_consts(
+    arg: &str,
+    local_paths: &HashMap<String, String>,
+) -> Option<String> {
+    let inner = unquote_ts_string(arg)?;
+    if let Some(rest) = inner.strip_prefix("${")
+        && let Some(close) = rest.find('}')
+    {
+        let var_name = rest[..close].trim();
+        let suffix = &rest[close + 1..];
+        if let Some(prefix) = local_paths.get(var_name) {
+            if suffix.is_empty() || suffix.starts_with('?') {
+                return Some(prefix.clone());
+            }
+            if suffix.starts_with('/') {
+                return Some(join_paths(prefix, suffix));
+            }
+        }
+        if suffix.starts_with('/') {
+            return Some(suffix.to_owned());
+        }
+        return None;
+    }
+    (inner.starts_with('/') || inner.starts_with("http://") || inner.starts_with("https://"))
+        .then_some(inner)
+}
+
+pub fn parse_ts_imports(
+    rel: &str,
+    source: &str,
+    mask: &[bool],
+    known_files: &HashSet<String>,
+) -> HashMap<String, TsImportedSymbol> {
+    let mut map = HashMap::new();
+    for caps in TS_IMPORT_STMT_RE.captures_iter(source) {
+        let m0 = caps.get(0).unwrap();
+        if !mask[m0.start()] {
+            continue;
+        }
+        let Some(target_file) = resolve_ts_relative_import(rel, &caps[3], known_files) else {
+            continue;
+        };
+        if let Some(named) = caps.get(1) {
+            for (orig, local) in split_ts_import_clause(named.as_str()) {
+                map.insert(
+                    local,
+                    TsImportedSymbol {
+                        file: target_file.clone(),
+                        exported_name: orig,
+                    },
+                );
+            }
+        } else if let Some(def) = caps.get(2) {
+            map.insert(
+                def.as_str().to_owned(),
+                TsImportedSymbol {
+                    file: target_file,
+                    exported_name: def.as_str().to_owned(),
+                },
+            );
+        }
+    }
+    map
+}
+
+pub fn chain_root_receiver(source: &str, mask: &[bool], dot_pos: usize) -> Option<String> {
+    let bytes = source.as_bytes();
+    let mut pos = dot_pos;
+    for _ in 0..MAX_CHAIN_HOPS {
+        pos = skip_ws_back(bytes, pos);
+        if pos == 0 {
+            return None;
+        }
+        if bytes[pos - 1] == b')' && mask[pos - 1] {
+            let open = find_matching_open(bytes, mask, pos - 1, b'(', b')')?;
+            let ident_start = skip_ts_ident_back(bytes, skip_ws_back(bytes, open));
+            let before_ident = skip_ws_back(bytes, ident_start);
+            if before_ident > 0 && bytes[before_ident - 1] == b'.' && mask[before_ident - 1] {
+                pos = before_ident - 1;
+                continue;
+            }
+            return None;
+        }
+        let start = skip_ts_ident_back(bytes, pos);
+        return (start < pos).then(|| source[start..pos].to_owned());
+    }
+    None
+}
+
+pub fn find_matching_open(
+    bytes: &[u8],
+    mask: &[bool],
+    close_pos: usize,
+    open: u8,
+    close: u8,
+) -> Option<usize> {
+    let mut depth = 0usize;
+    for i in (0..=close_pos).rev() {
+        if !mask[i] {
+            continue;
+        }
+        if bytes[i] == close {
+            depth += 1;
+        } else if bytes[i] == open {
+            depth = depth.saturating_sub(1);
+            if depth == 0 {
+                return Some(i);
+            }
+        }
+    }
+    None
+}
+
+fn skip_ws_back(bytes: &[u8], mut pos: usize) -> usize {
+    while pos > 0 && bytes[pos - 1].is_ascii_whitespace() {
+        pos -= 1;
+    }
+    pos
+}
+
+fn skip_ts_ident_back(bytes: &[u8], mut pos: usize) -> usize {
+    while pos > 0 && is_ts_ident_byte(bytes[pos - 1]) {
+        pos -= 1;
+    }
+    pos
 }
 
 pub fn normalize_path(raw: &str) -> String {

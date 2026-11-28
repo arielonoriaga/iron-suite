@@ -5,6 +5,8 @@ use std::sync::LazyLock;
 use anyhow::Result;
 use regex::Regex;
 
+use super::axum::crate_key_for;
+use super::contracts::{CrateStructIndex, PayloadContract, extract_rust_call_payload};
 use super::scan::{
     LineIndex, enclosing_fn_name, extract_why_rust, find_matching_delim, find_rust_functions,
     find_semicolon_at_depth_zero, for_each_dot_call, is_ident_byte, matches_external_glob,
@@ -53,9 +55,21 @@ pub fn extract_from_sources(
     external_globs: &[String],
     sources: &[(String, String)],
 ) -> Vec<ExtractedCall> {
+    let structs = CrateStructIndex::from_sources(sources, |rel| crate_key_for(rel, ""));
+    extract_from_sources_with_structs(repo, external_globs, sources, "", &structs)
+}
+
+pub fn extract_from_sources_with_structs(
+    repo: &str,
+    external_globs: &[String],
+    sources: &[(String, String)],
+    service_root: &str,
+    structs: &CrateStructIndex,
+) -> Vec<ExtractedCall> {
     let mut calls: Vec<ExtractedCall> = parallel_map(sources, |(rel, stripped)| {
         let external = matches_external_glob(external_globs, repo, rel);
-        extract_file(rel, stripped, external)
+        let crate_key = crate_key_for(rel, service_root);
+        extract_file_with_structs(rel, stripped, external, &crate_key, structs)
     })
     .into_iter()
     .flatten()
@@ -72,15 +86,24 @@ pub fn extract_service(
     tracked_files: &[String],
 ) -> Result<Vec<ExtractedCall>> {
     let sources = read_rust_service_files(repo_dir, service_root, tracked_files);
-    Ok(extract_from_sources(repo, external_globs, &sources))
+    let structs = CrateStructIndex::from_sources(&sources, |rel| crate_key_for(rel, service_root));
+    Ok(extract_from_sources_with_structs(
+        repo,
+        external_globs,
+        &sources,
+        service_root,
+        &structs,
+    ))
 }
 
 struct FileCtx<'a> {
     rel_file: &'a str,
+    crate_key: &'a str,
     source: &'a str,
     mask: &'a [bool],
     lines: &'a LineIndex,
     fns: &'a [(String, usize, usize, usize)],
+    structs: &'a CrateStructIndex,
     external: bool,
 }
 
@@ -91,6 +114,7 @@ impl FileCtx<'_> {
         open_paren: usize,
         close_paren: usize,
         method: HttpMethod,
+        req_contract: Option<PayloadContract>,
         resolve: impl FnOnce(&[(usize, &str)]) -> Option<(String, String, String)>,
     ) -> Option<ExtractedCall> {
         let args = split_top_level_args(self.source, self.mask, 0, open_paren + 1, close_paren);
@@ -107,11 +131,26 @@ impl FileCtx<'_> {
             area: String::new(),
             why: extract_why_rust(self.source, self.lines, self.fns, pos),
             external: self.external,
+            req_contract,
         })
     }
 }
 
 pub fn extract_file(rel_file: &str, stripped_source: &str, external: bool) -> Vec<ExtractedCall> {
+    let structs = CrateStructIndex::from_sources(
+        &[(rel_file.to_owned(), stripped_source.to_owned())],
+        |_| String::new(),
+    );
+    extract_file_with_structs(rel_file, stripped_source, external, "", &structs)
+}
+
+pub fn extract_file_with_structs(
+    rel_file: &str,
+    stripped_source: &str,
+    external: bool,
+    crate_key: &str,
+    structs: &CrateStructIndex,
+) -> Vec<ExtractedCall> {
     let mask = rust_code_mask(stripped_source);
     let lines = LineIndex::new(stripped_source);
     let fns = find_rust_functions(stripped_source, &mask);
@@ -119,10 +158,12 @@ pub fn extract_file(rel_file: &str, stripped_source: &str, external: bool) -> Ve
     let wrapper_positions: Vec<usize> = wrappers.iter().map(|w| w.call_pos).collect();
     let ctx = FileCtx {
         rel_file,
+        crate_key,
         source: stripped_source,
         mask: &mask,
         lines: &lines,
         fns: &fns,
+        structs,
         external,
     };
     let mut out = scan_direct_reqwest_calls(&ctx, &wrapper_positions);
@@ -137,18 +178,31 @@ fn scan_direct_reqwest_calls(ctx: &FileCtx<'_>, wrapper_positions: &[usize]) -> 
     for_each_dot_call(ctx.source, ctx.mask, 0, ctx.source.len(), |name, dot_pos, open, close| {
         if let Some(method) = HttpMethod::parse_crud(name)
             && !wrapper_positions.contains(&dot_pos)
-            && let Some(call) = ctx.build_call_from_parens(dot_pos, open, close, method, |args| {
-                if args.len() != 1 {
-                    return None;
-                }
-                let (path_raw, base_ref) = parse_url_expr(args[0].1).or_else(|| {
-                    resolve_local_url_var(ctx.source, ctx.mask, ctx.fns, dot_pos, args[0].1)
-                })?;
-                let symbol = enclosing_fn_name(ctx.fns, dot_pos).unwrap_or_default();
-                Some((path_raw, base_ref, symbol))
-            })
         {
-            out.push(call);
+            let req_contract = extract_rust_call_payload(
+                ctx.source,
+                ctx.mask,
+                ctx.fns,
+                dot_pos,
+                close,
+                ctx.crate_key,
+                ctx.rel_file,
+                ctx.structs,
+            );
+            if let Some(call) =
+                ctx.build_call_from_parens(dot_pos, open, close, method, req_contract, |args| {
+                    if args.len() != 1 {
+                        return None;
+                    }
+                    let (path_raw, base_ref) = parse_url_expr(args[0].1).or_else(|| {
+                        resolve_local_url_var(ctx.source, ctx.mask, ctx.fns, dot_pos, args[0].1)
+                    })?;
+                    let symbol = enclosing_fn_name(ctx.fns, dot_pos).unwrap_or_default();
+                    Some((path_raw, base_ref, symbol))
+                })
+            {
+                out.push(call);
+            }
         }
         Some(open + 1)
     });
@@ -280,7 +334,7 @@ fn extract_wrapper_call_sites(ctx: &FileCtx<'_>, wrapper: &WrapperDef) -> Vec<Ex
         };
         if let Some(close_paren) = find_matching_delim(bytes, ctx.mask, open_paren, b'(', b')')
             && let Some(call) =
-                ctx.build_call_from_parens(i, open_paren, close_paren, wrapper.method, |args| {
+                ctx.build_call_from_parens(i, open_paren, close_paren, wrapper.method, None, |args| {
                     let path_raw = extract_path_argument(args.get(wrapper.path_param_idx)?.1)?;
                     Some((path_raw, wrapper.base_ref.clone(), wrapper.name.clone()))
                 })

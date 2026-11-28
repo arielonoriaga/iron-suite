@@ -5,6 +5,10 @@ use anyhow::Result;
 
 use crate::output;
 
+use super::contracts::{
+    BreakingAlert, ContractChangeAlert, PayloadContract, PayloadState, check_request_mismatch,
+    format_breaking_alert, format_contract_change_alert,
+};
 use super::memory::{self, MemoryAttachmentContext};
 use super::scan::normalize_path;
 use super::store::{
@@ -103,7 +107,7 @@ pub fn who_calls(
             for c in &callers {
                 mem_files.push((c.call.repo.clone(), c.call.file.clone()));
             }
-            let formatted_callers = format_grouped_callers(&callers);
+            let formatted_callers = format_grouped_callers(ep.req_contract.as_ref(), &callers);
             push_capped_lines(&mut lines, formatted_callers, max_items, "  ");
         }
         let footer = collect_attached_memories(memory_db, mem_files, mem_endpoints);
@@ -199,10 +203,11 @@ fn append_defined_endpoints(
             for c in &callers {
                 mem_files.push((c.call.repo.clone(), c.call.file.clone()));
             }
-            let indented: Vec<String> = format_grouped_callers(&callers)
-                .into_iter()
-                .map(|cl| format!("  {cl}"))
-                .collect();
+            let indented: Vec<String> =
+                format_grouped_callers(ep.req_contract.as_ref(), &callers)
+                    .into_iter()
+                    .map(|cl| format!("  {cl}"))
+                    .collect();
             push_capped_lines(lines, indented, IMPACT_CALLER_PREVIEW, "    ");
         }
     }
@@ -322,8 +327,9 @@ pub fn changes(
                     EdgeChangeKind::Added => "+",
                     EdgeChangeKind::Removed => "-",
                 };
+                let breaking_tag = if r.breaking { " [BREAKING]" } else { "" };
                 format!(
-                    "  {sign} {} {}:{} -> {} {} {} @{}",
+                    "  {sign} {} {}:{} -> {} {} {} @{}{breaking_tag}",
                     r.source.service,
                     r.source.file,
                     r.source.line,
@@ -342,11 +348,161 @@ pub fn changes(
     })
 }
 
-pub fn format_touch_impact(
+pub fn contracts(
+    store: &GraphStore,
+    repo_filter: Option<&str>,
+    mismatches_only: bool,
+    limit: Option<usize>,
+    max_bytes: usize,
+) -> Result<String> {
+    output::validate_budget(max_bytes)?;
+    let edge_pairs = store.load_edge_pairs(repo_filter)?;
+    let mut mismatch_lines = Vec::new();
+    for (ep, call) in &edge_pairs {
+        if let Some(m) =
+            check_request_mismatch(ep.req_contract.as_ref(), call.req_contract.as_ref())
+        {
+            mismatch_lines.push(format!(
+                "  {} {} ({} <- {} {}:{}): {}",
+                ep.method.as_str(),
+                ep.path_norm,
+                ep.service,
+                call.service,
+                call.file,
+                call.line,
+                m.format_compact()
+            ));
+        }
+    }
+    if mismatches_only {
+        if mismatch_lines.is_empty() {
+            let scope = repo_filter.unwrap_or("all repos");
+            return Ok(truncate_to_budget(
+                &format!("contracts: 0 mismatches ({scope})\n"),
+                max_bytes,
+            ));
+        }
+        let header = format!("contracts: {} mismatch(es)", mismatch_lines.len());
+        return Ok(render_contracts_list(header, mismatch_lines, limit, max_bytes));
+    }
+
+    let eps = store.load_endpoints_with_contracts(repo_filter)?;
+    if eps.is_empty() && mismatch_lines.is_empty() {
+        let scope = repo_filter.unwrap_or("all repos");
+        return Ok(truncate_to_budget(
+            &format!("contracts: 0 endpoints with payload contracts ({scope})\n"),
+            max_bytes,
+        ));
+    }
+    let resolved = eps
+        .iter()
+        .filter(|e| {
+            e.req_contract
+                .as_ref()
+                .is_some_and(|c| c.state == PayloadState::Resolved)
+                || e.res_contract
+                    .as_ref()
+                    .is_some_and(|c| c.state == PayloadState::Resolved)
+        })
+        .count();
+    let opaque = eps.len().saturating_sub(resolved);
+    let header = format!(
+        "contracts: {} endpoints ({resolved} resolved, {opaque} opaque, {} mismatches)",
+        eps.len(),
+        mismatch_lines.len()
+    );
+    let mut items = mismatch_lines;
+    for ep in &eps {
+        items.push(format_endpoint_contract_line(ep));
+    }
+    Ok(render_contracts_list(header, items, limit, max_bytes))
+}
+
+fn render_contracts_list(
+    header: String,
+    items: Vec<String>,
+    limit: Option<usize>,
+    max_bytes: usize,
+) -> String {
+    let max_items = limit.unwrap_or(items.len()).max(1);
+    let take = items.len().min(max_items);
+    let hidden = items.len().saturating_sub(take);
+    let mut lines = Vec::with_capacity(take + 1);
+    lines.push(header);
+    lines.extend(items.into_iter().take(take));
+    render_lines_within_budget_extra(&lines, hidden, max_bytes)
+}
+
+fn format_endpoint_contract_line(ep: &EndpointRow) -> String {
+    let mut parts = Vec::new();
+    if let Some(req) = &ep.req_contract {
+        parts.push(format!("req={}({})", req.kind.as_str(), summarize_payload(req)));
+    }
+    if let Some(res) = &ep.res_contract {
+        parts.push(format!("res={}", summarize_payload(res)));
+    }
+    format!(
+        "  {} {} ({}) {}",
+        ep.method.as_str(),
+        ep.path_norm,
+        ep.service,
+        parts.join("; ")
+    )
+}
+
+fn summarize_payload(p: &PayloadContract) -> String {
+    if p.state == PayloadState::Opaque && p.fields.is_empty() {
+        return format!("opaque:{}", p.type_name);
+    }
+    let fields: Vec<String> = p
+        .fields
+        .iter()
+        .map(|f| {
+            if f.required {
+                f.name.clone()
+            } else {
+                format!("{}?", f.name)
+            }
+        })
+        .collect();
+    if p.state == PayloadState::Opaque {
+        format!("{}, ..opaque", fields.join(", "))
+    } else {
+        fields.join(", ")
+    }
+}
+
+pub fn format_touch_output(
+    breaking: &[BreakingAlert],
+    contract_changes: &[ContractChangeAlert],
     items: &[(String, String, Vec<CrossRepoEdgeInfo>, Vec<CrossRepoEdgeInfo>)],
     max_bytes: usize,
 ) -> String {
     let mut lines = Vec::new();
+    for alert in breaking {
+        lines.push(format_breaking_alert(alert));
+    }
+    for alert in contract_changes {
+        lines.push(format_contract_change_alert(alert));
+    }
+    append_touch_impact_lines(items, &mut lines);
+    if lines.is_empty() {
+        return String::new();
+    }
+    render_lines_within_budget(&lines, max_bytes)
+}
+
+pub fn format_touch_impact(
+    items: &[(String, String, Vec<CrossRepoEdgeInfo>, Vec<CrossRepoEdgeInfo>)],
+    max_bytes: usize,
+) -> String {
+    format_touch_output(&[], &[], items, max_bytes)
+}
+
+fn append_touch_impact_lines(
+    items: &[(String, String, Vec<CrossRepoEdgeInfo>, Vec<CrossRepoEdgeInfo>)],
+    lines: &mut Vec<String>,
+) {
     for (repo, file, served, called) in items {
         if served.is_empty() && called.is_empty() {
             continue;
@@ -360,10 +516,6 @@ pub fn format_touch_impact(
         }
         lines.push(format!("{repo}:{file} {}", parts.join("; ")));
     }
-    if lines.is_empty() {
-        return String::new();
-    }
-    render_lines_within_budget(&lines, max_bytes)
 }
 
 fn format_cross_repo_group(label: &str, edges: &[CrossRepoEdgeInfo]) -> String {
@@ -446,8 +598,14 @@ fn append_call_provider_lines_tracked(
                 files.push((prov.endpoint.repo.clone(), prov.endpoint.file.clone()));
                 eps.push((prov.endpoint.method, prov.endpoint.path_norm.clone()));
             }
+            let mismatch_tag = check_request_mismatch(
+                prov.endpoint.req_contract.as_ref(),
+                call.req_contract.as_ref(),
+            )
+            .map(|m| format!(" [{}]", m.format_compact()))
+            .unwrap_or_default();
             lines.push(format!(
-                "{head} {} {}:{}@{} [{}]{why_part}",
+                "{head} {} {}:{}@{} [{}]{mismatch_tag}{why_part}",
                 prov.endpoint.service,
                 prov.endpoint.file,
                 prov.endpoint.line,
@@ -492,7 +650,10 @@ fn format_provider_line(ep: &EndpointRow) -> String {
     )
 }
 
-fn format_grouped_callers(callers: &[CallerEdge]) -> Vec<String> {
+fn format_grouped_callers(
+    provider_req: Option<&PayloadContract>,
+    callers: &[CallerEdge],
+) -> Vec<String> {
     let mut direct: Vec<&CallerEdge> = Vec::new();
     let mut spa_groups: BTreeMap<&str, Vec<&CallerEdge>> = BTreeMap::new();
     for edge in callers {
@@ -516,8 +677,11 @@ fn format_grouped_callers(callers: &[CallerEdge]) -> Vec<String> {
     let mut out: Vec<String> = direct
         .into_iter()
         .map(|edge| {
+            let mismatch_tag = check_request_mismatch(provider_req, edge.call.req_contract.as_ref())
+                .map(|m| format!(" [{}]", m.format_compact()))
+                .unwrap_or_default();
             format!(
-                "  <- {} {}:{} [{}]{}",
+                "  <- {} {}:{} [{}]{mismatch_tag}{}",
                 edge.call.service,
                 edge.call.file,
                 edge.call.line,
@@ -527,12 +691,16 @@ fn format_grouped_callers(callers: &[CallerEdge]) -> Vec<String> {
         })
         .collect();
     for (svc, group) in spa_groups {
-        out.push(format_spa_group(svc, &group));
+        out.push(format_spa_group(svc, provider_req, &group));
     }
     out
 }
 
-fn format_spa_group(service: &str, group: &[&CallerEdge]) -> String {
+fn format_spa_group(
+    service: &str,
+    provider_req: Option<&PayloadContract>,
+    group: &[&CallerEdge],
+) -> String {
     let mut unique_files = BTreeSet::new();
     let mut areas = BTreeSet::new();
     let mut first_files = Vec::new();
@@ -554,24 +722,44 @@ fn format_spa_group(service: &str, group: &[&CallerEdge]) -> String {
             first_files.push(format!("{}:{}", edge.call.file, edge.call.line));
         }
     }
-    let area_list: Vec<&str> = areas.iter().copied().take(SPA_AREA_PREVIEW).collect();
-    let area_suffix = if areas.len() > SPA_AREA_PREVIEW { ", ..." } else { "" };
-    let pages_text = if area_list.is_empty() {
-        format!("{} files", unique_files.len())
-    } else {
-        format!(
-            "{} files in pages: {}{}",
-            unique_files.len(),
-            area_list.join(", "),
-            area_suffix
-        )
-    };
+    let pages_text = format_spa_pages_text(unique_files.len(), &areas);
+    let mismatch_tag = format_spa_mismatch_tag(provider_req, group);
     format!(
-        "  <- {service}: {pages_text} ({}) [{}]{}",
+        "  <- {service}: {pages_text} ({}) [{}]{mismatch_tag}{}",
         first_files.join(", "),
         best_conf.as_str(),
         why_dash(sample_why)
     )
+}
+
+fn format_spa_pages_text(file_count: usize, areas: &BTreeSet<&str>) -> String {
+    let area_list: Vec<&str> = areas.iter().copied().take(SPA_AREA_PREVIEW).collect();
+    if area_list.is_empty() {
+        return format!("{file_count} files");
+    }
+    let suffix = if areas.len() > SPA_AREA_PREVIEW { ", ..." } else { "" };
+    format!("{file_count} files in pages: {}{suffix}", area_list.join(", "))
+}
+
+fn format_spa_mismatch_tag(
+    provider_req: Option<&PayloadContract>,
+    group: &[&CallerEdge],
+) -> String {
+    let mut first: Option<String> = None;
+    let mut count = 0usize;
+    for edge in group {
+        if let Some(m) = check_request_mismatch(provider_req, edge.call.req_contract.as_ref()) {
+            count += 1;
+            if first.is_none() {
+                first = Some(m.format_compact());
+            }
+        }
+    }
+    match first {
+        Some(m) if count > 1 => format!(" [{m}, +{} more]", count - 1),
+        Some(m) => format!(" [{m}]"),
+        None => String::new(),
+    }
 }
 
 fn parse_endpoint_query(raw: &str) -> (Option<HttpMethod>, String) {

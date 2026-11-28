@@ -1,4 +1,5 @@
-use std::collections::{HashMap, HashSet};
+use std::borrow::Cow;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 use std::sync::LazyLock;
 
@@ -6,29 +7,26 @@ use anyhow::Result;
 use regex::Regex;
 
 use super::scan::{
-    LineIndex, ROOT_SLASH, find_matching_delim, for_each_dot_call, is_ident_byte, is_test_file,
-    is_ts_source, join_paths, normalize_path, parallel_map, qualify_under_root,
-    read_files_parallel, read_ident, resolve_ts_relative_import, skip_angle_generics,
-    skip_ascii_ws, sort_extracted_endpoints, split_top_level_args, split_ts_import_clause,
-    ts_code_mask, under_root, unquote_ts_string,
+    LineIndex, ROOT_SLASH, RawTsRoute, TsImportedSymbol, chain_root_receiver,
+    collect_local_path_consts, dedup_and_sort_endpoints, extract_ts_handler_name,
+    find_matching_delim, find_semicolon_at_depth_zero, first_ts_route_path, for_each_dot_call,
+    is_ts_ident_byte, join_paths, parse_ts_imports, parse_ts_source_map, push_ts_route,
+    qualify_under_root, read_ident, read_ts_ident_prefix, read_ts_service_sources,
+    skip_angle_generics, skip_ascii_ws, split_top_level_args, ts_code_mask, unquote_ts_string,
 };
 use super::types::{ExtractedEndpoint, HttpMethod, PrefixState};
 
 const DEFAULT_HANDLER: &str = "hono_handler";
 const ROUTE_METHOD: &str = "route";
+const HONO_FALLBACK_RECEIVERS: &[&str] = &["app", "router"];
+const MAX_MOUNT_DEPTH: usize = 8;
+const MAX_EVAL_DEPTH: usize = 6;
+
 static BASE_PATH_BIND_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
         r#"\b(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*(?::[^=]+)?=\s*(?:new\s+Hono(?:<[^>]*>)?\s*\(\)|[A-Za-z_$][A-Za-z0-9_$]*)\s*\.\s*basePath\s*\(\s*["'`]([^"'`]+)["'`]\s*\)"#,
     )
     .expect("valid basePath bind regex")
-});
-const HONO_FALLBACK_RECEIVERS: &[&str] = &["app", "router"];
-const MAX_MOUNT_DEPTH: usize = 6;
-const MAX_CHAIN_HOPS: usize = 16;
-
-static IMPORT_STMT_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?ms)\bimport\s+(?:type\s+)?(?:\{([^}]+)\}|([A-Za-z_$][A-Za-z0-9_$]*))\s+from\s+["']([^"']+)["']"#)
-        .expect("valid ts import regex")
 });
 
 static NEW_HONO_VAR_RE: LazyLock<Regex> = LazyLock::new(|| {
@@ -36,74 +34,109 @@ static NEW_HONO_VAR_RE: LazyLock<Regex> = LazyLock::new(|| {
         .expect("valid new Hono regex")
 });
 
-static FACTORY_VAR_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\b(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*(?::[^=]+)?=\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\(")
-        .expect("valid factory var regex")
+static DECL_ASSIGN_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\b(?:const|let|var)\s+(\{[^}]+\}|[A-Za-z_$][A-Za-z0-9_$]*)\s*(?::[^=]+)?=\s*")
+        .expect("valid ts decl assign regex")
 });
 
-static RETURN_CALL_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\breturn\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(").expect("valid return call regex")
+static RETURN_KW_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\breturn\s+").expect("valid return kw regex")
 });
 
 static FUNCTION_DECL_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\b(?:export\s+(?:default\s+)?)?(?:async\s+)?function\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*(?:<[^>]*>)?\s*\(")
-        .expect("valid ts function decl regex")
+    Regex::new(
+        r"\b(?:export\s+(?:default\s+)?)?(?:async\s+)?function\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*(?:<[^>]*>)?\s*\(",
+    )
+    .expect("valid ts function decl regex")
 });
 
 static ARROW_DECL_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\b(?:export\s+)?const\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*(?::[^=]+)?=\s*(?:async\s+)?\(")
-        .expect("valid ts arrow decl regex")
+    Regex::new(
+        r"\b(?:export\s+)?const\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*(?::[^=]+)?=\s*(?:async\s+)?\(",
+    )
+    .expect("valid ts arrow decl regex")
+});
+
+static HONO_TYPE_ALIAS_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\btype\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*Hono\b")
+        .expect("valid hono type alias regex")
 });
 
 static HONO_PARAM_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"([A-Za-z_$][A-Za-z0-9_$]*)\s*:\s*(?:Hono|App)\b").expect("valid hono param regex")
+    Regex::new(r"([A-Za-z_$][A-Za-z0-9_$]*)\s*:\s*([A-Za-z_$][A-Za-z0-9_$]*)\b")
+        .expect("valid hono param regex")
 });
 
 #[derive(Debug, Clone)]
-struct ImportedSymbol {
-    file: String,
-    exported_name: String,
+enum ValueExpr {
+    Ident(String),
+    Prop(String, String),
+    Call(String, Vec<Option<ValueExpr>>),
+    Object(Vec<(String, ValueExpr)>),
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum HonoValue {
+    Router { file: String, fn_name: String },
+    Bag(BTreeMap<String, HonoValue>),
+}
+
+impl HonoValue {
+    fn fingerprint(&self) -> String {
+        match self {
+            Self::Router { file, fn_name } => format!("R:{file}:{fn_name}"),
+            Self::Bag(map) => {
+                let inner: Vec<String> = map
+                    .iter()
+                    .map(|(k, v)| format!("{k}={}", v.fingerprint()))
+                    .collect();
+                format!("B:{{{}}}", inner.join(","))
+            }
+        }
+    }
+}
+
+type HonoEnv = BTreeMap<String, HonoValue>;
 
 #[derive(Debug, Clone)]
 struct TsFnSpan {
     name: String,
     params: String,
+    param_names: Vec<String>,
     body_open: usize,
     body_close: usize,
 }
 
 #[derive(Debug, Clone)]
-struct RawHonoRoute {
-    method: HttpMethod,
-    path_raw: String,
-    file: String,
-    line: usize,
-    handler: String,
+struct RawHonoMount {
+    prefix: String,
+    target_expr: Option<ValueExpr>,
+    enclosing_fn: Option<String>,
 }
 
 #[derive(Debug, Clone)]
-struct RawHonoMount {
-    prefix: String,
-    target_expr: String,
-    enclosing_fn: Option<String>,
+struct RawHelperCall {
+    callee: String,
+    caller_fn: String,
+    args: Vec<Option<ValueExpr>>,
 }
 
 #[derive(Debug, Clone)]
 struct ParsedHonoFile {
     rel: String,
-    imports: HashMap<String, ImportedSymbol>,
-    var_to_callee: HashMap<String, String>,
-    fn_return_callee: HashMap<String, String>,
-    routes_by_fn: HashMap<String, Vec<RawHonoRoute>>,
-    file_level_routes: Vec<RawHonoRoute>,
+    imports: HashMap<String, TsImportedSymbol>,
+    fn_params: HashMap<String, Vec<String>>,
+    local_exprs_by_fn: HashMap<String, Vec<(String, ValueExpr)>>,
+    fn_return: HashMap<String, ValueExpr>,
+    routes_by_fn: HashMap<String, Vec<RawTsRoute>>,
+    file_level_routes: Vec<RawTsRoute>,
     mounts: Vec<RawHonoMount>,
-    helper_calls: Vec<(String, String)>,
+    helper_calls: Vec<RawHelperCall>,
 }
 
 struct MountCollector<'a> {
     by_file: &'a HashMap<String, ParsedHonoFile>,
-    visited: HashSet<(String, String, String)>,
+    visited: HashSet<(String, String, String, String)>,
     mounted_targets: HashSet<(String, String)>,
     dep_files: HashSet<String>,
     endpoints: Vec<ExtractedEndpoint>,
@@ -115,12 +148,7 @@ pub fn extract_service_with_deps(
     entry_rel: Option<&str>,
     tracked_files: &[String],
 ) -> Result<(Vec<ExtractedEndpoint>, HashSet<String>)> {
-    let candidates: Vec<String> = tracked_files
-        .iter()
-        .filter(|rel| is_ts_source(rel) && under_root(rel, service_root) && !is_test_file(rel))
-        .cloned()
-        .collect();
-    let sources = read_files_parallel(repo_dir, &candidates);
+    let sources = read_ts_service_sources(repo_dir, service_root, tracked_files);
     Ok(extract_from_sources(&sources, service_root, entry_rel))
 }
 
@@ -129,14 +157,7 @@ pub fn extract_from_sources(
     service_root: &str,
     entry_rel: Option<&str>,
 ) -> (Vec<ExtractedEndpoint>, HashSet<String>) {
-    let known_files: HashSet<String> = sources.iter().map(|(f, _)| f.clone()).collect();
-    let parsed_list: Vec<ParsedHonoFile> = parallel_map(sources, |(rel, src)| {
-        parse_hono_file(rel, src, &known_files)
-    });
-    let by_file: HashMap<String, ParsedHonoFile> = parsed_list
-        .into_iter()
-        .map(|p| (p.rel.clone(), p))
-        .collect();
+    let by_file = parse_ts_source_map(sources, parse_hono_file, |p| p.rel.clone());
 
     let mut collector = MountCollector {
         by_file: &by_file,
@@ -148,7 +169,8 @@ pub fn extract_from_sources(
 
     if let Some(entry_file) = resolve_entry_file(service_root, entry_rel, &by_file) {
         collector.dep_files.insert(entry_file.clone());
-        collector.walk_file(&entry_file, None, ROOT_SLASH, 0);
+        let empty_env = HonoEnv::new();
+        collector.walk_file(&entry_file, None, ROOT_SLASH, &empty_env, 0);
     }
 
     collect_unmounted_partials(&by_file, &mut collector);
@@ -172,7 +194,7 @@ fn collect_unmounted_partials(
                 .contains(&(parsed.rel.clone(), fn_name.clone()))
             {
                 for r in routes {
-                    push_endpoint(&mut collector.endpoints, r, "", PrefixState::Partial);
+                    push_ts_route(&mut collector.endpoints, r, "", PrefixState::Partial, true);
                 }
             }
         }
@@ -183,7 +205,7 @@ fn collect_unmounted_partials(
                 .contains(&(parsed.rel.clone(), String::new()))
             {
                 for r in &parsed.file_level_routes {
-                    push_endpoint(&mut collector.endpoints, r, "", PrefixState::Partial);
+                    push_ts_route(&mut collector.endpoints, r, "", PrefixState::Partial, true);
                 }
             }
         }
@@ -207,12 +229,26 @@ fn resolve_entry_file(
     by_file
         .values()
         .filter(|p| !p.mounts.is_empty())
-        .max_by_key(|p| p.mounts.len())
+        .max_by(|a, b| a.mounts.len().cmp(&b.mounts.len()).then_with(|| b.rel.cmp(&a.rel)))
         .map(|p| p.rel.clone())
 }
 
+fn env_fingerprint(env: &HonoEnv) -> String {
+    env.iter()
+        .map(|(k, v)| format!("{k}={}", v.fingerprint()))
+        .collect::<Vec<_>>()
+        .join(";")
+}
+
 impl MountCollector<'_> {
-    fn walk_file(&mut self, file: &str, only_fn: Option<&str>, base_prefix: &str, depth: usize) {
+    fn walk_file(
+        &mut self,
+        file: &str,
+        only_fn: Option<&str>,
+        base_prefix: &str,
+        env: &HonoEnv,
+        depth: usize,
+    ) {
         if depth > MAX_MOUNT_DEPTH {
             return;
         }
@@ -220,6 +256,7 @@ impl MountCollector<'_> {
             file.to_owned(),
             only_fn.unwrap_or("").to_owned(),
             base_prefix.to_owned(),
+            env_fingerprint(env),
         );
         if !self.visited.insert(key) {
             return;
@@ -229,8 +266,182 @@ impl MountCollector<'_> {
         };
         self.dep_files.insert(file.to_owned());
         self.emit_own_routes(parsed, only_fn, base_prefix);
-        self.walk_mounts(parsed, only_fn, base_prefix, depth);
-        self.walk_helpers(parsed, only_fn, base_prefix, depth);
+
+        let local_env = self.build_scope_env(parsed, only_fn, env, 0);
+        let frame = WalkFrame {
+            parsed,
+            only_fn,
+            base_prefix,
+            local_env: &local_env,
+            depth,
+        };
+        self.walk_mounts(&frame);
+        self.walk_helpers(&frame);
+    }
+
+    fn build_scope_env(
+        &self,
+        parsed: &ParsedHonoFile,
+        only_fn: Option<&str>,
+        incoming: &HonoEnv,
+        eval_depth: usize,
+    ) -> HonoEnv {
+        let mut env = incoming.clone();
+        if let Some(top_exprs) = parsed.local_exprs_by_fn.get("") {
+            self.eval_local_exprs(parsed, top_exprs, &mut env, eval_depth);
+        }
+        if let Some(fn_name) = only_fn.filter(|s| !s.is_empty())
+            && let Some(fn_exprs) = parsed.local_exprs_by_fn.get(fn_name)
+        {
+            self.eval_local_exprs(parsed, fn_exprs, &mut env, eval_depth);
+        }
+        env
+    }
+
+    fn scope_env_for<'a>(
+        &self,
+        frame: &'a WalkFrame<'a>,
+        enclosing_fn: Option<&str>,
+    ) -> Cow<'a, HonoEnv> {
+        if frame.only_fn.is_some() {
+            return Cow::Borrowed(frame.local_env);
+        }
+        match enclosing_fn.filter(|s| !s.is_empty()) {
+            Some(name) => Cow::Owned(self.build_scope_env(frame.parsed, Some(name), frame.local_env, 0)),
+            None => Cow::Borrowed(frame.local_env),
+        }
+    }
+
+    fn eval_local_exprs(
+        &self,
+        parsed: &ParsedHonoFile,
+        exprs: &[(String, ValueExpr)],
+        env: &mut HonoEnv,
+        eval_depth: usize,
+    ) {
+        for (name, expr) in exprs {
+            if let Some(val) = self.eval_expr(parsed, expr, env, eval_depth) {
+                env.insert(name.clone(), val);
+            }
+        }
+    }
+
+    fn eval_expr(
+        &self,
+        parsed: &ParsedHonoFile,
+        expr: &ValueExpr,
+        env: &HonoEnv,
+        eval_depth: usize,
+    ) -> Option<HonoValue> {
+        if eval_depth > MAX_EVAL_DEPTH {
+            return None;
+        }
+        match expr {
+            ValueExpr::Ident(name) => self.eval_ident(parsed, name, env),
+            ValueExpr::Prop(obj, prop) => match env.get(obj) {
+                Some(HonoValue::Bag(map)) => map.get(prop).cloned(),
+                _ => None,
+            },
+            ValueExpr::Object(entries) => self.eval_object(parsed, entries, env, eval_depth),
+            ValueExpr::Call(callee, args) => self.eval_call(parsed, callee, args, env, eval_depth),
+        }
+    }
+
+    fn eval_ident(&self, parsed: &ParsedHonoFile, name: &str, env: &HonoEnv) -> Option<HonoValue> {
+        if let Some(v) = env.get(name) {
+            return Some(v.clone());
+        }
+        if let Some(imp) = parsed.imports.get(name) {
+            return Some(HonoValue::Router {
+                file: imp.file.clone(),
+                fn_name: imp.exported_name.clone(),
+            });
+        }
+        parsed
+            .routes_by_fn
+            .contains_key(name)
+            .then(|| HonoValue::Router {
+                file: parsed.rel.clone(),
+                fn_name: name.to_owned(),
+            })
+    }
+
+    fn eval_object(
+        &self,
+        parsed: &ParsedHonoFile,
+        entries: &[(String, ValueExpr)],
+        env: &HonoEnv,
+        eval_depth: usize,
+    ) -> Option<HonoValue> {
+        let mut bag = BTreeMap::new();
+        for (k, v_expr) in entries {
+            if let Some(v) = self.eval_expr(parsed, v_expr, env, eval_depth + 1) {
+                bag.insert(k.clone(), v);
+            }
+        }
+        (!bag.is_empty()).then_some(HonoValue::Bag(bag))
+    }
+
+    fn eval_call(
+        &self,
+        parsed: &ParsedHonoFile,
+        callee: &str,
+        args: &[Option<ValueExpr>],
+        env: &HonoEnv,
+        eval_depth: usize,
+    ) -> Option<HonoValue> {
+        let (target_file, target_fn) = self.resolve_callee(parsed, callee)?;
+        let target_parsed = self.by_file.get(&target_file)?;
+        let child_env =
+            self.bind_call_args(parsed, target_parsed, &target_fn, args, env, eval_depth);
+        let has_own = fn_has_own_routes_or_mounts(target_parsed, &target_fn);
+        if let Some(ret_expr) = target_parsed.fn_return.get(&target_fn) {
+            let ret_scope =
+                self.build_scope_env(target_parsed, Some(&target_fn), &child_env, eval_depth + 1);
+            if let Some(ret_val) =
+                self.eval_expr(target_parsed, ret_expr, &ret_scope, eval_depth + 1)
+                && (!has_own || matches!(ret_val, HonoValue::Bag(_)))
+            {
+                return Some(ret_val);
+            }
+        }
+        Some(HonoValue::Router {
+            file: target_file,
+            fn_name: target_fn,
+        })
+    }
+
+    fn resolve_callee(&self, parsed: &ParsedHonoFile, callee: &str) -> Option<(String, String)> {
+        if let Some(imp) = parsed.imports.get(callee) {
+            return Some((imp.file.clone(), imp.exported_name.clone()));
+        }
+        if parsed.fn_params.contains_key(callee) || parsed.routes_by_fn.contains_key(callee) {
+            return Some((parsed.rel.clone(), callee.to_owned()));
+        }
+        None
+    }
+
+    fn bind_call_args(
+        &self,
+        caller: &ParsedHonoFile,
+        callee: &ParsedHonoFile,
+        callee_fn: &str,
+        args: &[Option<ValueExpr>],
+        caller_env: &HonoEnv,
+        eval_depth: usize,
+    ) -> HonoEnv {
+        let mut child_env = HonoEnv::new();
+        let Some(param_names) = callee.fn_params.get(callee_fn) else {
+            return child_env;
+        };
+        for (pname, arg_opt) in param_names.iter().zip(args.iter()) {
+            if let Some(arg_expr) = arg_opt
+                && let Some(val) = self.eval_expr(caller, arg_expr, caller_env, eval_depth + 1)
+            {
+                child_env.insert(pname.clone(), val);
+            }
+        }
+        child_env
     }
 
     fn emit_own_routes(&mut self, parsed: &ParsedHonoFile, only_fn: Option<&str>, base_prefix: &str) {
@@ -239,7 +450,7 @@ impl MountCollector<'_> {
                 self.mounted_targets
                     .insert((parsed.rel.clone(), fn_name.to_owned()));
                 for r in routes {
-                    push_endpoint(&mut self.endpoints, r, base_prefix, PrefixState::Resolved);
+                    push_ts_route(&mut self.endpoints, r, base_prefix, PrefixState::Resolved, true);
                 }
             }
             return;
@@ -248,182 +459,186 @@ impl MountCollector<'_> {
             self.mounted_targets
                 .insert((parsed.rel.clone(), fn_name.clone()));
             for r in routes {
-                push_endpoint(&mut self.endpoints, r, base_prefix, PrefixState::Resolved);
+                push_ts_route(&mut self.endpoints, r, base_prefix, PrefixState::Resolved, true);
             }
         }
         if !parsed.file_level_routes.is_empty() {
             self.mounted_targets
                 .insert((parsed.rel.clone(), String::new()));
             for r in &parsed.file_level_routes {
-                push_endpoint(&mut self.endpoints, r, base_prefix, PrefixState::Resolved);
+                push_ts_route(&mut self.endpoints, r, base_prefix, PrefixState::Resolved, true);
             }
         }
     }
 
-    fn walk_mounts(
-        &mut self,
-        parsed: &ParsedHonoFile,
-        only_fn: Option<&str>,
-        base_prefix: &str,
-        depth: usize,
-    ) {
-        for mount in &parsed.mounts {
-            if only_fn.is_some_and(|scope| mount.enclosing_fn.as_deref() != Some(scope)) {
+    fn walk_mounts(&mut self, frame: &WalkFrame<'_>) {
+        for mount in &frame.parsed.mounts {
+            if frame.only_fn.is_some_and(|scope| mount.enclosing_fn.as_deref() != Some(scope)) {
                 continue;
             }
-            let next_prefix = join_paths(base_prefix, &mount.prefix);
-            if let Some((target_file, target_fn)) =
-                resolve_mount_target(parsed, &mount.target_expr, self.by_file)
+            let Some(ref target_expr) = mount.target_expr else {
+                continue;
+            };
+            let mount_env = self.scope_env_for(frame, mount.enclosing_fn.as_deref());
+            let next_prefix = join_paths(frame.base_prefix, &mount.prefix);
+            if let ValueExpr::Call(callee, args) = target_expr
+                && self.walk_call_mount(
+                    frame.parsed,
+                    callee,
+                    args,
+                    &next_prefix,
+                    mount_env.as_ref(),
+                    frame.depth,
+                )
             {
-                self.walk_file(&target_file, Some(&target_fn), &next_prefix, depth + 1);
-            }
-        }
-    }
-
-    fn walk_helpers(
-        &mut self,
-        parsed: &ParsedHonoFile,
-        only_fn: Option<&str>,
-        base_prefix: &str,
-        depth: usize,
-    ) {
-        for (callee, caller_fn) in &parsed.helper_calls {
-            if only_fn.is_some_and(|scope| caller_fn != scope) {
                 continue;
             }
-            if let Some(imp) = parsed.imports.get(callee) {
-                self.walk_file(&imp.file, Some(&imp.exported_name), base_prefix, depth + 1);
-            } else if parsed.routes_by_fn.contains_key(callee) {
-                self.walk_file(&parsed.rel, Some(callee), base_prefix, depth + 1);
+            if let Some(HonoValue::Router { file, fn_name }) =
+                self.eval_expr(frame.parsed, target_expr, mount_env.as_ref(), 0)
+            {
+                self.walk_file(
+                    &file,
+                    Some(&fn_name),
+                    &next_prefix,
+                    &HonoEnv::new(),
+                    frame.depth + 1,
+                );
             }
         }
     }
+
+    fn walk_call_mount(
+        &mut self,
+        parsed: &ParsedHonoFile,
+        callee: &str,
+        args: &[Option<ValueExpr>],
+        next_prefix: &str,
+        local_env: &HonoEnv,
+        depth: usize,
+    ) -> bool {
+        let Some((target_file, target_fn)) = self.resolve_callee(parsed, callee) else {
+            return false;
+        };
+        let Some(target_parsed) = self.by_file.get(&target_file) else {
+            return false;
+        };
+        let child_env =
+            self.bind_call_args(parsed, target_parsed, &target_fn, args, local_env, 0);
+        if !fn_has_own_routes_or_mounts(target_parsed, &target_fn)
+            && let Some(ret_expr) = target_parsed.fn_return.get(&target_fn)
+        {
+            let ret_scope =
+                self.build_scope_env(target_parsed, Some(&target_fn), &child_env, 1);
+            if let Some(HonoValue::Router { file, fn_name }) =
+                self.eval_expr(target_parsed, ret_expr, &ret_scope, 1)
+            {
+                self.dep_files.insert(target_file);
+                self.walk_file(&file, Some(&fn_name), next_prefix, &HonoEnv::new(), depth + 1);
+                return true;
+            }
+        }
+        self.walk_file(&target_file, Some(&target_fn), next_prefix, &child_env, depth + 1);
+        true
+    }
+
+    fn walk_helpers(&mut self, frame: &WalkFrame<'_>) {
+        for helper in &frame.parsed.helper_calls {
+            if frame.only_fn.is_some_and(|scope| helper.caller_fn != scope) {
+                continue;
+            }
+            let Some((target_file, target_fn)) = self.resolve_callee(frame.parsed, &helper.callee)
+            else {
+                continue;
+            };
+            let Some(target_parsed) = self.by_file.get(&target_file) else {
+                continue;
+            };
+            let caller_env = self.scope_env_for(frame, Some(helper.caller_fn.as_str()));
+            let child_env = self.bind_call_args(
+                frame.parsed,
+                target_parsed,
+                &target_fn,
+                &helper.args,
+                caller_env.as_ref(),
+                0,
+            );
+            self.walk_file(
+                &target_file,
+                Some(&target_fn),
+                frame.base_prefix,
+                &child_env,
+                frame.depth + 1,
+            );
+        }
+    }
 }
 
-fn resolve_mount_target(
-    parsed: &ParsedHonoFile,
-    target_expr: &str,
-    by_file: &HashMap<String, ParsedHonoFile>,
-) -> Option<(String, String)> {
-    let mut name = extract_target_symbol(target_expr)?;
-    for _ in 0..4 {
-        if let Some(imp) = parsed.imports.get(&name) {
-            return Some((imp.file.clone(), imp.exported_name.clone()));
-        }
-        if parsed.routes_by_fn.contains_key(&name) {
-            return Some((parsed.rel.clone(), name));
-        }
-        if let Some(callee) = parsed.var_to_callee.get(&name) {
-            name = callee.clone();
-            continue;
-        }
-        if let Some(callee) = parsed.fn_return_callee.get(&name) {
-            name = callee.clone();
-            continue;
-        }
-        break;
-    }
-    if let Some((obj, _)) = target_expr.trim().split_once('.')
-        && let Some(callee) = parsed.var_to_callee.get(obj.trim())
-        && let Some(imp) = parsed.imports.get(callee)
-        && by_file.contains_key(&imp.file)
-    {
-        return Some((imp.file.clone(), imp.exported_name.clone()));
-    }
-    None
+struct WalkFrame<'a> {
+    parsed: &'a ParsedHonoFile,
+    only_fn: Option<&'a str>,
+    base_prefix: &'a str,
+    local_env: &'a HonoEnv,
+    depth: usize,
 }
 
-fn extract_target_symbol(expr: &str) -> Option<String> {
-    let trimmed = expr.trim();
-    let bytes = trimmed.as_bytes();
-    let mut pos = 0usize;
-    while pos < bytes.len() && is_ts_ident_byte(bytes[pos]) {
-        pos += 1;
-    }
-    if pos == 0 {
-        return None;
-    }
-    let rest = trimmed[pos..].trim_start();
-    (rest.is_empty() || rest.starts_with('(')).then(|| trimmed[..pos].to_owned())
-}
-
-fn push_endpoint(
-    out: &mut Vec<ExtractedEndpoint>,
-    route: &RawHonoRoute,
-    mount_prefix: &str,
-    prefix_state: PrefixState,
-) {
-    let full_raw = if mount_prefix.is_empty() || mount_prefix == ROOT_SLASH {
-        route.path_raw.clone()
-    } else {
-        join_paths(mount_prefix, &route.path_raw)
-    };
-    let path_norm = normalize_path(&full_raw);
-    if path_norm.is_empty() {
-        return;
-    }
-    let prefix_state = if full_raw.starts_with("/api/") {
-        PrefixState::Full
-    } else {
-        prefix_state
-    };
-    let endpoint = ExtractedEndpoint {
-        file: route.file.clone(),
-        line: route.line,
-        handler: route.handler.clone(),
-        prefix_state,
-        method: route.method,
-        path_raw: full_raw,
-        path_norm,
-    };
-    out.push(endpoint);
-}
-
-fn dedup_and_sort_endpoints(endpoints: &mut Vec<ExtractedEndpoint>) {
-    sort_extracted_endpoints(endpoints);
-    endpoints.dedup_by(|a, b| {
-        a.file == b.file
-            && a.line == b.line
-            && a.method == b.method
-            && a.path_norm == b.path_norm
-            && a.prefix_state == b.prefix_state
-    });
+fn fn_has_own_routes_or_mounts(parsed: &ParsedHonoFile, fn_name: &str) -> bool {
+    parsed.routes_by_fn.contains_key(fn_name)
+        || parsed
+            .mounts
+            .iter()
+            .any(|m| m.enclosing_fn.as_deref() == Some(fn_name))
 }
 
 fn parse_hono_file(rel: &str, source: &str, known_files: &HashSet<String>) -> ParsedHonoFile {
     let mask = ts_code_mask(source);
     let lines = LineIndex::new(source);
-    let imports = parse_imports(rel, source, &mask, known_files);
+    let imports = parse_ts_imports(rel, source, &mask, known_files);
+    let local_paths = collect_local_path_consts(source, &mask);
     let fns = find_ts_functions(source, &mask);
-    let var_to_callee = parse_factory_var_bindings(source, &mask);
-    let fn_return_callee = parse_fn_return_callees(source, &mask, &fns);
-    let mut routes_by_fn: HashMap<String, Vec<RawHonoRoute>> = HashMap::new();
+    let mut hono_type_names: HashSet<String> = ["Hono", "App"].into_iter().map(str::to_owned).collect();
+    for caps in HONO_TYPE_ALIAS_RE.captures_iter(source) {
+        if mask[caps.get(0).unwrap().start()] {
+            hono_type_names.insert(caps[1].to_owned());
+        }
+    }
+    let mut fn_params = HashMap::new();
+    let mut local_exprs_by_fn: HashMap<String, Vec<(String, ValueExpr)>> = HashMap::new();
+    let mut fn_return = HashMap::new();
+    let mut routes_by_fn: HashMap<String, Vec<RawTsRoute>> = HashMap::new();
     let mut file_level_routes = Vec::new();
     let mut mounts = Vec::new();
     let mut helper_calls = Vec::new();
 
     let local_fn_names: HashSet<&str> = fns.iter().map(|f| f.name.as_str()).collect();
     for f in &fns {
+        fn_params.insert(f.name.clone(), f.param_names.clone());
+        let exprs = parse_local_value_exprs(source, &mask, f.body_open + 1, f.body_close);
+        if !exprs.is_empty() {
+            local_exprs_by_fn.insert(f.name.clone(), exprs);
+        }
+        if let Some(ret) = parse_fn_return_expr(source, &mask, f.body_open + 1, f.body_close) {
+            fn_return.insert(f.name.clone(), ret);
+        }
         let mut hono_vars = find_hono_vars_in_span(source, &mask, f.body_open, f.body_close);
         for caps in HONO_PARAM_RE.captures_iter(&f.params) {
-            hono_vars.insert(caps[1].to_owned());
+            if hono_type_names.contains(&caps[2]) {
+                hono_vars.insert(caps[1].to_owned());
+            }
         }
         let base_paths =
             find_hono_base_paths(source, &mask, f.body_open, f.body_close, &mut hono_vars);
         let mut routes = Vec::new();
-        scan_hono_calls_in_span(
+        let fn_ctx = HonoScanCtx {
             rel,
             source,
-            &mask,
-            &lines,
-            f.body_open,
-            f.body_close,
-            Some(&f.name),
-            &hono_vars,
-            &base_paths,
-            &mut routes,
-            &mut mounts,
-        );
+            mask: &mask,
+            lines: &lines,
+            enclosing_fn: Some(&f.name),
+            hono_vars: &hono_vars,
+            base_paths: &base_paths,
+            local_paths: &local_paths,
+        };
+        scan_hono_calls_in_span(&fn_ctx, f.body_open, f.body_close, &mut routes, &mut mounts);
         if !routes.is_empty() {
             routes_by_fn.entry(f.name.clone()).or_default().extend(routes);
         }
@@ -439,27 +654,33 @@ fn parse_hono_file(rel: &str, source: &str, known_files: &HashSet<String>) -> Pa
         );
     }
 
+    let top_exprs = parse_top_level_value_exprs(source, &mask, &fns);
+    if !top_exprs.is_empty() {
+        local_exprs_by_fn.insert(String::new(), top_exprs);
+    }
+
     let mut top_hono_vars = find_top_level_hono_vars(source, &mask, &fns);
     if !top_hono_vars.is_empty() {
         let base_paths = find_hono_base_paths(source, &mask, 0, source.len(), &mut top_hono_vars);
-        scan_top_level_hono_calls(
+        let top_ctx = HonoScanCtx {
             rel,
             source,
-            &mask,
-            &lines,
-            &fns,
-            &top_hono_vars,
-            &base_paths,
-            &mut file_level_routes,
-            &mut mounts,
-        );
+            mask: &mask,
+            lines: &lines,
+            enclosing_fn: None,
+            hono_vars: &top_hono_vars,
+            base_paths: &base_paths,
+            local_paths: &local_paths,
+        };
+        scan_top_level_hono_calls(&top_ctx, &fns, &mut file_level_routes, &mut mounts);
     }
 
     ParsedHonoFile {
         rel: rel.to_owned(),
         imports,
-        var_to_callee,
-        fn_return_callee,
+        fn_params,
+        local_exprs_by_fn,
+        fn_return,
         routes_by_fn,
         file_level_routes,
         mounts,
@@ -467,77 +688,216 @@ fn parse_hono_file(rel: &str, source: &str, known_files: &HashSet<String>) -> Pa
     }
 }
 
-fn parse_imports(
-    rel: &str,
-    source: &str,
-    mask: &[bool],
-    known_files: &HashSet<String>,
-) -> HashMap<String, ImportedSymbol> {
-    let mut map = HashMap::new();
-    for caps in IMPORT_STMT_RE.captures_iter(source) {
-        let m0 = caps.get(0).unwrap();
-        if !mask[m0.start()] {
-            continue;
-        }
-        let Some(target_file) = resolve_ts_relative_import(rel, &caps[3], known_files) else {
-            continue;
-        };
-        if let Some(named) = caps.get(1) {
-            for (orig, local) in split_ts_import_clause(named.as_str()) {
-                map.insert(
-                    local,
-                    ImportedSymbol {
-                        file: target_file.clone(),
-                        exported_name: orig,
-                    },
-                );
-            }
-        } else if let Some(def) = caps.get(2) {
-            map.insert(
-                def.as_str().to_owned(),
-                ImportedSymbol {
-                    file: target_file,
-                    exported_name: def.as_str().to_owned(),
-                },
-            );
-        }
-    }
-    map
-}
-
-fn parse_factory_var_bindings(source: &str, mask: &[bool]) -> HashMap<String, String> {
-    let mut map = HashMap::new();
-    for caps in FACTORY_VAR_RE.captures_iter(source) {
-        if mask[caps.get(0).unwrap().start()] {
-            map.insert(caps[1].to_owned(), caps[2].to_owned());
-        }
-    }
-    map
-}
-
-fn parse_fn_return_callees(
+fn parse_top_level_value_exprs(
     source: &str,
     mask: &[bool],
     fns: &[TsFnSpan],
-) -> HashMap<String, String> {
-    let mut map = HashMap::new();
-    for f in fns {
-        let slice = &source[f.body_open..f.body_close];
-        for caps in RETURN_CALL_RE.captures_iter(slice) {
-            if mask[f.body_open + caps.get(0).unwrap().start()] {
-                map.insert(f.name.clone(), caps[1].to_owned());
-                break;
+) -> Vec<(String, ValueExpr)> {
+    let mut out = Vec::new();
+    let bytes = source.as_bytes();
+    for caps in DECL_ASSIGN_RE.captures_iter(source) {
+        let m0 = caps.get(0).unwrap();
+        if !mask[m0.start()] || inside_any_fn(m0.start(), fns) {
+            continue;
+        }
+        let rhs_end = find_semicolon_at_depth_zero(bytes, mask, m0.end(), source.len());
+        record_decl_binding(&caps[1], source[m0.end()..rhs_end].trim(), &mut out);
+    }
+    out
+}
+
+fn parse_local_value_exprs(
+    source: &str,
+    mask: &[bool],
+    start: usize,
+    end: usize,
+) -> Vec<(String, ValueExpr)> {
+    let mut out = Vec::new();
+    let bytes = source.as_bytes();
+    for caps in DECL_ASSIGN_RE.captures_iter(&source[start..end]) {
+        let m0 = caps.get(0).unwrap();
+        let abs_start = start + m0.start();
+        let abs_end = start + m0.end();
+        if !mask[abs_start] {
+            continue;
+        }
+        let rhs_end = find_semicolon_at_depth_zero(bytes, mask, abs_end, end);
+        record_decl_binding(&caps[1], source[abs_end..rhs_end].trim(), &mut out);
+    }
+    out
+}
+
+fn record_decl_binding(lhs: &str, rhs_raw: &str, out: &mut Vec<(String, ValueExpr)>) {
+    let Some(rhs_expr) = parse_value_expr(rhs_raw) else {
+        return;
+    };
+    let lhs_trimmed = lhs.trim();
+    if let Some(inner) = lhs_trimmed.strip_prefix('{').and_then(|s| s.strip_suffix('}')) {
+        let obj_ident = match &rhs_expr {
+            ValueExpr::Ident(id) => id.clone(),
+            _ => {
+                let tmp = format!("__destr_{}", out.len());
+                out.push((tmp.clone(), rhs_expr));
+                tmp
+            }
+        };
+        for item in inner.split(',') {
+            let clean = item.trim();
+            if clean.is_empty() || clean.starts_with("...") {
+                continue;
+            }
+            let (prop, local) = match clean.split_once(':') {
+                Some((p, l)) => (
+                    p.trim(),
+                    l.split('=').next().unwrap_or(l).trim(),
+                ),
+                None => {
+                    let p = clean.split('=').next().unwrap_or(clean).trim();
+                    (p, p)
+                }
+            };
+            if !prop.is_empty()
+                && !local.is_empty()
+                && prop.bytes().all(is_ts_ident_byte)
+                && local.bytes().all(is_ts_ident_byte)
+            {
+                out.push((local.to_owned(), ValueExpr::Prop(obj_ident.clone(), prop.to_owned())));
             }
         }
+    } else if !lhs_trimmed.is_empty() && lhs_trimmed.bytes().all(is_ts_ident_byte) {
+        out.push((lhs_trimmed.to_owned(), rhs_expr));
     }
-    map
+}
+
+fn parse_fn_return_expr(
+    source: &str,
+    mask: &[bool],
+    start: usize,
+    end: usize,
+) -> Option<ValueExpr> {
+    let bytes = source.as_bytes();
+    let mut best = None;
+    for m in RETURN_KW_RE.find_iter(&source[start..end]) {
+        let abs_start = start + m.start();
+        if !mask[abs_start] || brace_depth_between(bytes, mask, start, abs_start) != 0 {
+            continue;
+        }
+        let abs_rhs = start + m.end();
+        let rhs_end = find_semicolon_at_depth_zero(bytes, mask, abs_rhs, end);
+        if let Some(expr) = parse_value_expr(source[abs_rhs..rhs_end].trim()) {
+            best = Some(expr);
+        }
+    }
+    best
+}
+
+fn brace_depth_between(bytes: &[u8], mask: &[bool], start: usize, end: usize) -> usize {
+    let mut depth = 0usize;
+    for i in start..end {
+        if !mask[i] {
+            continue;
+        }
+        if bytes[i] == b'{' {
+            depth += 1;
+        } else if bytes[i] == b'}' {
+            depth = depth.saturating_sub(1);
+        }
+    }
+    depth
+}
+
+fn parse_value_expr(raw: &str) -> Option<ValueExpr> {
+    let trimmed = raw.trim().trim_end_matches(';').trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed.as_bytes()[0] == b'{' {
+        return parse_object_value_expr(trimmed);
+    }
+    parse_ident_or_call_expr(trimmed)
+}
+
+fn parse_object_value_expr(trimmed: &str) -> Option<ValueExpr> {
+    let mask = ts_code_mask(trimmed);
+    let close = find_matching_delim(trimmed.as_bytes(), &mask, 0, b'{', b'}')?;
+    let mut entries = Vec::new();
+    for (_, item) in split_top_level_args(trimmed, &mask, 0, 1, close) {
+        let t = item.trim();
+        if t.is_empty() || t.starts_with("...") {
+            continue;
+        }
+        if let Some((key, val_str)) = split_ts_prop(t) {
+            if let Some(val_expr) = parse_value_expr(val_str) {
+                entries.push((key, val_expr));
+            }
+        } else if t.bytes().all(is_ts_ident_byte) {
+            entries.push((t.to_owned(), ValueExpr::Ident(t.to_owned())));
+        }
+    }
+    (!entries.is_empty()).then_some(ValueExpr::Object(entries))
+}
+
+fn parse_ident_or_call_expr(trimmed: &str) -> Option<ValueExpr> {
+    let (head, rest_raw) = read_ts_ident_prefix(trimmed)?;
+    if matches!(head, "new" | "async" | "function" | "class" | "await") {
+        return None;
+    }
+    let rest = rest_raw.trim_start();
+    if rest.is_empty() {
+        return Some(ValueExpr::Ident(head.to_owned()));
+    }
+    if let Some(after_dot) = rest.strip_prefix('.') {
+        let (prop, tail) = read_ts_ident_prefix(after_dot)?;
+        return tail
+            .trim()
+            .is_empty()
+            .then(|| ValueExpr::Prop(head.to_owned(), prop.to_owned()));
+    }
+    if rest.starts_with('(') || rest.starts_with('<') {
+        return parse_call_suffix(trimmed, trimmed.as_bytes(), head, head.len());
+    }
+    None
+}
+
+fn parse_call_suffix(trimmed: &str, bytes: &[u8], head: &str, pos: usize) -> Option<ValueExpr> {
+    let mask = ts_code_mask(trimmed);
+    let open = advance_past_generics(bytes, &mask, pos, bytes.len());
+    if bytes.get(open) != Some(&b'(') || !mask[open] {
+        return None;
+    }
+    let close = find_matching_delim(bytes, &mask, open, b'(', b')')?;
+    let args: Vec<Option<ValueExpr>> = split_top_level_args(trimmed, &mask, 0, open + 1, close)
+        .into_iter()
+        .map(|(_, a)| parse_value_expr(a))
+        .collect();
+    Some(ValueExpr::Call(head.to_owned(), args))
+}
+
+fn split_ts_prop(item: &str) -> Option<(String, &str)> {
+    let (key, after) = read_ts_ident_prefix(item)?;
+    let val = after.trim_start().strip_prefix(':')?.trim();
+    Some((key.to_owned(), val))
 }
 
 fn find_ts_functions(source: &str, mask: &[bool]) -> Vec<TsFnSpan> {
     let mut spans = Vec::new();
     let mut seen_opens = HashSet::new();
-    collect_ts_fn_matches(source, mask, &FUNCTION_DECL_RE, find_fn_body_open, &mut seen_opens, &mut spans);
-    collect_ts_fn_matches(source, mask, &ARROW_DECL_RE, find_arrow_body_open, &mut seen_opens, &mut spans);
+    collect_ts_fn_matches(
+        source,
+        mask,
+        &FUNCTION_DECL_RE,
+        find_fn_body_open,
+        &mut seen_opens,
+        &mut spans,
+    );
+    collect_ts_fn_matches(
+        source,
+        mask,
+        &ARROW_DECL_RE,
+        find_arrow_body_open,
+        &mut seen_opens,
+        &mut spans,
+    );
     spans.sort_by_key(|s| s.body_open);
     spans
 }
@@ -567,14 +927,28 @@ fn collect_ts_fn_matches(
             continue;
         };
         if seen_opens.insert(body_open) {
+            let params_raw = &source[open_paren + 1..close_paren];
+            let param_names = parse_ts_param_names(source, mask, open_paren + 1, close_paren);
             spans.push(TsFnSpan {
                 name: caps[1].to_owned(),
-                params: source[open_paren + 1..close_paren].to_owned(),
+                params: params_raw.to_owned(),
+                param_names,
                 body_open,
                 body_close,
             });
         }
     }
+}
+
+fn parse_ts_param_names(source: &str, mask: &[bool], start: usize, end: usize) -> Vec<String> {
+    split_top_level_args(source, mask, 0, start, end)
+        .into_iter()
+        .map(|(_, arg)| {
+            let trimmed = arg.trim().trim_start_matches("...");
+            read_ts_ident_prefix(trimmed)
+                .map_or_else(String::new, |(id, _)| id.to_owned())
+        })
+        .collect()
 }
 
 fn find_fn_body_open(bytes: &[u8], mask: &[bool], start: usize) -> Option<usize> {
@@ -712,66 +1086,42 @@ fn find_hono_base_paths(
     out
 }
 
-#[allow(clippy::too_many_arguments)]
+struct HonoScanCtx<'a> {
+    rel: &'a str,
+    source: &'a str,
+    mask: &'a [bool],
+    lines: &'a LineIndex,
+    enclosing_fn: Option<&'a str>,
+    hono_vars: &'a HashSet<String>,
+    base_paths: &'a HashMap<String, String>,
+    local_paths: &'a HashMap<String, String>,
+}
+
 fn scan_hono_calls_in_span(
-    rel: &str,
-    source: &str,
-    mask: &[bool],
-    lines: &LineIndex,
+    ctx: &HonoScanCtx<'_>,
     start: usize,
     end: usize,
-    enclosing_fn: Option<&str>,
-    hono_vars: &HashSet<String>,
-    base_paths: &HashMap<String, String>,
-    routes: &mut Vec<RawHonoRoute>,
+    routes: &mut Vec<RawTsRoute>,
     mounts: &mut Vec<RawHonoMount>,
 ) {
-    for_each_dot_call(source, mask, start, end, |name, dot_pos, open, close| {
+    for_each_dot_call(ctx.source, ctx.mask, start, end, |name, dot_pos, open, close| {
         if name == ROUTE_METHOD {
-            record_hono_mount(
-                source,
-                mask,
-                dot_pos,
-                open,
-                close,
-                enclosing_fn,
-                hono_vars,
-                base_paths,
-                mounts,
-            );
+            record_hono_mount(ctx, dot_pos, open, close, mounts);
         } else if let Some(method) = HttpMethod::parse_hono(name) {
-            record_hono_route(
-                rel,
-                source,
-                mask,
-                lines,
-                dot_pos,
-                open,
-                close,
-                method,
-                enclosing_fn,
-                hono_vars,
-                base_paths,
-                routes,
-            );
+            record_hono_route(ctx, dot_pos, open, close, method, routes);
         }
         Some(open + 1)
     });
 }
 
-#[allow(clippy::too_many_arguments)]
 fn record_hono_mount(
-    source: &str,
-    mask: &[bool],
+    ctx: &HonoScanCtx<'_>,
     dot_pos: usize,
     open: usize,
     close: usize,
-    enclosing_fn: Option<&str>,
-    hono_vars: &HashSet<String>,
-    base_paths: &HashMap<String, String>,
     mounts: &mut Vec<RawHonoMount>,
 ) {
-    let args = split_top_level_args(source, mask, 0, open + 1, close);
+    let args = split_top_level_args(ctx.source, ctx.mask, 0, open + 1, close);
     if args.len() < 2 {
         return;
     }
@@ -781,79 +1131,66 @@ fn record_hono_mount(
     if !prefix.starts_with('/') {
         return;
     }
-    let Some(recv) = chain_root_receiver(source, mask, dot_pos) else {
+    let Some(recv) = chain_root_receiver(ctx.source, ctx.mask, dot_pos) else {
         return;
     };
-    let is_hono = hono_vars.contains(&recv) || HONO_FALLBACK_RECEIVERS.contains(&recv.as_str());
+    let is_hono = ctx.hono_vars.contains(&recv) || HONO_FALLBACK_RECEIVERS.contains(&recv.as_str());
     if !is_hono {
         return;
     }
-    let full_prefix = base_paths
+    let full_prefix = ctx
+        .base_paths
         .get(&recv)
         .map_or(prefix.clone(), |bp| join_paths(bp, &prefix));
     mounts.push(RawHonoMount {
         prefix: full_prefix,
-        target_expr: args[1].1.to_owned(),
-        enclosing_fn: enclosing_fn.map(str::to_owned),
+        target_expr: parse_value_expr(args[1].1),
+        enclosing_fn: ctx.enclosing_fn.map(str::to_owned),
     });
 }
 
-#[allow(clippy::too_many_arguments)]
 fn record_hono_route(
-    rel: &str,
-    source: &str,
-    mask: &[bool],
-    lines: &LineIndex,
+    ctx: &HonoScanCtx<'_>,
     dot_pos: usize,
     open: usize,
     close: usize,
     method: HttpMethod,
-    enclosing_fn: Option<&str>,
-    hono_vars: &HashSet<String>,
-    base_paths: &HashMap<String, String>,
-    routes: &mut Vec<RawHonoRoute>,
+    routes: &mut Vec<RawTsRoute>,
 ) {
-    let Some(recv) = chain_root_receiver(source, mask, dot_pos) else {
+    let Some(recv) = chain_root_receiver(ctx.source, ctx.mask, dot_pos) else {
         return;
     };
-    if !hono_vars.contains(&recv) {
+    if !ctx.hono_vars.contains(&recv) {
         return;
     }
-    let args = split_top_level_args(source, mask, 0, open + 1, close);
-    let Some(raw_path) = args.first().and_then(|(_, a)| unquote_ts_string(a)) else {
+    let args = split_top_level_args(ctx.source, ctx.mask, 0, open + 1, close);
+    let Some(raw_path) = first_ts_route_path(&args, ctx.local_paths) else {
         return;
     };
-    if !raw_path.starts_with('/') {
-        return;
-    }
-    let path_raw = base_paths
+    let path_raw = ctx
+        .base_paths
         .get(&recv)
         .map_or(raw_path.clone(), |bp| join_paths(bp, &raw_path));
-    routes.push(RawHonoRoute {
+    routes.push(RawTsRoute {
         method,
         path_raw,
-        file: rel.to_owned(),
-        line: lines.line_at(dot_pos),
-        handler: extract_handler_name(&args, enclosing_fn),
+        file: ctx.rel.to_owned(),
+        line: ctx.lines.line_at(dot_pos),
+        handler: extract_ts_handler_name(&args, ctx.enclosing_fn.unwrap_or(DEFAULT_HANDLER)),
+        is_root_app: false,
     });
 }
 
-#[allow(clippy::too_many_arguments)]
 fn scan_top_level_hono_calls(
-    rel: &str,
-    source: &str,
-    mask: &[bool],
-    lines: &LineIndex,
+    ctx: &HonoScanCtx<'_>,
     fns: &[TsFnSpan],
-    hono_vars: &HashSet<String>,
-    base_paths: &HashMap<String, String>,
-    routes: &mut Vec<RawHonoRoute>,
+    routes: &mut Vec<RawTsRoute>,
     mounts: &mut Vec<RawHonoMount>,
 ) {
-    let bytes = source.as_bytes();
+    let bytes = ctx.source.as_bytes();
     let mut i = 0usize;
     while i < bytes.len() {
-        if inside_any_fn(i, fns) || !mask[i] || bytes[i] != b'.' {
+        if inside_any_fn(i, fns) || !ctx.mask[i] || bytes[i] != b'.' {
             i += 1;
             continue;
         }
@@ -861,19 +1198,7 @@ fn scan_top_level_hono_calls(
             .iter()
             .find(|f| f.body_open > i)
             .map_or(bytes.len(), |f| f.body_open);
-        scan_hono_calls_in_span(
-            rel,
-            source,
-            mask,
-            lines,
-            i,
-            next_fn_start,
-            None,
-            hono_vars,
-            base_paths,
-            routes,
-            mounts,
-        );
+        scan_hono_calls_in_span(ctx, i, next_fn_start, routes, mounts);
         i = next_fn_start;
     }
 }
@@ -885,9 +1210,9 @@ fn collect_mount_helper_calls(
     start: usize,
     end: usize,
     enclosing_fn: &str,
-    imports: &HashMap<String, ImportedSymbol>,
+    imports: &HashMap<String, TsImportedSymbol>,
     local_fn_names: &HashSet<&str>,
-    out: &mut Vec<(String, String)>,
+    out: &mut Vec<RawHelperCall>,
 ) {
     let bytes = source.as_bytes();
     let mut i = start;
@@ -904,8 +1229,19 @@ fn collect_mount_helper_calls(
         let is_local_helper = ident != enclosing_fn && local_fn_names.contains(ident);
         if is_mount_import || is_local_helper {
             let pos = advance_past_generics(bytes, mask, next, end);
-            if bytes.get(pos) == Some(&b'(') && mask[pos] {
-                out.push((ident.to_owned(), enclosing_fn.to_owned()));
+            if bytes.get(pos) == Some(&b'(')
+                && mask[pos]
+                && let Some(close) = find_matching_delim(bytes, mask, pos, b'(', b')')
+            {
+                let args = split_top_level_args(source, mask, 0, pos + 1, close)
+                    .into_iter()
+                    .map(|(_, a)| parse_value_expr(a))
+                    .collect();
+                out.push(RawHelperCall {
+                    callee: ident.to_owned(),
+                    caller_fn: enclosing_fn.to_owned(),
+                    args,
+                });
             }
         }
         i = next;
@@ -921,78 +1257,6 @@ fn advance_past_generics(bytes: &[u8], mask: &[bool], start: usize, end: usize) 
         return skip_ascii_ws(bytes, after, end);
     }
     pos
-}
-
-fn extract_handler_name(args: &[(usize, &str)], enclosing_fn: Option<&str>) -> String {
-    if let Some((_, last)) = args.last() {
-        let trimmed = last.trim();
-        if !trimmed.is_empty() && trimmed.bytes().all(is_ts_ident_byte) {
-            return trimmed.to_owned();
-        }
-    }
-    enclosing_fn.unwrap_or(DEFAULT_HANDLER).to_owned()
-}
-
-fn chain_root_receiver(source: &str, mask: &[bool], dot_pos: usize) -> Option<String> {
-    let bytes = source.as_bytes();
-    let mut pos = dot_pos;
-    for _ in 0..MAX_CHAIN_HOPS {
-        pos = skip_ws_back(bytes, pos);
-        if pos == 0 {
-            return None;
-        }
-        if bytes[pos - 1] == b')' && mask[pos - 1] {
-            let open = find_matching_open_paren(bytes, mask, pos - 1)?;
-            let ident_start = skip_ident_back(bytes, skip_ws_back(bytes, open));
-            let before_ident = skip_ws_back(bytes, ident_start);
-            if before_ident > 0 && bytes[before_ident - 1] == b'.' && mask[before_ident - 1] {
-                pos = before_ident - 1;
-                continue;
-            }
-            return None;
-        }
-        let start = skip_ident_back(bytes, pos);
-        return (start < pos).then(|| source[start..pos].to_owned());
-    }
-    None
-}
-
-fn find_matching_open_paren(bytes: &[u8], mask: &[bool], close_pos: usize) -> Option<usize> {
-    let mut depth = 0usize;
-    for i in (0..=close_pos).rev() {
-        if !mask[i] {
-            continue;
-        }
-        match bytes[i] {
-            b')' => depth += 1,
-            b'(' => {
-                depth = depth.saturating_sub(1);
-                if depth == 0 {
-                    return Some(i);
-                }
-            }
-            _ => {}
-        }
-    }
-    None
-}
-
-fn skip_ws_back(bytes: &[u8], mut pos: usize) -> usize {
-    while pos > 0 && bytes[pos - 1].is_ascii_whitespace() {
-        pos -= 1;
-    }
-    pos
-}
-
-fn skip_ident_back(bytes: &[u8], mut pos: usize) -> usize {
-    while pos > 0 && is_ts_ident_byte(bytes[pos - 1]) {
-        pos -= 1;
-    }
-    pos
-}
-
-fn is_ts_ident_byte(b: u8) -> bool {
-    is_ident_byte(b) || b == b'$'
 }
 
 #[cfg(test)]
@@ -1090,5 +1354,145 @@ export function createMerchantPaymentRoutes(deps: any) {
         )));
         assert!(!pairs.iter().any(|(_, p, _)| p.contains("product")));
         assert!(deps.contains("services/core/src/server.ts"));
+    }
+
+    #[test]
+    fn resolves_di_injected_hono_routers_and_module_object_bags() {
+        let server_ts = r#"
+import { Hono } from 'hono';
+import { createAdminRoutes } from './admin.routes';
+import { createAdminAIRoutes } from './ai.routes';
+import { createFinanceRoutes } from './finance.routes';
+import { createSupportModule } from './support.module';
+
+export function createApp() {
+  const aiAdminRouter = buildAdminAi();
+  const finance = buildFinance();
+  const app = new Hono();
+  mountAdmin(app, { aiAdminRouter, financeRouter: finance.financeRouter });
+  const support = createSupportModule();
+  app.route('/admin', support.adminRoutes);
+  app.route('/', support.runnerRoutes);
+  return app;
+}
+
+function buildAdminAi() {
+  return createAdminAIRoutes();
+}
+
+function buildFinance() {
+  const financeRouter = createFinanceRoutes();
+  return { financeRouter };
+}
+
+function mountAdmin(app: App, deps: any) {
+  app.route('/admin', createAdminRoutes({
+    aiAdminRouter: deps.aiAdminRouter,
+    financeRouter: deps.financeRouter,
+  }));
+}
+"#;
+        let admin_ts = r#"
+import { Hono } from 'hono';
+export function createAdminRoutes(deps: any) {
+  const app = new Hono();
+  app.route('/ai', deps.aiAdminRouter);
+  app.route('/finance', deps.financeRouter);
+  return app;
+}
+"#;
+        let ai_ts = r#"
+import { Hono } from 'hono';
+export function createAdminAIRoutes() {
+  const router = new Hono();
+  router.get('/providers', (c) => c.json([]));
+  return router;
+}
+"#;
+        let finance_ts = r#"
+import { Hono } from 'hono';
+type FinanceRouter = Hono<any>;
+function registerFinanceExtra(router: FinanceRouter) {
+  router.get('/summary', (c) => c.json({}));
+}
+export function createFinanceRoutes() {
+  const router: FinanceRouter = new Hono();
+  router.get('/kpis', (c) => c.json({}));
+  registerFinanceExtra(router);
+  return router;
+}
+"#;
+        let support_mod_ts = r#"
+import { createSupportAdminRoutes, createSupportRunnerRoutes } from './support.routes';
+export function createSupportModule() {
+  return {
+    adminRoutes: createSupportAdminRoutes(),
+    runnerRoutes: createSupportRunnerRoutes(),
+  };
+}
+"#;
+        let support_routes_ts = r#"
+import { Hono } from 'hono';
+const RUNNER_PREFIX = '/v1/support';
+export function createSupportAdminRoutes() {
+  const router = new Hono();
+  router.get('/support/issues', (c) => c.json([]));
+  return router;
+}
+export function createSupportRunnerRoutes() {
+  const router = new Hono();
+  router.post(`${RUNNER_PREFIX}/claim`, (c) => c.json({}));
+  return router;
+}
+"#;
+        let sources = vec![
+            ("services/core/src/server.ts".to_owned(), server_ts.to_owned()),
+            ("services/core/src/admin.routes.ts".to_owned(), admin_ts.to_owned()),
+            ("services/core/src/ai.routes.ts".to_owned(), ai_ts.to_owned()),
+            ("services/core/src/finance.routes.ts".to_owned(), finance_ts.to_owned()),
+            ("services/core/src/support.module.ts".to_owned(), support_mod_ts.to_owned()),
+            ("services/core/src/support.routes.ts".to_owned(), support_routes_ts.to_owned()),
+        ];
+        let (endpoints, _) =
+            extract_from_sources(&sources, "services/core", Some("src/server.ts"));
+        let pairs: Vec<(HttpMethod, &str, PrefixState)> = endpoints
+            .iter()
+            .map(|e| (e.method, e.path_norm.as_str(), e.prefix_state))
+            .collect();
+        assert!(pairs.contains(&(HttpMethod::Get, "/admin/ai/providers", PrefixState::Resolved)), "{pairs:?}");
+        assert!(pairs.contains(&(HttpMethod::Get, "/admin/finance/kpis", PrefixState::Resolved)), "{pairs:?}");
+        assert!(pairs.contains(&(HttpMethod::Get, "/admin/finance/summary", PrefixState::Resolved)), "{pairs:?}");
+        assert!(pairs.contains(&(HttpMethod::Get, "/admin/support/issues", PrefixState::Resolved)), "{pairs:?}");
+        assert!(pairs.contains(&(HttpMethod::Post, "/v1/support/claim", PrefixState::Resolved)), "{pairs:?}");
+        assert!(!pairs.iter().any(|(_, _, s)| *s == PrefixState::Partial), "{pairs:?}");
+    }
+
+    #[test]
+    fn entry_file_isolates_same_named_local_routers_across_functions() {
+        let server_ts = r#"
+import { Hono } from 'hono';
+import { createAlphaRoutes } from './alpha.routes';
+import { createBetaRoutes } from './beta.routes';
+
+export function mountAlpha(app: App) {
+  const router = createAlphaRoutes();
+  app.route('/alpha', router);
+}
+
+export function mountBeta(app: App) {
+  const router = createBetaRoutes();
+  app.route('/beta', router);
+}
+"#;
+        let alpha_ts = "import { Hono } from 'hono';\nexport function createAlphaRoutes() { const r = new Hono(); r.get('/one', (c) => c.json({})); return r; }";
+        let beta_ts = "import { Hono } from 'hono';\nexport function createBetaRoutes() { const r = new Hono(); r.get('/two', (c) => c.json({})); return r; }";
+        let sources = vec![
+            ("services/core/src/server.ts".to_owned(), server_ts.to_owned()),
+            ("services/core/src/alpha.routes.ts".to_owned(), alpha_ts.to_owned()),
+            ("services/core/src/beta.routes.ts".to_owned(), beta_ts.to_owned()),
+        ];
+        let (endpoints, _) = extract_from_sources(&sources, "services/core", Some("src/server.ts"));
+        let paths: Vec<&str> = endpoints.iter().map(|e| e.path_norm.as_str()).collect();
+        assert_eq!(paths, vec!["/alpha/one", "/beta/two"]);
     }
 }

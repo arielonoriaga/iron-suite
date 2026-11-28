@@ -207,6 +207,12 @@ enum GraphCommand {
         #[command(flatten)]
         opts: GraphQueryArgs,
     },
+    Contracts {
+        #[arg(long)]
+        mismatches: bool,
+        #[command(flatten)]
+        opts: GraphQueryArgs,
+    },
 }
 
 #[derive(Args)]
@@ -287,6 +293,13 @@ fn run_graph(db: &std::path::Path, command: GraphCommand) -> Result<()> {
         GraphCommand::Fog { opts } => {
             graph::query_fog(db, opts.repo.as_deref(), opts.limit, opts.max_bytes)?
         }
+        GraphCommand::Contracts { mismatches, opts } => graph::query_contracts(
+            db,
+            opts.repo.as_deref(),
+            mismatches,
+            opts.limit,
+            opts.max_bytes,
+        )?,
     };
     io::stdout().lock().write_all(text.as_bytes())?;
     Ok(())
