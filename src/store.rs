@@ -151,6 +151,8 @@ const SCHEMA: &[(&str, &str, &str)] = &[
     ),
 ];
 
+const CURATED_SOURCE_TYPES: [&str; 2] = ["markdown", "iron"];
+
 const RECORD_COLUMNS: &str = "r.id, r.source_group, r.source_key, r.source_type, r.kind, r.project,
      r.title, b.content, r.source_path, r.updated_at, r.metadata";
 
@@ -916,9 +918,9 @@ impl Store {
             .connection
             .query_row(
                 "SELECT id, project FROM records
-                 WHERE source_path = ? AND source_type IN ('markdown', 'iron')
+                 WHERE source_path = ?1 AND source_type IN (?2, ?3)
                  ORDER BY updated_at DESC LIMIT 1",
-                [path],
+                [path, CURATED_SOURCE_TYPES[0], CURATED_SOURCE_TYPES[1]],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()?)
