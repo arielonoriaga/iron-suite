@@ -1,4 +1,5 @@
 pub mod axum;
+pub mod chunks;
 pub mod contracts;
 pub mod express;
 pub mod hono;
@@ -31,9 +32,9 @@ use self::sync::META_CONFIG_HASH;
 
 pub use self::sync::TouchReport;
 pub use self::types::{
-    Confidence, DEFAULT_MAX_BYTES, Direction, EXTRACTOR_VERSION, ExtractedCall, ExtractedEndpoint,
-    GraphConfig, HttpMethod, McpGraphRequest, PrefixState, RefreshStatus, ServiceConfig, Stack,
-    TOUCH_MAX_BYTES,
+    ChunkKind, Confidence, DEFAULT_MAX_BYTES, Direction, EXTRACTOR_VERSION, ExtractedCall,
+    ExtractedChunk, ExtractedEndpoint, GraphConfig, HttpMethod, McpGraphRequest, PairVerifyState,
+    PrefixState, RefreshStatus, ServiceConfig, Stack, StaleReason, TOUCH_MAX_BYTES,
 };
 
 const MAX_CONFIG_BYTES: u64 = 256 * 1024;
@@ -84,6 +85,12 @@ pub fn touch(db: &Path, paths: &[PathBuf]) -> Result<TouchReport> {
     let (config, config_hash) = load_config(db)?;
     let graph_db = graph_db_path(db).context("system-graph requires a durable index path")?;
     sync::touch_paths(&config, &config_hash, &graph_db, paths)
+}
+
+pub fn verify(db: &Path, repo: &str, sha: Option<&str>) -> Result<Value> {
+    let (config, _) = load_config(db)?;
+    let graph_db = graph_db_path(db).context("system-graph requires a durable index path")?;
+    sync::verify_repo(&config, &graph_db, repo, sha)
 }
 
 pub fn run_suggest(db: &Path, apply: bool, safe: bool) -> Result<Value> {
@@ -383,6 +390,26 @@ pub fn query_contracts(
 ) -> Result<String> {
     with_readonly_graph(db, |store| {
         query::contracts(store, repo, mismatches_only, limit, max_bytes)
+    })
+}
+
+pub fn query_unverified(
+    db: &Path,
+    repo: Option<&str>,
+    limit: Option<usize>,
+    max_bytes: usize,
+) -> Result<String> {
+    with_readonly_graph(db, |store| query::unverified(store, repo, limit, max_bytes))
+}
+
+pub fn query_stale_memories(
+    db: &Path,
+    repo: Option<&str>,
+    limit: Option<usize>,
+    max_bytes: usize,
+) -> Result<String> {
+    with_readonly_graph(db, |store| {
+        query::stale_memories(store, db, repo, limit, max_bytes)
     })
 }
 

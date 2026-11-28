@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::thread;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
@@ -10,6 +11,7 @@ use sha2::{Digest, Sha256};
 use crate::intelligence::now_ms;
 
 use super::axum::{self, AxumServiceContext};
+use super::chunks;
 use super::contracts::{
     AlertTarget, BreakingAlert, BreakingKind, CallerSite, ContractChangeAlert,
     diff_payload_contracts,
@@ -27,8 +29,8 @@ use super::store::{
 };
 use super::ts_client::{self, TsServiceSpec, WrapperEndpoint};
 use super::types::{
-    EXTRACTOR_VERSION, ExtractedCall, ExtractedEndpoint, GraphConfig, HttpMethod, PrefixState,
-    RefreshStatus, ServiceConfig, Stack, TOUCH_MAX_BYTES,
+    EXTRACTOR_VERSION, ExtractedCall, ExtractedChunk, ExtractedEndpoint, GraphConfig, HttpMethod,
+    PrefixState, RefreshStatus, ServiceConfig, Stack, TOUCH_MAX_BYTES,
 };
 use super::web_client;
 
@@ -36,7 +38,15 @@ pub(crate) const META_CONFIG_HASH: &str = "config_hash";
 
 type TouchTargets = (BTreeMap<String, BTreeSet<String>>, Vec<(String, String)>);
 type HashDiff = (Vec<(String, String, String)>, Vec<(String, String)>, usize);
-type AxumFileExtract = (String, String, Vec<ExtractedEndpoint>, bool, Vec<ExtractedCall>);
+type AxumFileExtract = (
+    String,
+    String,
+    String,
+    Vec<ExtractedChunk>,
+    Vec<ExtractedEndpoint>,
+    bool,
+    Vec<ExtractedCall>,
+);
 
 const GENERIC_HANDLERS: &[&str] = &[
     "",
@@ -51,6 +61,8 @@ const GENERIC_HANDLERS: &[&str] = &[
 struct SyncDelta {
     edges_added: usize,
     edges_removed: usize,
+    chunks_changed: usize,
+    changed_chunk_ids_by_file: HashMap<(String, String), HashSet<i64>>,
     breaking: Vec<BreakingAlert>,
     contract_changes: Vec<ContractChangeAlert>,
 }
@@ -76,10 +88,14 @@ struct RepoPlan {
     removed_services: Vec<String>,
     rescanned_services: Vec<String>,
     deleted_files: Vec<String>,
+    removed_files: Vec<String>,
     changed_files: Vec<String>,
     service_endpoints: Vec<(String, Vec<ExtractedEndpoint>)>,
     service_calls: Vec<(String, Vec<ExtractedCall>)>,
+    file_chunks: Vec<(String, Vec<ExtractedChunk>)>,
     file_hashes: Vec<FileHashRow>,
+    content_only_hash_updates: Vec<(String, String)>,
+    edited_touch_files: HashSet<String>,
     meta_updates: Vec<(String, String)>,
     compose_env_changed: bool,
     nginx_routes_changed: bool,
@@ -102,10 +118,14 @@ impl RepoPlan {
             removed_services: Vec::new(),
             rescanned_services: Vec::new(),
             deleted_files: Vec::new(),
+            removed_files: Vec::new(),
             changed_files: Vec::new(),
             service_endpoints: Vec::new(),
             service_calls: Vec::new(),
+            file_chunks: Vec::new(),
             file_hashes: Vec::new(),
+            content_only_hash_updates: Vec::new(),
+            edited_touch_files: HashSet::new(),
             meta_updates: Vec::new(),
             compose_env_changed: false,
             nginx_routes_changed: false,
@@ -132,12 +152,14 @@ impl RepoPlan {
         content_hash: String,
         service: String,
         has_router_deps: bool,
+        norm_file_hash: String,
     ) {
         self.file_hashes.push(FileHashRow {
             file,
             content_hash,
             service,
             has_router_deps,
+            norm_file_hash,
         });
     }
 }
@@ -177,52 +199,28 @@ pub fn refresh_graph(
         store.get_meta(META_CONFIG_HASH)?.as_deref() != Some(config_hash);
     let refreshed_at = now_ms();
 
-    let mut plans = Vec::with_capacity(repos_services.len());
-    for (repo_name, svcs) in &repos_services {
-        plans.push(plan_repo_refresh(
-            &store,
-            config,
-            repo_name,
-            svcs,
-            config_changed,
-        )?);
-    }
+    let (plans, repo_meta_changed) =
+        build_refresh_plans(&store, config, &repos_services, config_changed)?;
     let summary = summarize_plans(&plans);
+    let has_removed_repos = store
+        .list_repos()?
+        .iter()
+        .any(|r| !active_repos.contains(&r.repo));
 
-    let tx = store.begin_write()?;
-    let (pruned, _) = tx.prune_removed_repos(&active_repos, refreshed_at)?;
-    if config_changed || pruned || summary.any_work {
-        tx.sync_services(&config.services)?;
-    }
-    let full_resolve = needs_full_resolve(&plans, config_changed, pruned);
-    let delta = if summary.any_work || config_changed || pruned {
-        let active_plans: Vec<&RepoPlan> = plans
-            .iter()
-            .filter(|p| p.status != RefreshStatus::Skipped)
-            .collect();
-        let d = apply_plans_and_resolve(
-            &tx,
+    let delta = if summary.any_work || config_changed || has_removed_repos || repo_meta_changed {
+        commit_refresh_plans(
+            &mut store,
             config,
+            config_hash,
             &active_repos,
-            &active_plans,
-            full_resolve,
+            &plans,
+            summary.any_work,
             config_changed,
             refreshed_at,
-        )?;
-        for plan in &plans {
-            if plan.status == RefreshStatus::Skipped {
-                tx.upsert_repo(&plan.repo_row, refreshed_at)?;
-            }
-        }
-        tx.set_meta(META_CONFIG_HASH, config_hash)?;
-        d
+        )?
     } else {
-        for plan in &plans {
-            tx.upsert_repo(&plan.repo_row, refreshed_at)?;
-        }
         SyncDelta::default()
     };
-    tx.commit()?;
 
     let counts = store.counts()?;
     Ok(json!({
@@ -234,6 +232,9 @@ pub fn refresh_graph(
         "endpoints": counts.endpoints,
         "calls": counts.calls,
         "edges": counts.edges,
+        "chunks": counts.chunks,
+        "chunks_by_repo": counts.chunks_by_repo,
+        "chunks_changed": delta.chunks_changed,
         "fog": counts.fog,
         "fog_by_repo": counts.fog_by_repo,
         "breaking": delta.breaking,
@@ -241,6 +242,130 @@ pub fn refresh_graph(
         "repos": summary.repo_status,
         "elapsed_ms": started.elapsed().as_millis(),
     }))
+}
+
+fn build_refresh_plans(
+    store: &GraphStore,
+    config: &GraphConfig,
+    repos_services: &BTreeMap<String, Vec<(String, ServiceConfig)>>,
+    config_changed: bool,
+) -> Result<(Vec<RepoPlan>, bool)> {
+    let mut probe_inputs = Vec::with_capacity(repos_services.len());
+    for (repo_name, svcs) in repos_services {
+        probe_inputs.push(RepoProbeInput {
+            repo_name: repo_name.clone(),
+            repo_dir: config.repos_root.join(repo_name),
+            existing: store.get_repo(repo_name)?,
+            stored_count: store.count_file_hashes(repo_name)?,
+            removed_services: find_removed_repo_services(store, repo_name, svcs)?,
+        });
+    }
+    let probes = probe_repos_parallel(&probe_inputs, config_changed)?;
+    let mut plans = Vec::with_capacity(repos_services.len());
+    let mut repo_meta_changed = false;
+    for (input, probe) in probe_inputs.into_iter().zip(probes) {
+        let svcs = &repos_services[&input.repo_name];
+        let plan = plan_repo_refresh(store, config, input, probe, svcs, config_changed)?;
+        if plan_repo_meta_changed(&plan, store)? {
+            repo_meta_changed = true;
+        }
+        plans.push(plan);
+    }
+    Ok((plans, repo_meta_changed))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn commit_refresh_plans(
+    store: &mut GraphStore,
+    config: &GraphConfig,
+    config_hash: &str,
+    active_repos: &HashSet<String>,
+    plans: &[RepoPlan],
+    any_work: bool,
+    config_changed: bool,
+    refreshed_at: i64,
+) -> Result<SyncDelta> {
+    let tx = store.begin_write()?;
+    let (pruned, _) = tx.prune_removed_repos(active_repos, refreshed_at)?;
+    if config_changed || pruned || any_work {
+        tx.sync_services(&config.services)?;
+    }
+    let full_resolve = needs_full_resolve(plans, config_changed, pruned);
+    let delta = if any_work || config_changed || pruned {
+        let active_plans: Vec<&RepoPlan> = plans
+            .iter()
+            .filter(|p| p.status != RefreshStatus::Skipped)
+            .collect();
+        let d = apply_plans_and_resolve(
+            &tx,
+            config,
+            active_repos,
+            &active_plans,
+            full_resolve,
+            config_changed,
+            refreshed_at,
+        )?;
+        for plan in plans {
+            if plan.status == RefreshStatus::Skipped {
+                tx.upsert_repo(&plan.repo_row, refreshed_at)?;
+            }
+        }
+        tx.set_meta(META_CONFIG_HASH, config_hash)?;
+        d
+    } else {
+        for plan in plans {
+            tx.upsert_repo(&plan.repo_row, refreshed_at)?;
+        }
+        SyncDelta::default()
+    };
+    tx.commit()?;
+    Ok(delta)
+}
+
+pub fn verify_repo(
+    config: &GraphConfig,
+    graph_db: &Path,
+    repo: &str,
+    sha_override: Option<&str>,
+) -> Result<Value> {
+    let _lock = lock_graph_file(graph_db)?;
+    let mut store = GraphStore::open_writable(graph_db)?;
+    let Some(repo_row) = store.get_repo(repo)? else {
+        anyhow::bail!("repo not indexed in system graph: {repo}");
+    };
+    let repo_dir = config.repos_root.join(repo);
+    let target_sha = match sha_override {
+        Some(raw) => resolve_sha_arg(&repo_dir, raw),
+        None => scan::git_head(&repo_dir).unwrap_or_else(|_| repo_row.head_sha.clone()),
+    };
+    let verified_at = now_ms();
+    let tx = store.begin_write()?;
+    let verified_edges = tx.verify_repo_edges(repo, &target_sha, verified_at)?;
+    tx.commit()?;
+    Ok(json!({
+        "repo": repo,
+        "sha": target_sha,
+        "verified_edges": verified_edges,
+        "verified_at": verified_at,
+    }))
+}
+
+fn resolve_sha_arg(repo_dir: &Path, raw: &str) -> String {
+    let trimmed = raw.trim();
+    if repo_dir.is_dir()
+        && let Ok(out) = std::process::Command::new("git")
+            .arg("-C")
+            .arg(repo_dir)
+            .args(["rev-parse", "--verify", trimmed])
+            .output()
+        && out.status.success()
+    {
+        let resolved = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+        if !resolved.is_empty() {
+            return resolved;
+        }
+    }
+    trimmed.to_owned()
 }
 
 pub fn touch_paths(
@@ -308,9 +433,19 @@ pub fn touch_paths(
         SyncDelta::default()
     };
 
+    let edited_touch_files: HashSet<(String, String)> = plans
+        .iter()
+        .flat_map(|p| {
+            p.edited_touch_files
+                .iter()
+                .map(|f| (p.repo_row.repo.clone(), f.clone()))
+        })
+        .collect();
     let (impact_text, cross_repo_edges) = build_touch_impact(
         &store,
         &touched_pairs,
+        &edited_touch_files,
+        &delta.changed_chunk_ids_by_file,
         &delta.breaking,
         &delta.contract_changes,
     )?;
@@ -320,6 +455,7 @@ pub fn touch_paths(
         json_value: json!({
             "files_scanned": files_scanned,
             "services_rescanned": services_rescanned,
+            "chunks_changed": delta.chunks_changed,
             "edges_added": delta.edges_added,
             "edges_removed": delta.edges_removed,
             "cross_repo_edges": cross_repo_edges,
@@ -348,6 +484,7 @@ fn empty_touch_report(elapsed_ms: u128) -> TouchReport {
         json_value: json!({
             "files_scanned": 0,
             "services_rescanned": [],
+            "chunks_changed": 0,
             "edges_added": 0,
             "edges_removed": 0,
             "cross_repo_edges": 0,
@@ -395,13 +532,22 @@ fn collect_touch_targets(
 fn build_touch_impact(
     store: &GraphStore,
     touched_pairs: &[(String, String)],
+    edited_touch_files: &HashSet<(String, String)>,
+    changed_chunk_ids_by_file: &HashMap<(String, String), HashSet<i64>>,
     breaking: &[BreakingAlert],
     contract_changes: &[ContractChangeAlert],
 ) -> Result<(String, usize)> {
     let mut impact_items = Vec::new();
     let mut cross_repo_edges = 0usize;
+    let empty_ids = HashSet::new();
     for (repo, file) in touched_pairs {
-        let (served, called) = store.cross_repo_edges_for_file(repo, file)?;
+        let key = (repo.clone(), file.clone());
+        let (served, called) = if edited_touch_files.contains(&key) {
+            let ids = changed_chunk_ids_by_file.get(&key).unwrap_or(&empty_ids);
+            store.cross_repo_edges_for_changed_chunks(repo, file, ids)?
+        } else {
+            store.cross_repo_edges_for_file(repo, file)?
+        };
         cross_repo_edges += served.len() + called.len();
         if !served.is_empty() || !called.is_empty() {
             impact_items.push((repo.clone(), file.clone(), served, called));
@@ -670,48 +816,123 @@ struct RepoDiffCtx<'a> {
     is_initial: bool,
 }
 
+struct RepoProbeInput {
+    repo_name: String,
+    repo_dir: PathBuf,
+    existing: Option<RepoRow>,
+    stored_count: usize,
+    removed_services: Vec<String>,
+}
+
+struct RepoGitProbe {
+    canon_dir: PathBuf,
+    head_sha: String,
+    wt_status: scan::GitWorkingTreeStatus,
+    all_hashes: Option<BTreeMap<String, String>>,
+}
+
+fn probe_single_repo(input: &RepoProbeInput, config_changed: bool) -> Result<RepoGitProbe> {
+    let canon_dir = input
+        .repo_dir
+        .canonicalize()
+        .with_context(|| format!("repo directory missing: {}", input.repo_dir.display()))?;
+    let head_sha = scan::git_head(&canon_dir)?;
+    let wt_status = scan::git_status_porcelain(&canon_dir)?;
+    let fast_skip = !config_changed
+        && input.removed_services.is_empty()
+        && can_fast_skip(input.existing.as_ref(), &head_sha, wt_status.dirty, input.stored_count);
+    let all_hashes = if fast_skip {
+        None
+    } else {
+        Some(scan::git_file_hashes_with_status(&canon_dir, &wt_status)?)
+    };
+    Ok(RepoGitProbe {
+        canon_dir,
+        head_sha,
+        wt_status,
+        all_hashes,
+    })
+}
+
+fn probe_repos_parallel(
+    inputs: &[RepoProbeInput],
+    config_changed: bool,
+) -> Result<Vec<RepoGitProbe>> {
+    if inputs.len() <= 1 {
+        return inputs
+            .iter()
+            .map(|inp| probe_single_repo(inp, config_changed))
+            .collect();
+    }
+    thread::scope(|scope| {
+        let handles: Vec<_> = inputs
+            .iter()
+            .map(|inp| scope.spawn(move || probe_single_repo(inp, config_changed)))
+            .collect();
+        let mut out = Vec::with_capacity(handles.len());
+        for handle in handles {
+            let res = handle
+                .join()
+                .map_err(|_| anyhow::anyhow!("repo probe thread panicked"))??;
+            out.push(res);
+        }
+        Ok(out)
+    })
+}
+
+fn plan_repo_meta_changed(plan: &RepoPlan, store: &GraphStore) -> Result<bool> {
+    let Some(existing) = store.get_repo(&plan.repo_row.repo)? else {
+        return Ok(true);
+    };
+    Ok(existing.head_sha != plan.repo_row.head_sha
+        || existing.dirty != plan.repo_row.dirty
+        || existing.extractor_ver != plan.repo_row.extractor_ver
+        || existing.repo_path != plan.repo_row.repo_path)
+}
+
 fn plan_repo_refresh(
     store: &GraphStore,
     config: &GraphConfig,
-    repo_name: &str,
+    input: RepoProbeInput,
+    probe: RepoGitProbe,
     svcs: &[(String, ServiceConfig)],
     config_changed: bool,
 ) -> Result<RepoPlan> {
-    let repo_dir = config.repos_root.join(repo_name);
-    let canon_dir = repo_dir
-        .canonicalize()
-        .with_context(|| format!("repo directory missing: {}", repo_dir.display()))?;
-    let head_sha = scan::git_head(&canon_dir)?;
-    let wt_status = scan::git_status_porcelain(&canon_dir)?;
-    let existing = store.get_repo(repo_name)?;
-    let stored_count = store.count_file_hashes(repo_name)?;
-    let removed_services = find_removed_repo_services(store, repo_name, svcs)?;
+    let RepoProbeInput {
+        repo_name,
+        existing,
+        stored_count,
+        removed_services,
+        ..
+    } = input;
+    let RepoGitProbe {
+        canon_dir,
+        head_sha,
+        wt_status,
+        all_hashes,
+    } = probe;
 
     let repo_row = RepoRow {
-        repo: repo_name.to_owned(),
+        repo: repo_name.clone(),
         repo_path: canon_dir.to_string_lossy().into_owned(),
         head_sha: head_sha.clone(),
         extractor_ver: EXTRACTOR_VERSION,
         dirty: wt_status.dirty,
     };
 
-    if !config_changed
-        && removed_services.is_empty()
-        && can_fast_skip(existing.as_ref(), &head_sha, wt_status.dirty, stored_count)
-    {
+    let Some(all_hashes) = all_hashes else {
         return Ok(RepoPlan::skipped(repo_row, stored_count));
-    }
+    };
 
     let is_initial = existing.is_none()
         || existing
             .as_ref()
             .is_some_and(|e| e.extractor_ver != EXTRACTOR_VERSION)
         || stored_count == 0;
-    let all_hashes = scan::git_file_hashes_with_status(&canon_dir, &wt_status)?;
     let stored_hashes = if is_initial {
         HashMap::new()
     } else {
-        store.load_file_hashes(repo_name)?
+        store.load_file_hashes(&repo_name)?
     };
     let (scannable, compose_files) = classify_scannable_files(&all_hashes, svcs);
     let (changed, removed, unchanged) = diff_scannable_hashes(&scannable, &stored_hashes);
@@ -731,7 +952,7 @@ fn plan_repo_refresh(
     let ctx = RepoDiffCtx {
         store,
         config,
-        repo_name,
+        repo_name: &repo_name,
         canon_dir: &canon_dir,
         changed: &changed,
         removed: &removed,
@@ -750,6 +971,13 @@ fn plan_repo_services(
     changed_cfg_svcs: &HashSet<String>,
     plan: &mut RepoPlan,
 ) -> Result<()> {
+    if !plan.removed_services.is_empty() {
+        for (rel, old_svc) in ctx.removed {
+            if plan.removed_services.contains(old_svc) {
+                plan.removed_files.push(rel.clone());
+            }
+        }
+    }
     for (svc_name, svc_cfg) in svcs {
         let svc_changed: Vec<(String, String)> = ctx
             .changed
@@ -764,22 +992,40 @@ fn plan_repo_services(
             .map(|(f, _)| f.clone())
             .collect();
         let svc_cfg_dirty = changed_cfg_svcs.contains(svc_name);
-        if !ctx.is_initial && !svc_cfg_dirty && svc_changed.is_empty() && svc_removed.is_empty() {
-            continue;
-        }
+        let incremental_eligible = !ctx.is_initial && !svc_cfg_dirty;
+        let real_changed = if incremental_eligible {
+            if svc_changed.is_empty() && svc_removed.is_empty() {
+                continue;
+            }
+            let filtered = filter_meaningful_file_changes(
+                ctx.store,
+                ctx.repo_name,
+                ctx.canon_dir,
+                svc_cfg,
+                &svc_changed,
+                |f| stored_hashes.get(f).cloned(),
+                plan,
+            )?;
+            if filtered.is_empty() && svc_removed.is_empty() {
+                continue;
+            }
+            filtered
+        } else {
+            svc_changed
+        };
         let work = ServiceWork {
             repo_name: ctx.repo_name,
             canon_dir: ctx.canon_dir,
             svc_name,
             svc_cfg,
-            changed: &svc_changed,
+            changed: &real_changed,
             removed: &svc_removed,
             mark_rescanned: !ctx.is_initial,
         };
         let force_full = ctx.is_initial
             || svc_cfg_dirty
             || triggers_rescan_from_stored(
-                &svc_changed,
+                &real_changed,
                 &svc_removed,
                 svc_cfg,
                 |f| stored_hashes.get(f).is_some_and(|r| r.has_router_deps),
@@ -790,11 +1036,83 @@ fn plan_repo_services(
                 .filter(|(_, (_, s))| s == svc_name)
                 .map(|(f, (h, _))| (f.clone(), h.clone()))
                 .collect();
-            let deduct = all_files.len().saturating_sub(svc_changed.len());
+            let deduct = all_files.len().saturating_sub(real_changed.len());
             Ok((all_files, deduct))
         })?;
     }
     Ok(())
+}
+
+fn filter_meaningful_file_changes(
+    store: &GraphStore,
+    repo_name: &str,
+    canon_dir: &Path,
+    svc_cfg: &ServiceConfig,
+    changed: &[(String, String)],
+    get_stored: impl Fn(&str) -> Option<FileHashRow>,
+    plan: &mut RepoPlan,
+) -> Result<Vec<(String, String)>> {
+    let mut meaningful = Vec::with_capacity(changed.len());
+    for (rel, blob_hash) in changed {
+        let Some(stored) = get_stored(rel) else {
+            meaningful.push((rel.clone(), blob_hash.clone()));
+            continue;
+        };
+        if stored.norm_file_hash.is_empty() {
+            meaningful.push((rel.clone(), blob_hash.clone()));
+            continue;
+        }
+        let Some(content) = read_service_file_text(canon_dir, rel, svc_cfg.stack) else {
+            meaningful.push((rel.clone(), blob_hash.clone()));
+            continue;
+        };
+        let norm_hash = chunks::normalize_file_hash(rel, &content, svc_cfg.stack);
+        if norm_hash != stored.norm_file_hash {
+            meaningful.push((rel.clone(), blob_hash.clone()));
+            continue;
+        }
+        let is_client = is_spa_client_file(rel, svc_cfg);
+        let new_chunks = chunks::extract_chunks_for_stack(rel, &content, svc_cfg.stack, is_client);
+        let old_chunks = store.load_chunks_for_file(repo_name, rel)?;
+        if chunks_hashes_equal(&old_chunks, &new_chunks) {
+            plan.content_only_hash_updates
+                .push((rel.clone(), blob_hash.clone()));
+            plan.file_chunks.push((rel.clone(), new_chunks));
+            plan.files_scanned += 1;
+        } else {
+            meaningful.push((rel.clone(), blob_hash.clone()));
+        }
+    }
+    Ok(meaningful)
+}
+
+fn read_service_file_text(canon_dir: &Path, rel: &str, stack: Stack) -> Option<String> {
+    let raw = fs::read_to_string(canon_dir.join(rel)).ok()?;
+    Some(if stack == Stack::Axum {
+        scan::strip_cfg_test(&raw)
+    } else {
+        raw
+    })
+}
+
+fn is_spa_client_file(rel: &str, svc_cfg: &ServiceConfig) -> bool {
+    svc_cfg.stack == Stack::Spa
+        && svc_cfg
+            .client
+            .as_deref()
+            .is_some_and(|c| scan::qualify_under_root(&svc_cfg.root, c) == rel)
+}
+
+fn chunks_hashes_equal(old: &[super::store::ChunkRow], new: &[ExtractedChunk]) -> bool {
+    if old.len() != new.len() {
+        return false;
+    }
+    let old_map: HashMap<(super::types::ChunkKind, &str), &str> = old
+        .iter()
+        .map(|c| ((c.kind, c.qualified_name.as_str()), c.norm_hash.as_str()))
+        .collect();
+    new.iter()
+        .all(|c| old_map.get(&(c.kind, c.qualified_name.as_str())) == Some(&c.norm_hash.as_str()))
 }
 
 fn find_changed_cfg_services(
@@ -839,13 +1157,14 @@ fn apply_compose_refresh(
     plan.meta_updates.push((env_key, serialized));
     for (rel, hash, svc) in ctx.changed {
         if svc.is_empty() {
-            plan.push_file_hash(rel.clone(), hash.clone(), String::new(), false);
+            plan.push_file_hash(rel.clone(), hash.clone(), String::new(), false, String::new());
             plan.files_scanned += 1;
         }
     }
     for (rel, svc) in ctx.removed {
         if svc.is_empty() {
             plan.deleted_files.push(rel.clone());
+            plan.removed_files.push(rel.clone());
         }
     }
     Ok(())
@@ -897,51 +1216,112 @@ fn plan_repo_touch(
         if svc_changed.is_empty() && svc_removed.is_empty() {
             continue;
         }
-        let work = ServiceWork {
+        plan_touch_service(
+            store,
+            config,
             repo_name,
             canon_dir,
-            svc_name,
-            svc_cfg,
-            changed: &svc_changed,
-            removed: &svc_removed,
-            mark_rescanned: existing_repo.is_some(),
-        };
-        let force_full = triggers_rescan_from_stored(
-            &svc_changed,
-            &svc_removed,
-            svc_cfg,
-            |f| {
-                store
-                    .get_file_hash(repo_name, f)
-                    .ok()
-                    .flatten()
-                    .is_some_and(|r| r.has_router_deps)
-            },
-        );
-        process_service_work(store, config, &work, force_full, &mut plan, || {
-            if lazy_all_hashes.is_none() {
-                let st = scan::git_status_porcelain(canon_dir)?;
-                lazy_all_hashes = Some(scan::git_file_hashes_with_status(canon_dir, &st)?);
-            }
-            let all_files: Vec<(String, String)> = lazy_all_hashes
-                .as_ref()
-                .unwrap()
-                .iter()
-                .filter(|(rel, _)| service_for_file(rel, svcs).is_some_and(|(s, _)| s == svc_name))
-                .map(|(f, h)| (f.clone(), h.clone()))
-                .collect();
-            Ok((all_files, 0))
-        })?;
+            svcs,
+            (svc_name, svc_cfg),
+            (&svc_changed, &svc_removed),
+            existing_repo.is_some(),
+            &mut lazy_all_hashes,
+            &mut plan,
+        )?;
     }
     if plan.files_scanned == 0
         && plan.deleted_files.is_empty()
         && plan.full_services.is_empty()
+        && plan.content_only_hash_updates.is_empty()
         && !plan.compose_env_changed
         && !plan.nginx_routes_changed
     {
         plan.status = RefreshStatus::Skipped;
     }
     Ok(plan)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn plan_touch_service(
+    store: &GraphStore,
+    config: &GraphConfig,
+    repo_name: &str,
+    canon_dir: &Path,
+    svcs: &[(String, ServiceConfig)],
+    svc: (&str, &ServiceConfig),
+    changes: (&[(String, String)], &[String]),
+    has_existing_repo: bool,
+    lazy_all_hashes: &mut Option<BTreeMap<String, String>>,
+    plan: &mut RepoPlan,
+) -> Result<()> {
+    let (svc_name, svc_cfg) = svc;
+    let (svc_changed, svc_removed) = changes;
+    let stored_map = load_touch_stored_hashes(store, repo_name, svc_changed, plan)?;
+    let real_changed = if has_existing_repo {
+        filter_meaningful_file_changes(
+            store,
+            repo_name,
+            canon_dir,
+            svc_cfg,
+            svc_changed,
+            |f| stored_map.get(f).cloned(),
+            plan,
+        )?
+    } else {
+        svc_changed.to_vec()
+    };
+    if real_changed.is_empty() && svc_removed.is_empty() {
+        return Ok(());
+    }
+    let work = ServiceWork {
+        repo_name,
+        canon_dir,
+        svc_name,
+        svc_cfg,
+        changed: &real_changed,
+        removed: svc_removed,
+        mark_rescanned: has_existing_repo,
+    };
+    let force_full = triggers_rescan_from_stored(
+        &real_changed,
+        svc_removed,
+        svc_cfg,
+        |f| stored_map.get(f).is_some_and(|r| r.has_router_deps),
+    );
+    process_service_work(store, config, &work, force_full, plan, || {
+        if lazy_all_hashes.is_none() {
+            let st = scan::git_status_porcelain(canon_dir)?;
+            *lazy_all_hashes = Some(scan::git_file_hashes_with_status(canon_dir, &st)?);
+        }
+        let all_files: Vec<(String, String)> = lazy_all_hashes
+            .as_ref()
+            .unwrap()
+            .iter()
+            .filter(|(rel, _)| service_for_file(rel, svcs).is_some_and(|(s, _)| s == svc_name))
+            .map(|(f, h)| (f.clone(), h.clone()))
+            .collect();
+        Ok((all_files, 0))
+    })
+}
+
+fn load_touch_stored_hashes(
+    store: &GraphStore,
+    repo_name: &str,
+    svc_changed: &[(String, String)],
+    plan: &mut RepoPlan,
+) -> Result<HashMap<String, FileHashRow>> {
+    let mut stored_map = HashMap::new();
+    for (rel, hash) in svc_changed {
+        if let Some(old) = store.get_file_hash(repo_name, rel)? {
+            if old.content_hash != *hash {
+                plan.edited_touch_files.insert(rel.clone());
+            }
+            stored_map.insert(rel.clone(), old);
+        } else {
+            plan.edited_touch_files.insert(rel.clone());
+        }
+    }
+    Ok(stored_map)
 }
 
 fn merge_repo_compose_files(
@@ -981,10 +1361,11 @@ fn partition_touch_files(
         if scan::is_compose_file(rel) {
             if let Some(hash) = wt_hashes.get(rel) {
                 touched_compose.push(rel.clone());
-                plan.push_file_hash(rel.clone(), hash.clone(), String::new(), false);
+                plan.push_file_hash(rel.clone(), hash.clone(), String::new(), false, String::new());
                 plan.files_scanned += 1;
             } else {
                 plan.deleted_files.push(rel.clone());
+                plan.removed_files.push(rel.clone());
             }
             plan.compose_env_changed = true;
             continue;
@@ -1073,20 +1454,21 @@ fn try_incremental_web(
         known.insert(rel.clone());
     }
     let rel_list: Vec<String> = work.changed.iter().map(|(f, _)| f.clone()).collect();
-    let (calls, has_exports) = web_client::extract_files_incremental(
+    let (_, sources) = web_client::read_web_sources(work.canon_dir, &rel_list, &work.svc_cfg.root);
+    let (calls, has_exports) = web_client::extract_sources_incremental(
         work.repo_name,
-        work.canon_dir,
         &work.svc_cfg.root,
         work.svc_cfg.base.as_deref(),
         &config.external,
-        &rel_list,
+        &sources,
         &known,
         &exports_map,
     );
     if has_exports {
         return Ok(false);
     }
-    commit_incremental_calls(plan, work, calls);
+    let norm_hashes = record_source_chunks(plan, &sources, work.svc_cfg);
+    commit_incremental_calls(plan, work, calls, &norm_hashes);
     Ok(true)
 }
 
@@ -1119,19 +1501,35 @@ fn try_incremental_axum(
             let crate_key = axum::crate_key_for(rel, &work.svc_cfg.root);
             let local_structs = axum_ctx.structs.with_file_override(rel, &crate_key, stripped);
             let external = scan::matches_external_glob(&config.external, work.repo_name, rel);
-            let calls =
-                rust_client::extract_file_with_structs(rel, stripped, external, &crate_key, &local_structs);
-            (rel.clone(), hash.clone(), eps, has_deps, calls)
+            let calls = rust_client::extract_file_with_structs(
+                rel,
+                stripped,
+                external,
+                &crate_key,
+                &local_structs,
+            );
+            let norm_hash = chunks::normalize_file_hash(rel, stripped, Stack::Axum);
+            let file_chunks = chunks::extract_rust_chunks(stripped);
+            (
+                rel.clone(),
+                hash.clone(),
+                norm_hash,
+                file_chunks,
+                eps,
+                has_deps,
+                calls,
+            )
         });
-    if extracted.iter().any(|(_, _, _, has_deps, _)| *has_deps) {
+    if extracted.iter().any(|(_, _, _, _, _, has_deps, _)| *has_deps) {
         return Ok(false);
     }
     let mut eps_all = Vec::new();
     let mut calls_all = Vec::new();
-    for (rel, hash, eps, _, calls) in extracted {
+    for (rel, hash, norm_hash, file_chunks, eps, _, calls) in extracted {
         eps_all.extend(eps);
         calls_all.extend(calls);
-        record_incremental_file(plan, rel, hash, work.svc_name);
+        plan.file_chunks.push((rel.clone(), file_chunks));
+        record_incremental_file(plan, rel, hash, norm_hash, work.svc_name);
     }
     record_removed_files(plan, work.removed, work.changed.len());
     if !eps_all.is_empty() {
@@ -1159,19 +1557,43 @@ fn try_incremental_spa(
         return Ok(false);
     };
     let rel_list: Vec<String> = work.changed.iter().map(|(f, _)| f.clone()).collect();
+    let sources = scan::read_files_parallel(work.canon_dir, &rel_list);
     let spec = ts_spec(config, work);
-    let calls = ts_client::extract_files_with_wrappers(&spec, &rel_list, &wrapper_map);
-    commit_incremental_calls(plan, work, calls);
+    let calls = ts_client::extract_from_sources_with_wrappers(&spec, &sources, &wrapper_map);
+    let norm_hashes = record_source_chunks(plan, &sources, work.svc_cfg);
+    commit_incremental_calls(plan, work, calls, &norm_hashes);
     Ok(true)
+}
+
+fn record_source_chunks(
+    plan: &mut RepoPlan,
+    sources: &[(String, String)],
+    svc_cfg: &ServiceConfig,
+) -> HashMap<String, String> {
+    let extracted: Vec<(String, String, Vec<ExtractedChunk>)> =
+        scan::parallel_map(sources, |(rel, src)| {
+            let is_client = is_spa_client_file(rel, svc_cfg);
+            let norm = chunks::normalize_file_hash(rel, src, svc_cfg.stack);
+            let file_chunks = chunks::extract_chunks_for_stack(rel, src, svc_cfg.stack, is_client);
+            (rel.clone(), norm, file_chunks)
+        });
+    let mut norm_map = HashMap::with_capacity(extracted.len());
+    for (rel, norm, file_chunks) in extracted {
+        norm_map.insert(rel.clone(), norm);
+        plan.file_chunks.push((rel, file_chunks));
+    }
+    norm_map
 }
 
 fn commit_incremental_calls(
     plan: &mut RepoPlan,
     work: &ServiceWork<'_>,
     calls: Vec<ExtractedCall>,
+    norm_hashes: &HashMap<String, String>,
 ) {
     for (rel, hash) in work.changed {
-        record_incremental_file(plan, rel.clone(), hash.clone(), work.svc_name);
+        let norm = norm_hashes.get(rel).cloned().unwrap_or_default();
+        record_incremental_file(plan, rel.clone(), hash.clone(), norm, work.svc_name);
     }
     record_removed_files(plan, work.removed, work.changed.len());
     if !calls.is_empty() {
@@ -1179,15 +1601,22 @@ fn commit_incremental_calls(
     }
 }
 
-fn record_incremental_file(plan: &mut RepoPlan, rel: String, hash: String, svc_name: &str) {
+fn record_incremental_file(
+    plan: &mut RepoPlan,
+    rel: String,
+    hash: String,
+    norm_hash: String,
+    svc_name: &str,
+) {
     plan.changed_files.push(rel.clone());
     plan.deleted_files.push(rel.clone());
-    plan.push_file_hash(rel, hash, svc_name.to_owned(), false);
+    plan.push_file_hash(rel, hash, svc_name.to_owned(), false, norm_hash);
 }
 
 fn record_removed_files(plan: &mut RepoPlan, removed: &[String], scanned_count: usize) {
     for rem in removed {
         plan.deleted_files.push(rem.clone());
+        plan.removed_files.push(rem.clone());
     }
     plan.files_scanned += scanned_count;
 }
@@ -1215,7 +1644,7 @@ fn extract_full_service(
         plan.rescanned_services.push(work.svc_name.to_owned());
     }
     let rel_paths: Vec<String> = all_svc_files.iter().map(|(f, _)| f.clone()).collect();
-    let dep_files = match work.svc_cfg.stack {
+    let (dep_files, norm_hashes) = match work.svc_cfg.stack {
         Stack::Axum => {
             let sources =
                 scan::read_rust_service_files(work.canon_dir, &work.svc_cfg.root, &rel_paths);
@@ -1231,6 +1660,7 @@ fn extract_full_service(
                 &work.svc_cfg.root,
                 &ctx.structs,
             );
+            let norms = record_source_chunks(plan, &sources, work.svc_cfg);
             plan.meta_updates.push((
                 format!("axum_ctx:{}", work.svc_name),
                 serde_json::to_string(&ctx)?,
@@ -1238,29 +1668,41 @@ fn extract_full_service(
             plan.service_endpoints
                 .push((work.svc_name.to_owned(), endpoints));
             plan.service_calls.push((work.svc_name.to_owned(), calls));
-            deps
+            (deps, norms)
         }
         Stack::Spa => {
             let spec = ts_spec(config, work);
-            let wrappers = ts_client::load_service_wrappers(&spec);
-            let calls = ts_client::extract_files_with_wrappers(&spec, &rel_paths, &wrappers);
+            let sources =
+                scan::read_ts_service_sources(work.canon_dir, &work.svc_cfg.root, &rel_paths);
+            let client_rel_full = spec
+                .client_rel
+                .map(|c| scan::qualify_under_root(spec.service_root, c));
+            let wrappers = client_rel_full
+                .as_deref()
+                .and_then(|c| sources.iter().find(|(rel, _)| rel == c).map(|(_, s)| s.as_str()))
+                .map(|src| ts_client::parse_client_wrappers(src, spec.base_prefix))
+                .unwrap_or_else(|| ts_client::load_service_wrappers(&spec));
+            let calls = ts_client::extract_from_sources_with_wrappers(&spec, &sources, &wrappers);
+            let norms = record_source_chunks(plan, &sources, work.svc_cfg);
             plan.meta_updates.push((
                 format!("ts_wrappers:{}", work.svc_name),
                 serde_json::to_string(&wrappers)?,
             ));
             plan.service_calls.push((work.svc_name.to_owned(), calls));
-            HashSet::new()
+            (HashSet::new(), norms)
         }
         Stack::Hono => {
-            let (endpoints, deps) = hono::extract_service_with_deps(
-                work.canon_dir,
+            let sources =
+                scan::read_ts_service_sources(work.canon_dir, &work.svc_cfg.root, &rel_paths);
+            let (endpoints, deps) = hono::extract_from_sources(
+                &sources,
                 &work.svc_cfg.root,
                 work.svc_cfg.entry.as_deref(),
-                &rel_paths,
-            )?;
+            );
+            let norms = record_source_chunks(plan, &sources, work.svc_cfg);
             plan.service_endpoints
                 .push((work.svc_name.to_owned(), endpoints));
-            deps
+            (deps, norms)
         }
         Stack::Nginx => {
             let routes = nginx::extract_service(work.canon_dir, &work.svc_cfg.root, &rel_paths)?;
@@ -1268,32 +1710,40 @@ fn extract_full_service(
             plan.meta_updates
                 .push((format!("nginx_routes:{}", work.svc_name), serialized));
             plan.nginx_routes_changed = true;
-            rel_paths.iter().cloned().collect()
+            (rel_paths.iter().cloned().collect(), HashMap::new())
         }
         Stack::Web => {
-            let (calls, exports_map, deps) = web_client::extract_service_with_exports(
+            let (candidates, sources) =
+                web_client::read_web_sources(work.canon_dir, &rel_paths, &work.svc_cfg.root);
+            let (calls, exports_map, deps) = web_client::extract_from_sources_with_exports(
                 work.repo_name,
-                work.canon_dir,
                 &work.svc_cfg.root,
                 work.svc_cfg.base.as_deref(),
                 &config.external,
-                &rel_paths,
-            )?;
+                candidates,
+                &sources,
+            );
+            let norms = record_source_chunks(plan, &sources, work.svc_cfg);
             plan.meta_updates.push((
                 format!("web_exports:{}", work.svc_name),
                 serde_json::to_string(&exports_map)?,
             ));
             plan.service_calls.push((work.svc_name.to_owned(), calls));
-            deps
+            (deps, norms)
         }
         Stack::Express => {
-            let (endpoints, deps) =
-                express::extract_service_with_deps(work.canon_dir, &work.svc_cfg.root, &rel_paths)?;
+            let sources =
+                scan::read_ts_service_sources(work.canon_dir, &work.svc_cfg.root, &rel_paths);
+            let (endpoints, deps) = express::extract_from_sources(&sources);
+            let norms = record_source_chunks(plan, &sources, work.svc_cfg);
             plan.service_endpoints
                 .push((work.svc_name.to_owned(), endpoints));
-            deps
+            (deps, norms)
         }
     };
+    for rem in work.removed {
+        plan.removed_files.push(rem.clone());
+    }
     plan.meta_updates.push((
         format!("svc_cfg_hash:{}", work.svc_name),
         service_config_digest(work.svc_cfg),
@@ -1304,6 +1754,7 @@ fn extract_full_service(
             hash.clone(),
             work.svc_name.to_owned(),
             dep_files.contains(rel),
+            norm_hashes.get(rel).cloned().unwrap_or_default(),
         );
     }
     plan.files_scanned += all_svc_files.len();
@@ -1322,7 +1773,7 @@ fn apply_plans_and_resolve(
     let (changed_repos, affected_files, full_services) = collect_plan_scopes(plans);
     let mut pre = snapshot_before_write(tx, full_resolve, &affected_files, &full_services)?;
 
-    write_plans_to_tx(tx, plans, now_ms)?;
+    let (chunks_changed, changed_chunk_ids_by_file) = write_plans_to_tx(tx, plans, now_ms)?;
     if config_changed {
         tx.update_calls_external_flags(&config.external)?;
     }
@@ -1359,6 +1810,11 @@ fn apply_plans_and_resolve(
             now_ms,
         )?
     };
+    let all_changed_chunk_ids: Vec<i64> = changed_chunk_ids_by_file
+        .values()
+        .flat_map(|s| s.iter().copied())
+        .collect();
+    tx.refresh_pair_keys_for_chunks(&all_changed_chunk_ids, now_ms)?;
 
     let modified_files: HashSet<(String, String)> = affected_files.into_iter().collect();
     let rescanned_svcs: HashSet<(String, String)> = full_services.into_iter().collect();
@@ -1376,6 +1832,8 @@ fn apply_plans_and_resolve(
     Ok(SyncDelta {
         edges_added,
         edges_removed,
+        chunks_changed,
+        changed_chunk_ids_by_file,
         breaking,
         contract_changes,
     })
@@ -1453,33 +1911,47 @@ fn snapshot_before_write(
     })
 }
 
-fn write_plans_to_tx(tx: &GraphWriteTx<'_>, plans: &[&RepoPlan], now_ms: i64) -> Result<()> {
+#[allow(clippy::type_complexity)]
+fn write_plans_to_tx(
+    tx: &GraphWriteTx<'_>,
+    plans: &[&RepoPlan],
+    now_ms: i64,
+) -> Result<(usize, HashMap<(String, String), HashSet<i64>>)> {
+    let mut chunks_changed = 0usize;
+    let mut changed_ids_by_file: HashMap<(String, String), HashSet<i64>> = HashMap::new();
     for plan in plans {
+        let repo = &plan.repo_row.repo;
         for svc in &plan.removed_services {
-            tx.delete_service(&plan.repo_row.repo, svc)?;
+            tx.delete_service(repo, svc)?;
             tx.delete_service_meta(svc)?;
         }
         for svc in &plan.full_services {
-            tx.delete_service(&plan.repo_row.repo, svc)?;
+            tx.delete_service(repo, svc)?;
         }
-        tx.delete_files(&plan.repo_row.repo, &plan.deleted_files)?;
-        tx.insert_endpoints(
-            &plan.repo_row.repo,
-            &plan.repo_row.head_sha,
-            &plan.service_endpoints,
-        )?;
-        tx.insert_calls(
-            &plan.repo_row.repo,
-            &plan.repo_row.head_sha,
-            &plan.service_calls,
-        )?;
-        tx.upsert_file_hashes(&plan.repo_row.repo, &plan.file_hashes)?;
+        tx.delete_files(repo, &plan.deleted_files)?;
+        chunks_changed += tx.delete_chunks_for_files(repo, &plan.removed_files, now_ms)?;
+        for (file, file_chunks) in &plan.file_chunks {
+            let (changed, ids) = tx.upsert_file_chunks(repo, file, file_chunks, now_ms)?;
+            chunks_changed += changed;
+            if !ids.is_empty() {
+                changed_ids_by_file
+                    .entry((repo.clone(), file.clone()))
+                    .or_default()
+                    .extend(ids);
+            }
+        }
+        tx.insert_endpoints(repo, &plan.repo_row.head_sha, &plan.service_endpoints)?;
+        tx.insert_calls(repo, &plan.repo_row.head_sha, &plan.service_calls)?;
+        tx.upsert_file_hashes(repo, &plan.file_hashes)?;
+        for (file, blob_hash) in &plan.content_only_hash_updates {
+            tx.update_file_content_hash(repo, file, blob_hash)?;
+        }
         for (k, v) in &plan.meta_updates {
             tx.set_meta(k, v)?;
         }
         tx.upsert_repo(&plan.repo_row, now_ms)?;
     }
-    Ok(())
+    Ok((chunks_changed, changed_ids_by_file))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1593,7 +2065,7 @@ fn run_incremental_resolve(
 }
 
 type ProviderBreakKey = (String, String, String, HttpMethod, String);
-type ProviderBreakVal = (BreakingKind, Option<String>, Vec<CallerSite>);
+type ProviderBreakVal = (BreakingKind, Option<String>, Vec<CallerSite>, Option<String>);
 
 struct BreakAnalysisCtx<'a> {
     old_ep_keys: HashSet<(&'a str, &'a str, HttpMethod, &'a str)>,
@@ -1718,7 +2190,10 @@ fn record_provider_break(
     );
     let entry = provider_groups
         .entry(group_key)
-        .or_insert_with(|| (kind, renamed_to, Vec::new()));
+        .or_insert_with(|| (kind, renamed_to, Vec::new(), None));
+    if entry.3.is_none() && !snap.verify.verified_sha.is_empty() {
+        entry.3 = Some(snap.verify.verified_sha.clone());
+    }
     entry.2.push(CallerSite {
         repo: snap.source.repo.clone(),
         service: snap.source.service.clone(),
@@ -1770,6 +2245,8 @@ fn record_caller_break(
             file: snap.source.file.clone(),
             line: new_unres.line,
         }],
+        last_verified_sha: (!snap.verify.verified_sha.is_empty())
+            .then(|| snap.verify.verified_sha.clone()),
     });
     Ok(())
 }
@@ -1781,7 +2258,7 @@ fn assemble_breaking_alerts(
     let mut alerts = Vec::with_capacity(provider_groups.len() + caller_alerts.len());
     for (
         (provider_service, provider_repo, provider_file, method, path_norm),
-        (kind, renamed_to, mut callers),
+        (kind, renamed_to, mut callers, last_verified_sha),
     ) in provider_groups
     {
         sort_and_dedup_callers(&mut callers, &provider_repo);
@@ -1800,6 +2277,7 @@ fn assemble_breaking_alerts(
             new_call_method: None,
             new_call_path: None,
             callers,
+            last_verified_sha,
         });
     }
     alerts.extend(caller_alerts);
@@ -1922,6 +2400,12 @@ fn detect_contract_changes(
         if edges.is_empty() {
             continue;
         }
+        let last_verified_sha = edges
+            .iter()
+            .filter(|e| e.call.repo != new_ep.repo && !e.verify.verified_sha.is_empty())
+            .chain(edges.iter().filter(|e| !e.verify.verified_sha.is_empty()))
+            .map(|e| e.verify.verified_sha.clone())
+            .next();
         let mut callers: Vec<CallerSite> = edges
             .into_iter()
             .map(|e| CallerSite {
@@ -1945,6 +2429,7 @@ fn detect_contract_changes(
             request_diff: req_diff,
             response_diff: res_diff,
             callers,
+            last_verified_sha,
         });
     }
     sort_by_alert_target(&mut alerts, |a| &a.target);
@@ -2183,6 +2668,7 @@ mod tests {
             service: "shop-api".to_owned(),
             repo: "shop".to_owned(),
             verified_sha: "aaaaaaa".to_owned(),
+            chunk_ids: Default::default(),
             ep: ExtractedEndpoint::simple(
                 HttpMethod::Post,
                 "/api/internal/invoices",
@@ -2215,6 +2701,9 @@ mod tests {
                 last_seen_sha: "aaaaaaa".to_owned(),
                 seen_count: 1,
                 first_seen_at: 1000,
+                verify: Default::default(),
+                verified_at: 0,
+                pair_changed_at: 0,
             }
         };
         let lost = vec![

@@ -382,6 +382,17 @@ impl CrateStructIndex {
             .map(|d| d.file.as_str())
     }
 
+    pub fn find_struct_chunk_ref(
+        &self,
+        crate_key: &str,
+        file: &str,
+        raw_type: &str,
+    ) -> Option<(String, String)> {
+        let cleaned = clean_rust_type_name(raw_type);
+        self.lookup_struct(crate_key, file, &cleaned)
+            .map(|d| (d.file.clone(), d.name.clone()))
+    }
+
     fn collect_struct_fields(
         &self,
         crate_key: &str,
@@ -642,6 +653,8 @@ pub struct BreakingAlert {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub new_call_path: Option<String>,
     pub callers: Vec<CallerSite>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_verified_sha: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -651,9 +664,19 @@ pub struct ContractChangeAlert {
     pub request_diff: ContractDiff,
     pub response_diff: ContractDiff,
     pub callers: Vec<CallerSite>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_verified_sha: Option<String>,
+}
+
+pub fn format_last_verified_suffix(sha: Option<&str>) -> String {
+    match sha.filter(|s| !s.is_empty()) {
+        Some(s) => format!(" (last verified pair @{})", &s[..s.len().min(7)]),
+        None => String::new(),
+    }
 }
 
 pub fn format_breaking_alert(alert: &BreakingAlert) -> String {
+    let verified_part = format_last_verified_suffix(alert.last_verified_sha.as_deref());
     match alert.kind {
         BreakingKind::EndpointRemoved | BreakingKind::EndpointRenamed => {
             let rename_part = alert
@@ -663,7 +686,7 @@ pub fn format_breaking_alert(alert: &BreakingAlert) -> String {
                 .unwrap_or_default();
             let callers = format_callers_clause(&alert.callers, " now unresolved");
             format!(
-                "⚠ BREAKING {} {} removed here{rename_part}; {callers}",
+                "⚠ BREAKING {} {} removed here{rename_part}; {callers}{verified_part}",
                 alert.target.method.as_str(),
                 alert.target.path_norm,
             )
@@ -680,7 +703,7 @@ pub fn format_breaking_alert(alert: &BreakingAlert) -> String {
                 .as_deref()
                 .unwrap_or(alert.target.path_norm.as_str());
             format!(
-                "⚠ BREAKING {} {current} no longer resolves at {site} (was {} {} -> {})",
+                "⚠ BREAKING {} {current} no longer resolves at {site} (was {} {} -> {}){verified_part}",
                 current_method.as_str(),
                 alert.target.method.as_str(),
                 alert.target.path_norm,
@@ -699,8 +722,9 @@ pub fn format_contract_change_alert(alert: &ContractChangeAlert) -> String {
         diffs.push(format!("response: {}", alert.response_diff.format_compact()));
     }
     let callers = format_callers_clause(&alert.callers, "");
+    let verified_part = format_last_verified_suffix(alert.last_verified_sha.as_deref());
     format!(
-        "⚠ CONTRACT {} {} {}; {callers}",
+        "⚠ CONTRACT {} {} {}; {callers}{verified_part}",
         alert.target.method.as_str(),
         alert.target.path_norm,
         diffs.join("; "),

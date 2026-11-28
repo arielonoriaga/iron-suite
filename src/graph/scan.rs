@@ -30,6 +30,100 @@ static TS_METHOD_PROP_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"\bmethod\s*:\s*["'`]([A-Za-z]+)["'`]"#).expect("valid ts method prop regex")
 });
 
+static ASTRO_SCRIPT_OPEN_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)<script\b[^>]*>").expect("valid script open regex")
+});
+
+static ASTRO_SCRIPT_CLOSE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)</script>").expect("valid script close regex")
+});
+
+const ASTRO_FRONTMATTER_FENCE: &str = "---";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AstroBlock {
+    pub is_frontmatter: bool,
+    pub start: usize,
+    pub end: usize,
+}
+
+pub fn find_astro_blocks(raw: &str) -> Vec<AstroBlock> {
+    let mut blocks = Vec::new();
+    let mut search_from = 0usize;
+    if let Some((fm_start, fm_end)) = find_astro_frontmatter(raw) {
+        blocks.push(AstroBlock {
+            is_frontmatter: true,
+            start: fm_start,
+            end: fm_end,
+        });
+        search_from = fm_end;
+    }
+    while let Some(open_m) = ASTRO_SCRIPT_OPEN_RE.find(&raw[search_from..]) {
+        let body_start = search_from + open_m.end();
+        let Some(close_m) = ASTRO_SCRIPT_CLOSE_RE.find(&raw[body_start..]) else {
+            break;
+        };
+        let body_end = body_start + close_m.start();
+        blocks.push(AstroBlock {
+            is_frontmatter: false,
+            start: body_start,
+            end: body_end,
+        });
+        search_from = body_start + close_m.end();
+    }
+    blocks
+}
+
+fn find_astro_frontmatter(raw: &str) -> Option<(usize, usize)> {
+    let trimmed_start = raw.len() - raw.trim_start().len();
+    let after_open = raw[trimmed_start..].strip_prefix(ASTRO_FRONTMATTER_FENCE)?;
+    let nl = after_open.find('\n')?;
+    let fm_start = trimmed_start + ASTRO_FRONTMATTER_FENCE.len() + nl + 1;
+    let mut pos = fm_start;
+    while pos < raw.len() {
+        let line_end = raw[pos..].find('\n').map_or(raw.len(), |n| pos + n);
+        if raw[pos..line_end].trim() == ASTRO_FRONTMATTER_FENCE {
+            return Some((fm_start, pos));
+        }
+        pos = (line_end + 1).min(raw.len());
+    }
+    None
+}
+
+pub fn split_ts_object_kv<'a>(
+    entry: &'a str,
+    entry_offset: usize,
+    mask: &[bool],
+) -> Option<(&'a str, usize, &'a str)> {
+    let bytes = entry.as_bytes();
+    let key_start = skip_masked_ws(bytes, entry_offset, mask, 0);
+    let mut pos = key_start;
+    while pos < bytes.len() && is_ts_ident_byte(bytes[pos]) {
+        pos += 1;
+    }
+    if pos == key_start {
+        return None;
+    }
+    let key = &entry[key_start..pos];
+    pos = skip_masked_ws(bytes, entry_offset, mask, pos);
+    if bytes.get(pos) != Some(&b':') {
+        return None;
+    }
+    pos = skip_masked_ws(bytes, entry_offset, mask, pos + 1);
+    Some((key, entry_offset + pos, entry[pos..].trim_end()))
+}
+
+pub fn skip_masked_ws(bytes: &[u8], base_offset: usize, mask: &[bool], mut pos: usize) -> usize {
+    while pos < bytes.len() && (!mask[base_offset + pos] || bytes[pos].is_ascii_whitespace()) {
+        pos += 1;
+    }
+    pos
+}
+
+pub fn skip_masked_ws_range(bytes: &[u8], mask: &[bool], pos: usize, limit: usize) -> usize {
+    skip_masked_ws(&bytes[..limit], 0, mask, pos)
+}
+
 #[derive(Debug, Clone)]
 pub struct TsImportedSymbol {
     pub file: String,
@@ -596,13 +690,7 @@ pub fn rust_code_mask(source: &str) -> Vec<bool> {
     build_code_mask(source, next_rust_non_code_span)
 }
 
-fn next_rust_non_code_span(bytes: &[u8], i: usize) -> Option<usize> {
-    if bytes.get(i..i + 2) == Some(b"//") {
-        return Some(skip_to_newline(bytes, i + 2));
-    }
-    if bytes.get(i..i + 2) == Some(b"/*") {
-        return Some(skip_nested_block_comment(bytes, i + 2));
-    }
+pub(crate) fn next_rust_literal_span(bytes: &[u8], i: usize) -> Option<usize> {
     if let Some(end) = skip_rust_raw_string(bytes, i) {
         return Some(end);
     }
@@ -615,14 +703,24 @@ fn next_rust_non_code_span(bytes: &[u8], i: usize) -> Option<usize> {
     None
 }
 
-fn skip_to_newline(bytes: &[u8], mut i: usize) -> usize {
+fn next_rust_non_code_span(bytes: &[u8], i: usize) -> Option<usize> {
+    if bytes.get(i..i + 2) == Some(b"//") {
+        return Some(skip_to_newline(bytes, i + 2));
+    }
+    if bytes.get(i..i + 2) == Some(b"/*") {
+        return Some(skip_nested_block_comment(bytes, i + 2));
+    }
+    next_rust_literal_span(bytes, i)
+}
+
+pub(crate) fn skip_to_newline(bytes: &[u8], mut i: usize) -> usize {
     while i < bytes.len() && bytes[i] != b'\n' {
         i += 1;
     }
     i
 }
 
-fn skip_nested_block_comment(bytes: &[u8], mut i: usize) -> usize {
+pub(crate) fn skip_nested_block_comment(bytes: &[u8], mut i: usize) -> usize {
     let mut depth = 1usize;
     while i < bytes.len() && depth > 0 {
         if bytes.get(i..i + 2) == Some(b"/*") {
@@ -638,7 +736,7 @@ fn skip_nested_block_comment(bytes: &[u8], mut i: usize) -> usize {
     i
 }
 
-fn skip_rust_raw_string(bytes: &[u8], start: usize) -> Option<usize> {
+pub(crate) fn skip_rust_raw_string(bytes: &[u8], start: usize) -> Option<usize> {
     if start > 0 && is_ident_byte(bytes[start - 1]) {
         return None;
     }
@@ -673,7 +771,7 @@ fn count_hashes(bytes: &[u8], start: usize, limit: usize) -> usize {
     matched
 }
 
-fn skip_rust_char_literal(bytes: &[u8], start: usize) -> Option<usize> {
+pub(crate) fn skip_rust_char_literal(bytes: &[u8], start: usize) -> Option<usize> {
     let next = *bytes.get(start + 1)?;
     if next == b'\\' {
         let max_end = (start + 11).min(bytes.len());
@@ -713,13 +811,7 @@ pub fn ts_code_mask(source: &str) -> Vec<bool> {
     build_code_mask(source, next_ts_non_code_span)
 }
 
-fn next_ts_non_code_span(bytes: &[u8], i: usize) -> Option<usize> {
-    if bytes.get(i..i + 2) == Some(b"//") {
-        return Some(skip_to_newline(bytes, i + 2));
-    }
-    if bytes.get(i..i + 2) == Some(b"/*") {
-        return Some(skip_flat_block_comment(bytes, i + 2));
-    }
+pub(crate) fn next_ts_literal_span(bytes: &[u8], i: usize) -> Option<usize> {
     if matches!(bytes[i], b'"' | b'\'') {
         return Some(skip_quoted_string(bytes, i, bytes[i]));
     }
@@ -729,7 +821,17 @@ fn next_ts_non_code_span(bytes: &[u8], i: usize) -> Option<usize> {
     None
 }
 
-fn skip_flat_block_comment(bytes: &[u8], mut i: usize) -> usize {
+fn next_ts_non_code_span(bytes: &[u8], i: usize) -> Option<usize> {
+    if bytes.get(i..i + 2) == Some(b"//") {
+        return Some(skip_to_newline(bytes, i + 2));
+    }
+    if bytes.get(i..i + 2) == Some(b"/*") {
+        return Some(skip_flat_block_comment(bytes, i + 2));
+    }
+    next_ts_literal_span(bytes, i)
+}
+
+pub(crate) fn skip_flat_block_comment(bytes: &[u8], mut i: usize) -> usize {
     while i < bytes.len() {
         if bytes.get(i..i + 2) == Some(b"*/") {
             return i + 2;
@@ -739,7 +841,7 @@ fn skip_flat_block_comment(bytes: &[u8], mut i: usize) -> usize {
     bytes.len()
 }
 
-fn skip_ts_template(bytes: &[u8], start: usize) -> usize {
+pub(crate) fn skip_ts_template(bytes: &[u8], start: usize) -> usize {
     let mut i = start + 1;
     let mut brace_depth = 0usize;
     while i < bytes.len() {
@@ -909,7 +1011,7 @@ pub fn split_top_level_delimited<'a>(
     parts
 }
 
-fn update_delim_depth(byte: u8, prev: u8, track_angles: bool, depth: &mut [usize; 4]) {
+pub(crate) fn update_delim_depth(byte: u8, prev: u8, track_angles: bool, depth: &mut [usize; 4]) {
     match byte {
         b'(' => depth[0] += 1,
         b')' => depth[0] = depth[0].saturating_sub(1),

@@ -5,9 +5,107 @@ use serde::{Deserialize, Serialize};
 
 use super::contracts::PayloadContract;
 
-pub const EXTRACTOR_VERSION: i64 = 4;
+pub const EXTRACTOR_VERSION: i64 = 5;
 pub const DEFAULT_MAX_BYTES: usize = 1200;
 pub const TOUCH_MAX_BYTES: usize = 300;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChunkKind {
+    Fn,
+    Struct,
+    Enum,
+    Const,
+    Method,
+    Arrow,
+    ObjectMember,
+    Frontmatter,
+    Script,
+}
+
+impl ChunkKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Fn => "fn",
+            Self::Struct => "struct",
+            Self::Enum => "enum",
+            Self::Const => "const",
+            Self::Method => "method",
+            Self::Arrow => "arrow",
+            Self::ObjectMember => "object_member",
+            Self::Frontmatter => "frontmatter",
+            Self::Script => "script",
+        }
+    }
+
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "fn" => Some(Self::Fn),
+            "struct" => Some(Self::Struct),
+            "enum" => Some(Self::Enum),
+            "const" => Some(Self::Const),
+            "method" => Some(Self::Method),
+            "arrow" => Some(Self::Arrow),
+            "object_member" => Some(Self::ObjectMember),
+            "frontmatter" => Some(Self::Frontmatter),
+            "script" => Some(Self::Script),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PairVerifyState {
+    Verified,
+    UnverifiedSinceChange,
+    NeverVerified,
+}
+
+impl PairVerifyState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Verified => "verified",
+            Self::UnverifiedSinceChange => "unverified-since-change",
+            Self::NeverVerified => "never-verified",
+        }
+    }
+
+    pub fn from_keys(pair_key: &str, verified_pair_key: &str) -> Self {
+        if verified_pair_key.is_empty() {
+            Self::NeverVerified
+        } else if pair_key == verified_pair_key {
+            Self::Verified
+        } else {
+            Self::UnverifiedSinceChange
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StaleReason {
+    ChunkChanged,
+    SymbolMissing,
+}
+
+impl StaleReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ChunkChanged => "chunk_changed",
+            Self::SymbolMissing => "symbol_missing",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExtractedChunk {
+    pub kind: ChunkKind,
+    pub qualified_name: String,
+    pub start_line: usize,
+    pub end_line: usize,
+    pub norm_hash: String,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum HttpMethod {
@@ -255,6 +353,13 @@ pub struct ServiceConfig {
     pub base_prefix: Option<String>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct EndpointChunkRefs {
+    pub handler: Option<(String, String)>,
+    pub req_type: Option<(String, String)>,
+    pub res_type: Option<(String, String)>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExtractedEndpoint {
     pub method: HttpMethod,
@@ -267,6 +372,7 @@ pub struct ExtractedEndpoint {
     pub req_contract: Option<PayloadContract>,
     pub res_contract: Option<PayloadContract>,
     pub contract_hash: String,
+    pub chunk_refs: EndpointChunkRefs,
 }
 
 impl ExtractedEndpoint {
@@ -290,6 +396,7 @@ impl ExtractedEndpoint {
             req_contract: None,
             res_contract: None,
             contract_hash: String::new(),
+            chunk_refs: EndpointChunkRefs::default(),
         }
     }
 }
@@ -394,5 +501,23 @@ mod tests {
         assert!(Confidence::Configured.rank() < Confidence::Suffix.rank());
         assert_eq!(Direction::Impact.as_str(), "impact");
         assert_eq!(RefreshStatus::Incremental.as_str(), "incremental");
+        for kind in [
+            ChunkKind::Fn,
+            ChunkKind::Struct,
+            ChunkKind::Enum,
+            ChunkKind::Const,
+            ChunkKind::Method,
+            ChunkKind::Arrow,
+            ChunkKind::ObjectMember,
+            ChunkKind::Frontmatter,
+            ChunkKind::Script,
+        ] {
+            assert_eq!(ChunkKind::parse(kind.as_str()), Some(kind));
+        }
+        assert_eq!(PairVerifyState::from_keys("a", "").as_str(), "never-verified");
+        assert_eq!(PairVerifyState::from_keys("a", "a").as_str(), "verified");
+        assert_eq!(PairVerifyState::from_keys("a", "b").as_str(), "unverified-since-change");
+        assert_eq!(StaleReason::ChunkChanged.as_str(), "chunk_changed");
+        assert_eq!(StaleReason::SymbolMissing.as_str(), "symbol_missing");
     }
 }

@@ -13,7 +13,8 @@ use super::scan::{
     extract_ts_path_with_consts, extract_why_ts, find_matching_delim, for_each_masked_ident,
     is_ident_byte, is_test_file, is_ts_source, join_paths, matches_external_glob, normalize_path,
     parallel_map, qualify_under_root, read_ident, skip_angle_generics, skip_ascii_ws,
-    sort_extracted_calls, split_top_level_args, ts_code_mask, under_root, unquote_ts_string,
+    sort_extracted_calls, split_top_level_args, split_ts_object_kv, ts_code_mask, under_root,
+    unquote_ts_string,
 };
 use super::types::{ExtractedCall, HttpMethod};
 
@@ -65,32 +66,29 @@ pub fn load_service_wrappers(spec: &TsServiceSpec<'_>) -> HashMap<String, Wrappe
         .unwrap_or_default()
 }
 
-pub fn extract_files_with_wrappers(
+pub fn extract_from_sources_with_wrappers(
     spec: &TsServiceSpec<'_>,
-    files: &[String],
+    sources: &[(String, String)],
     wrapper_map: &HashMap<String, WrapperEndpoint>,
 ) -> Vec<ExtractedCall> {
     let client_repo_rel = spec
         .client_rel
         .map(|c| qualify_under_root(spec.service_root, c));
-    let candidates: Vec<&String> = files
+    let candidates: Vec<&(String, String)> = sources
         .iter()
-        .filter(|rel| {
+        .filter(|(rel, _)| {
             is_ts_source(rel)
                 && under_root(rel, spec.service_root)
                 && !is_test_file(rel)
                 && client_repo_rel.as_deref() != Some(rel.as_str())
         })
         .collect();
-    let mut calls: Vec<ExtractedCall> = parallel_map(&candidates, |rel| {
-        let Ok(src) = fs::read_to_string(spec.repo_dir.join(rel)) else {
-            return Vec::new();
-        };
+    let mut calls: Vec<ExtractedCall> = parallel_map(&candidates, |(rel, src)| {
         let external = matches_external_glob(spec.external_globs, spec.repo, rel);
         let area = extract_ts_area(rel, spec.service_root);
         extract_calls_from_file(
             rel,
-            &src,
+            src,
             wrapper_map,
             spec.base_service.unwrap_or(""),
             spec.base_prefix,
@@ -103,6 +101,28 @@ pub fn extract_files_with_wrappers(
     .collect();
     sort_extracted_calls(&mut calls);
     calls
+}
+
+pub fn extract_files_with_wrappers(
+    spec: &TsServiceSpec<'_>,
+    files: &[String],
+    wrapper_map: &HashMap<String, WrapperEndpoint>,
+) -> Vec<ExtractedCall> {
+    let client_repo_rel = spec
+        .client_rel
+        .map(|c| qualify_under_root(spec.service_root, c));
+    let candidates: Vec<String> = files
+        .iter()
+        .filter(|rel| {
+            is_ts_source(rel)
+                && under_root(rel, spec.service_root)
+                && !is_test_file(rel)
+                && client_repo_rel.as_deref() != Some(rel.as_str())
+        })
+        .cloned()
+        .collect();
+    let sources = super::scan::read_files_parallel(spec.repo_dir, &candidates);
+    extract_from_sources_with_wrappers(spec, &sources, wrapper_map)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -169,7 +189,7 @@ fn parse_object_entries(
     out: &mut HashMap<String, WrapperEndpoint>,
 ) {
     for (entry_offset, entry_text) in split_top_level_args(source, mask, 0, start, end) {
-        let Some((key, val_offset, val_text)) = split_property_kv(entry_text, entry_offset, mask)
+        let Some((key, val_offset, val_text)) = split_ts_object_kv(entry_text, entry_offset, mask)
         else {
             continue;
         };
@@ -195,36 +215,6 @@ fn parse_object_entries(
             out.insert(full_key, ep);
         }
     }
-}
-
-fn split_property_kv<'a>(
-    entry: &'a str,
-    entry_offset: usize,
-    mask: &[bool],
-) -> Option<(&'a str, usize, &'a str)> {
-    let bytes = entry.as_bytes();
-    let key_start = skip_masked_ws(bytes, entry_offset, mask, 0);
-    let mut pos = key_start;
-    while pos < bytes.len() && is_ident_byte(bytes[pos]) {
-        pos += 1;
-    }
-    if pos == key_start {
-        return None;
-    }
-    let key = &entry[key_start..pos];
-    pos = skip_masked_ws(bytes, entry_offset, mask, pos);
-    if bytes.get(pos) != Some(&b':') {
-        return None;
-    }
-    pos = skip_masked_ws(bytes, entry_offset, mask, pos + 1);
-    Some((key, entry_offset + pos, entry[pos..].trim_end()))
-}
-
-fn skip_masked_ws(bytes: &[u8], base_offset: usize, mask: &[bool], mut pos: usize) -> usize {
-    while pos < bytes.len() && (!mask[base_offset + pos] || bytes[pos].is_ascii_whitespace()) {
-        pos += 1;
-    }
-    pos
 }
 
 fn extract_fetch_in_wrapper(

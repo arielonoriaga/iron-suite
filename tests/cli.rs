@@ -1734,3 +1734,270 @@ export function createApp() {
         "caller_touch={caller_touch}"
     );
 }
+
+#[test]
+fn system_graph_chunks_verified_pairs_unrelated_edit_and_stale_memories() {
+    let fixture = Fixture::new();
+    let repos_root = fixture.root.join("repos");
+    fs::create_dir_all(&repos_root).unwrap();
+
+    let api_initial = r#"use axum::{Json, Router, routing::post};
+use serde::{Deserialize, Serialize};
+
+#[derive(Deserialize)]
+pub struct InvoiceReq {
+    pub company_id: String,
+    pub amount: i64,
+}
+
+#[derive(Serialize)]
+pub struct InvoiceRes {
+    pub cae: String,
+}
+
+pub async fn create_invoice(Json(req): Json<InvoiceReq>) -> Json<InvoiceRes> {
+    Json(InvoiceRes { cae: req.company_id })
+}
+
+pub fn unrelated_helper(n: i64) -> i64 {
+    n + 1
+}
+
+pub fn router() -> Router {
+    Router::new().route("/api/internal/invoices", post(create_invoice))
+}
+"#;
+    let client_initial = r#"pub struct ShopClient {
+    base_url: String,
+    http: reqwest::Client,
+}
+
+impl ShopClient {
+    pub async fn issue_invoice(&self, company_id: &str) {
+        let payload = serde_json::json!({ "company_id": company_id, "amount": 100 });
+        let _ = self.http.post(format!("{}/api/internal/invoices", self.base_url)).json(&payload).send().await;
+    }
+}
+"#;
+    let shop_dir = repos_root.join("shop");
+    let addon_dir = repos_root.join("addon");
+    let other_initial = "pub fn other_helper(x: i32) -> i32 {\n    x * 2\n}\n";
+    let extra_initial = "export function loadExtra(): Promise<{ ok: boolean }> {\n  return Promise.resolve({ ok: true });\n}\n";
+    init_git_repo(
+        &shop_dir,
+        &[
+            ("backend/src/api.rs", api_initial),
+            ("backend/src/other.rs", other_initial),
+            ("extra/src/app.ts", extra_initial),
+        ],
+    );
+    init_git_repo(&addon_dir, &[("src/client.rs", client_initial)]);
+
+    write_graph_cfg(
+        &fixture.db,
+        json!({
+            "repos_root": repos_root,
+            "services": {
+                "shop-api": { "repo": "shop", "root": "backend", "stack": "axum" },
+                "shop-extra": { "repo": "shop", "root": "extra", "stack": "spa" },
+                "addon-api": { "repo": "addon", "root": "", "stack": "axum" }
+            },
+            "clients": {
+                "addon:src/client.rs": "shop-api"
+            }
+        }),
+    );
+
+    let graph_text = |extra: &[&str]| {
+        let mut args = vec!["memory", "graph"];
+        args.extend_from_slice(extra);
+        run_iron_text(&fixture.db, &args)
+    };
+
+    let (init_ref, _) = fixture.call(&["memory", "graph", "refresh"]);
+    assert_eq!(init_ref["edges"], 1);
+    let init_chunks = init_ref["chunks"].as_u64().unwrap();
+    assert!(init_chunks >= 7, "init={init_ref}");
+    assert!(init_ref["chunks_changed"].as_u64().unwrap() >= 7);
+
+    let unv_never = graph_text(&["unverified", "--repo", "shop"]);
+    assert!(unv_never.contains("[never-verified]"), "unv_never={unv_never}");
+    assert!(!unv_never.contains("[unverified-since-change]"), "unv_never={unv_never}");
+
+    write_graph_cfg(
+        &fixture.db,
+        json!({
+            "repos_root": repos_root,
+            "services": {
+                "shop-api": { "repo": "shop", "root": "backend", "stack": "axum" },
+                "addon-api": { "repo": "addon", "root": "", "stack": "axum" }
+            },
+            "clients": {
+                "addon:src/client.rs": "shop-api"
+            }
+        }),
+    );
+    let (after_remove_svc, _) = fixture.call(&["memory", "graph", "refresh"]);
+    assert!(
+        after_remove_svc["chunks"].as_u64().unwrap() < init_chunks,
+        "removed service chunks must be pruned: {after_remove_svc}"
+    );
+
+    let (no_change, _) = fixture.call(&["memory", "graph", "refresh"]);
+    assert_eq!(no_change["chunks_changed"], 0);
+
+    let other_rs = shop_dir.join("backend/src/other.rs");
+    fs::write(&other_rs, "pub fn other_helper(x: i32) -> i32 {\n    x * 3\n}\n").unwrap();
+    git_in(&shop_dir, &["add", "backend/src/other.rs"]);
+    git_in(&shop_dir, &["commit", "-m", "chore: bump other helper"]);
+    let (after_commit, _) = fixture.call(&["memory", "graph", "refresh"]);
+    assert_eq!(after_commit["chunks_changed"], 1);
+
+    let (bad_verify, _) = fixture.call(&[
+        "memory",
+        "graph",
+        "verify",
+        "--repo",
+        "shop",
+        "--sha",
+        "deadbeef1234",
+    ]);
+    assert_eq!(bad_verify["verified_edges"], 0);
+
+    let (verified, _) = fixture.call(&["memory", "graph", "verify", "--repo", "shop"]);
+    assert_eq!(verified["verified_edges"], 1);
+    let verified_sha = verified["sha"].as_str().unwrap().to_owned();
+    let short_sha = &verified_sha[..7];
+
+    let unv_after_verify = graph_text(&["unverified", "--repo", "shop"]);
+    assert!(
+        unv_after_verify.contains("0 cross-repo edges"),
+        "unv={unv_after_verify}"
+    );
+    let who_verified = graph_text(&["who-calls", "POST /api/internal/invoices"]);
+    assert!(
+        who_verified.contains(&format!("[verified @{short_sha}]")),
+        "who={who_verified}"
+    );
+    let client_rs = addon_dir.join("src/client.rs");
+    let imp_verified = graph_text(&["impact", "--file", client_rs.to_str().unwrap()]);
+    assert!(
+        imp_verified.contains(&format!("[verified @{short_sha}]")),
+        "imp={imp_verified}"
+    );
+
+    let (mem_changed, _) = fixture.call(&[
+        "memory",
+        "remember",
+        "--project",
+        "shop",
+        "--title",
+        "Invoice handler invariant",
+        "--content",
+        "Enforces idempotency in `backend/src/api.rs::create_invoice`.",
+    ]);
+    let mem_changed_id = mem_changed["id"].as_str().unwrap().to_owned();
+    let (mem_missing, _) = fixture.call(&[
+        "memory",
+        "remember",
+        "--project",
+        "shop",
+        "--title",
+        "Legacy deleted handler",
+        "--content",
+        "Calls `backend/src/api.rs::old_deleted_handler`.",
+    ]);
+    let mem_missing_id = mem_missing["id"].as_str().unwrap().to_owned();
+
+    let api_rs = shop_dir.join("backend/src/api.rs");
+    let comment_only = api_initial.replace(
+        "Json(InvoiceRes { cae: req.company_id })",
+        "// comment-only edit\n    Json(InvoiceRes { cae: req.company_id })",
+    );
+    fs::write(&api_rs, &comment_only).unwrap();
+    let (comment_touch, _) = fixture.call(&[
+        "memory",
+        "graph",
+        "touch",
+        "--json",
+        api_rs.to_str().unwrap(),
+    ]);
+    assert_eq!(comment_touch["chunks_changed"], 0, "comment={comment_touch}");
+    assert_eq!(comment_touch["breaking"], json!([]));
+    assert_eq!(comment_touch["contract_changes"], json!([]));
+    assert_eq!(comment_touch["impact"], "");
+    assert!(
+        graph_text(&["unverified", "--repo", "shop"]).contains("0 cross-repo edges")
+    );
+
+    let unrelated_edit = comment_only.replace("n + 1", "n + 2\n    + 3");
+    fs::write(&api_rs, &unrelated_edit).unwrap();
+    let (unrelated_touch, _) = fixture.call(&[
+        "memory",
+        "graph",
+        "touch",
+        "--json",
+        api_rs.to_str().unwrap(),
+    ]);
+    assert_eq!(unrelated_touch["chunks_changed"], 1, "unrelated={unrelated_touch}");
+    assert_eq!(unrelated_touch["breaking"], json!([]));
+    assert_eq!(unrelated_touch["contract_changes"], json!([]));
+    assert_eq!(unrelated_touch["impact"], "");
+    assert!(
+        graph_text(&["unverified", "--repo", "shop"]).contains("0 cross-repo edges")
+    );
+
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    let logic_edit = unrelated_edit.replace(
+        "Json(InvoiceRes { cae: req.company_id })",
+        "let cae = format!(\"CAE-{}\", req.company_id);\n    Json(InvoiceRes { cae })",
+    );
+    fs::write(&api_rs, &logic_edit).unwrap();
+    fs::write(&other_rs, "pub fn other_helper(x: i32) -> i32 {\n    x * 4\n}\n").unwrap();
+    let (logic_touch, _) = fixture.call(&[
+        "memory",
+        "graph",
+        "touch",
+        "--json",
+        api_rs.to_str().unwrap(),
+        other_rs.to_str().unwrap(),
+    ]);
+    assert_eq!(logic_touch["chunks_changed"], 2, "logic={logic_touch}");
+    assert_eq!(logic_touch["cross_repo_edges"], 1, "logic={logic_touch}");
+    let logic_impact = logic_touch["impact"].as_str().unwrap();
+    assert!(
+        logic_impact.contains("api.rs") && logic_impact.contains("/api/internal/invoices"),
+        "impact={logic_impact}"
+    );
+    assert!(
+        !logic_impact.contains("other.rs"),
+        "unrelated file must not inherit handler impact: {logic_impact}"
+    );
+    assert!(
+        logic_impact.contains(&format!("(last verified pair @{short_sha})")),
+        "impact={logic_impact}"
+    );
+
+    let unv_changed = graph_text(&["unverified", "--repo", "shop"]);
+    assert!(
+        unv_changed.contains("/api/internal/invoices")
+            && unv_changed.contains(&format!("changed since verified @{short_sha}")),
+        "unv={unv_changed}"
+    );
+    let who_changed = graph_text(&["who-calls", "POST /api/internal/invoices"]);
+    assert!(
+        who_changed.contains(&format!("[changed since verified @{short_sha}]")),
+        "who={who_changed}"
+    );
+    assert!(who_changed.contains(&mem_changed_id), "who={who_changed}");
+
+    let stale = graph_text(&["stale-memories", "--repo", "shop"]);
+    assert!(stale.contains(&mem_changed_id) && stale.contains("chunk_changed"), "stale={stale}");
+    assert!(stale.contains(&mem_missing_id) && stale.contains("symbol_missing"), "stale={stale}");
+
+    let (reverified, _) = fixture.call(&["memory", "graph", "verify", "--repo", "shop"]);
+    assert_eq!(reverified["verified_edges"], 1);
+    assert!(
+        graph_text(&["unverified", "--repo", "shop"]).contains("0 cross-repo edges")
+    );
+}

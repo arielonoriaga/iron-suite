@@ -7,14 +7,15 @@ use crate::output;
 
 use super::contracts::{
     BreakingAlert, ContractChangeAlert, PayloadContract, PayloadState, check_request_mismatch,
-    format_breaking_alert, format_contract_change_alert,
+    format_breaking_alert, format_contract_change_alert, format_last_verified_suffix,
 };
 use super::memory::{self, MemoryAttachmentContext};
 use super::scan::normalize_path;
 use super::store::{
-    CallRow, CallerEdge, CrossRepoEdgeInfo, EdgeChangeKind, EndpointRow, GraphStore,
+    CallRow, CallerEdge, CrossRepoEdgeInfo, EdgeChangeKind, EdgeVerifyMeta, EndpointRow,
+    GraphStore, UnverifiedEdgeRow,
 };
-use super::types::{Confidence, HttpMethod, Stack};
+use super::types::{Confidence, HttpMethod, PairVerifyState, Stack};
 
 const DEFAULT_LIMIT: usize = 50;
 const IMPACT_CALLER_PREVIEW: usize = 3;
@@ -75,6 +76,54 @@ fn render_lines_with_footer(body: &[String], footer: &[String], max_bytes: usize
     truncate_to_budget(&out, max_bytes)
 }
 
+#[derive(Default)]
+struct MemCollector {
+    files: Vec<(String, String)>,
+    endpoints: Vec<(HttpMethod, String)>,
+    chunk_ids: Vec<i64>,
+}
+
+impl MemCollector {
+    fn add_endpoint(&mut self, ep: &EndpointRow) {
+        self.files.push((ep.repo.clone(), ep.file.clone()));
+        self.endpoints.push((ep.method, ep.path_norm.clone()));
+        for id in [ep.chunk_ids.handler, ep.chunk_ids.req_type, ep.chunk_ids.res_type]
+            .into_iter()
+            .flatten()
+        {
+            self.chunk_ids.push(id);
+        }
+    }
+
+    fn add_call(&mut self, call: &CallRow) {
+        self.files.push((call.repo.clone(), call.file.clone()));
+        self.endpoints.push((call.method, call.path_norm.clone()));
+        if let Some(cid) = call.caller_chunk_id {
+            self.chunk_ids.push(cid);
+        }
+    }
+
+    fn add_callers(&mut self, callers: &[CallerEdge]) {
+        for c in callers {
+            self.files.push((c.call.repo.clone(), c.call.file.clone()));
+            if let Some(cid) = c.call.caller_chunk_id {
+                self.chunk_ids.push(cid);
+            }
+        }
+    }
+
+    fn finish(
+        self,
+        store: &GraphStore,
+        memory_db: Option<&Path>,
+        body: Vec<String>,
+    ) -> Result<QueryOutput> {
+        let chunks = store.chunk_names_by_ids(&self.chunk_ids)?;
+        let footer = collect_attached_memories(memory_db, self.files, self.endpoints, chunks);
+        Ok(QueryOutput::Lines { body, footer })
+    }
+}
+
 pub fn who_calls(
     store: &GraphStore,
     raw_query: &str,
@@ -93,28 +142,11 @@ pub fn who_calls(
             )));
         }
         let mut lines = Vec::new();
-        let mut mem_files = Vec::new();
-        let mut mem_endpoints = Vec::new();
+        let mut mem = MemCollector::default();
         for ep in &endpoints {
-            lines.push(format_provider_line(ep));
-            mem_files.push((ep.repo.clone(), ep.file.clone()));
-            mem_endpoints.push((ep.method, ep.path_norm.clone()));
-            let callers = store.callers_for_endpoint(ep.id)?;
-            if callers.is_empty() {
-                lines.push("  (no callers)".to_owned());
-                continue;
-            }
-            for c in &callers {
-                mem_files.push((c.call.repo.clone(), c.call.file.clone()));
-            }
-            let formatted_callers = format_grouped_callers(ep.req_contract.as_ref(), &callers);
-            push_capped_lines(&mut lines, formatted_callers, max_items, "  ");
+            append_endpoint_with_callers(store, ep, "", max_items, &mut lines, &mut mem)?;
         }
-        let footer = collect_attached_memories(memory_db, mem_files, mem_endpoints);
-        Ok(QueryOutput::Lines {
-            body: lines,
-            footer,
-        })
+        mem.finish(store, memory_db, lines)
     })
 }
 
@@ -137,32 +169,13 @@ pub fn impact(
             )));
         }
         let mut lines = Vec::new();
-        let mut mem_files = Vec::new();
-        let mut mem_endpoints = Vec::new();
-        append_defined_endpoints(
-            store,
-            &rel_file,
-            &endpoints,
-            max_items,
-            &mut lines,
-            &mut mem_files,
-            &mut mem_endpoints,
-        )?;
+        let mut mem = MemCollector::default();
+        append_defined_endpoints(store, &rel_file, &endpoints, max_items, &mut lines, &mut mem)?;
         if !calls.is_empty() {
             lines.push(format!("makes {} call(s) from {rel_file}:", calls.len()));
-            append_call_provider_lines_tracked(
-                store,
-                &calls,
-                max_items,
-                &mut lines,
-                Some((&mut mem_files, &mut mem_endpoints)),
-            )?;
+            append_call_provider_lines_tracked(store, &calls, max_items, &mut lines, Some(&mut mem))?;
         }
-        let footer = collect_attached_memories(memory_db, mem_files, mem_endpoints);
-        Ok(QueryOutput::Lines {
-            body: lines,
-            footer,
-        })
+        mem.finish(store, memory_db, lines)
     })
 }
 
@@ -170,46 +183,58 @@ fn collect_attached_memories(
     memory_db: Option<&Path>,
     files: Vec<(String, String)>,
     endpoints: Vec<(HttpMethod, String)>,
+    chunks: Vec<(String, String, String)>,
 ) -> Vec<String> {
     let Some(db) = memory_db else {
         return Vec::new();
     };
-    let ctx = MemoryAttachmentContext { files, endpoints };
+    let ctx = MemoryAttachmentContext {
+        files,
+        endpoints,
+        chunks,
+    };
     memory::attach_memory_lines(db, &ctx)
 }
 
-#[allow(clippy::too_many_arguments)]
+fn append_endpoint_with_callers(
+    store: &GraphStore,
+    ep: &EndpointRow,
+    indent: &str,
+    max_callers: usize,
+    lines: &mut Vec<String>,
+    mem: &mut MemCollector,
+) -> Result<()> {
+    lines.push(format!("{indent}{}", format_provider_line(ep)));
+    mem.add_endpoint(ep);
+    let callers = store.callers_for_endpoint(ep.id)?;
+    let child_indent = format!("{indent}  ");
+    if callers.is_empty() {
+        lines.push(format!("{child_indent}(no callers)"));
+        return Ok(());
+    }
+    mem.add_callers(&callers);
+    let formatted: Vec<String> = format_grouped_callers(ep.req_contract.as_ref(), &callers)
+        .into_iter()
+        .map(|cl| format!("{indent}{cl}"))
+        .collect();
+    push_capped_lines(lines, formatted, max_callers, &child_indent);
+    Ok(())
+}
+
 fn append_defined_endpoints(
     store: &GraphStore,
     rel_file: &str,
     endpoints: &[EndpointRow],
     max_items: usize,
     lines: &mut Vec<String>,
-    mem_files: &mut Vec<(String, String)>,
-    mem_endpoints: &mut Vec<(HttpMethod, String)>,
+    mem: &mut MemCollector,
 ) -> Result<()> {
     if endpoints.is_empty() {
         return Ok(());
     }
     lines.push(format!("defines {} endpoint(s) in {rel_file}:", endpoints.len()));
     for ep in endpoints.iter().take(max_items) {
-        lines.push(format!("  {}", format_provider_line(ep)));
-        mem_files.push((ep.repo.clone(), ep.file.clone()));
-        mem_endpoints.push((ep.method, ep.path_norm.clone()));
-        let callers = store.callers_for_endpoint(ep.id)?;
-        if callers.is_empty() {
-            lines.push("    (no callers)".to_owned());
-        } else {
-            for c in &callers {
-                mem_files.push((c.call.repo.clone(), c.call.file.clone()));
-            }
-            let indented: Vec<String> =
-                format_grouped_callers(ep.req_contract.as_ref(), &callers)
-                    .into_iter()
-                    .map(|cl| format!("  {cl}"))
-                    .collect();
-            push_capped_lines(lines, indented, IMPACT_CALLER_PREVIEW, "    ");
-        }
+        append_endpoint_with_callers(store, ep, "  ", IMPACT_CALLER_PREVIEW, lines, mem)?;
     }
     if endpoints.len() > max_items {
         lines.push(format!("  +{} more", endpoints.len() - max_items));
@@ -245,50 +270,51 @@ pub fn callees(
     })
 }
 
-pub fn fog(
-    store: &GraphStore,
-    repo_filter: Option<&str>,
-    limit: Option<usize>,
-    max_bytes: usize,
-) -> Result<String> {
+pub fn fog(store: &GraphStore, repo_filter: Option<&str>, limit: Option<usize>, max_bytes: usize) -> Result<String> {
     output::validate_budget(max_bytes)?;
     let unresolved = store.unresolved_calls(repo_filter)?;
     if unresolved.is_empty() {
-        let scope = repo_filter.unwrap_or("all repos");
-        return Ok(truncate_to_budget(&format!("fog: 0 unresolved calls ({scope})\n"), max_bytes));
+        return Ok(empty_scoped_budget("fog: 0 unresolved calls", repo_filter, max_bytes));
     }
-    let mut by_repo: BTreeMap<&str, usize> = BTreeMap::new();
-    for call in &unresolved {
-        *by_repo.entry(call.repo.as_str()).or_insert(0) += 1;
+    let breakdown = format_repo_breakdown(unresolved.iter().map(|c| c.repo.as_str()));
+    let header = format!("fog: {} unresolved ({breakdown})", unresolved.len());
+    let items: Vec<String> = unresolved.iter().map(format_fog_line).collect();
+    Ok(render_contracts_list(header, items, limit, max_bytes))
+}
+
+fn format_fog_line(call: &CallRow) -> String {
+    let base_part = if call.base_ref.is_empty() {
+        String::new()
+    } else {
+        format!(" base={}", call.base_ref)
+    };
+    format!(
+        "  {} {}:{} {} {}{}{}",
+        call.repo,
+        call.file,
+        call.line,
+        call.method.as_str(),
+        call.path_norm,
+        base_part,
+        why_dash(&call.why)
+    )
+}
+
+fn empty_scoped_budget(prefix: &str, repo_filter: Option<&str>, max_bytes: usize) -> String {
+    let scope = repo_filter.unwrap_or("all repos");
+    truncate_to_budget(&format!("{prefix} ({scope})\n"), max_bytes)
+}
+
+fn format_repo_breakdown<'a>(repos: impl Iterator<Item = &'a str>) -> String {
+    let mut by_repo: BTreeMap<&'a str, usize> = BTreeMap::new();
+    for repo in repos {
+        *by_repo.entry(repo).or_insert(0) += 1;
     }
-    let breakdown = by_repo
+    by_repo
         .iter()
         .map(|(r, n)| format!("{r}={n}"))
         .collect::<Vec<_>>()
-        .join(", ");
-    let header = format!("fog: {} unresolved ({breakdown})", unresolved.len());
-    let max_items = limit.unwrap_or(unresolved.len()).max(1);
-    let take = unresolved.len().min(max_items);
-    let hidden_by_limit = unresolved.len().saturating_sub(take);
-    let mut lines = vec![header];
-    for call in unresolved.iter().take(take) {
-        let base_part = if call.base_ref.is_empty() {
-            String::new()
-        } else {
-            format!(" base={}", call.base_ref)
-        };
-        lines.push(format!(
-            "  {} {}:{} {} {}{}{}",
-            call.repo,
-            call.file,
-            call.line,
-            call.method.as_str(),
-            call.path_norm,
-            base_part,
-            why_dash(&call.why)
-        ));
-    }
-    Ok(render_lines_within_budget_extra(&lines, hidden_by_limit, max_bytes))
+        .join(", ")
 }
 
 pub fn changes(
@@ -328,15 +354,10 @@ pub fn changes(
                     EdgeChangeKind::Removed => "-",
                 };
                 let breaking_tag = if r.breaking { " [BREAKING]" } else { "" };
+                let (src, dst) = (&r.source, &r.target);
                 format!(
                     "  {sign} {} {}:{} -> {} {} {} @{}{breaking_tag}",
-                    r.source.service,
-                    r.source.file,
-                    r.source.line,
-                    r.target.service,
-                    r.method.as_str(),
-                    r.path_norm,
-                    short_sha(&r.sha)
+                    src.service, src.file, src.line, dst.service, r.method.as_str(), r.path_norm, short_sha(&r.sha)
                 )
             })
             .collect();
@@ -376,11 +397,7 @@ pub fn contracts(
     }
     if mismatches_only {
         if mismatch_lines.is_empty() {
-            let scope = repo_filter.unwrap_or("all repos");
-            return Ok(truncate_to_budget(
-                &format!("contracts: 0 mismatches ({scope})\n"),
-                max_bytes,
-            ));
+            return Ok(empty_scoped_budget("contracts: 0 mismatches", repo_filter, max_bytes));
         }
         let header = format!("contracts: {} mismatch(es)", mismatch_lines.len());
         return Ok(render_contracts_list(header, mismatch_lines, limit, max_bytes));
@@ -388,9 +405,9 @@ pub fn contracts(
 
     let eps = store.load_endpoints_with_contracts(repo_filter)?;
     if eps.is_empty() && mismatch_lines.is_empty() {
-        let scope = repo_filter.unwrap_or("all repos");
-        return Ok(truncate_to_budget(
-            &format!("contracts: 0 endpoints with payload contracts ({scope})\n"),
+        return Ok(empty_scoped_budget(
+            "contracts: 0 endpoints with payload contracts",
+            repo_filter,
             max_bytes,
         ));
     }
@@ -416,6 +433,78 @@ pub fn contracts(
         items.push(format_endpoint_contract_line(ep));
     }
     Ok(render_contracts_list(header, items, limit, max_bytes))
+}
+
+pub fn unverified(store: &GraphStore, repo_filter: Option<&str>, limit: Option<usize>, max_bytes: usize) -> Result<String> {
+    output::validate_budget(max_bytes)?;
+    let rows = store.load_unverified_cross_repo_edges(repo_filter)?;
+    if rows.is_empty() {
+        return Ok(empty_scoped_budget("unverified: 0 cross-repo edges", repo_filter, max_bytes));
+    }
+    let changed = rows
+        .iter()
+        .filter(|r| {
+            PairVerifyState::from_keys(&r.verify.pair_key, &r.verify.verified_pair_key)
+                == PairVerifyState::UnverifiedSinceChange
+        })
+        .count();
+    let header = format!(
+        "unverified: {} cross-repo edge(s) ({changed} changed since verified, {} never verified)",
+        rows.len(),
+        rows.len().saturating_sub(changed)
+    );
+    let items: Vec<String> = rows.iter().map(format_unverified_line).collect();
+    Ok(render_contracts_list(header, items, limit, max_bytes))
+}
+
+fn format_unverified_line(r: &UnverifiedEdgeRow) -> String {
+    let badge = match PairVerifyState::from_keys(&r.verify.pair_key, &r.verify.verified_pair_key) {
+        PairVerifyState::UnverifiedSinceChange => {
+            format!("changed since verified @{}", short_sha(&r.verify.verified_sha))
+        }
+        PairVerifyState::NeverVerified => PairVerifyState::NeverVerified.as_str().to_owned(),
+        PairVerifyState::Verified => PairVerifyState::Verified.as_str().to_owned(),
+    };
+    let (src, dst) = (&r.source, &r.target);
+    format!(
+        "  {} {}:{}{} -> {} {} {}{} [{badge}]",
+        src.service, src.file, src.line, why_parens(&r.caller_chunk),
+        dst.service, r.method.as_str(), r.path_norm, why_parens(&r.handler_chunk),
+    )
+}
+
+pub fn stale_memories(
+    store: &GraphStore,
+    memory_db: &Path,
+    repo_filter: Option<&str>,
+    limit: Option<usize>,
+    max_bytes: usize,
+) -> Result<String> {
+    output::validate_budget(max_bytes)?;
+    let entries = memory::find_stale_memories(store, memory_db, repo_filter);
+    if entries.is_empty() {
+        return Ok(empty_scoped_budget("stale-memories: 0 stale memories", repo_filter, max_bytes));
+    }
+    let breakdown = format_repo_breakdown(entries.iter().map(|e| e.repo.as_str()));
+    let header = format!("stale-memories: {} stale ({breakdown})", entries.len());
+    let items: Vec<String> = entries.iter().map(format_stale_memory_line).collect();
+    Ok(render_contracts_list(header, items, limit, max_bytes))
+}
+
+fn format_stale_memory_line(e: &memory::StaleMemoryEntry) -> String {
+    let clean_title = e
+        .title
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .replace('"', "'");
+    format!(
+        "  {} \"{}\" [{}: {}]",
+        e.id,
+        output::prefix(&clean_title, 48).trim_end(),
+        e.reason.as_str(),
+        e.anchor,
+    )
 }
 
 fn render_contracts_list(
@@ -522,8 +611,12 @@ fn format_cross_repo_group(label: &str, edges: &[CrossRepoEdgeInfo]) -> String {
     let mut peers = BTreeSet::new();
     let mut routes = Vec::new();
     let mut seen_routes = BTreeSet::new();
+    let mut last_verified_sha: Option<&str> = None;
     for e in edges {
         peers.insert(e.peer_service.as_str());
+        if last_verified_sha.is_none() && !e.verify.verified_sha.is_empty() {
+            last_verified_sha = Some(e.verify.verified_sha.as_str());
+        }
         let route = format!("{} {}", e.method.as_str(), e.path_norm);
         if seen_routes.insert(route.clone()) && routes.len() < TOUCH_ROUTE_PREVIEW {
             routes.push(route);
@@ -536,8 +629,9 @@ fn format_cross_repo_group(label: &str, edges: &[CrossRepoEdgeInfo]) -> String {
     } else {
         String::new()
     };
+    let verified_suffix = format_last_verified_suffix(last_verified_sha);
     format!(
-        "{label}{} ({}{})",
+        "{label}{} ({}{}){verified_suffix}",
         peer_list.join(","),
         routes.join(", "),
         suffix
@@ -562,19 +656,17 @@ fn append_call_provider_lines(
     append_call_provider_lines_tracked(store, calls, max_items, lines, None)
 }
 
-#[allow(clippy::type_complexity)]
 fn append_call_provider_lines_tracked(
     store: &GraphStore,
     calls: &[CallRow],
     max_items: usize,
     lines: &mut Vec<String>,
-    mut mem_track: Option<(&mut Vec<(String, String)>, &mut Vec<(HttpMethod, String)>)>,
+    mut mem_track: Option<&mut MemCollector>,
 ) -> Result<()> {
     let take = calls.len().min(max_items);
     for call in calls.iter().take(take) {
-        if let Some((files, eps)) = mem_track.as_mut() {
-            files.push((call.repo.clone(), call.file.clone()));
-            eps.push((call.method, call.path_norm.clone()));
+        if let Some(mem) = mem_track.as_mut() {
+            mem.add_call(call);
         }
         let why_part = why_parens(&call.why);
         let head = format!(
@@ -594,9 +686,8 @@ fn append_call_provider_lines_tracked(
             continue;
         }
         for prov in providers {
-            if let Some((files, eps)) = mem_track.as_mut() {
-                files.push((prov.endpoint.repo.clone(), prov.endpoint.file.clone()));
-                eps.push((prov.endpoint.method, prov.endpoint.path_norm.clone()));
+            if let Some(mem) = mem_track.as_mut() {
+                mem.add_endpoint(&prov.endpoint);
             }
             let mismatch_tag = check_request_mismatch(
                 prov.endpoint.req_contract.as_ref(),
@@ -604,8 +695,9 @@ fn append_call_provider_lines_tracked(
             )
             .map(|m| format!(" [{}]", m.format_compact()))
             .unwrap_or_default();
+            let verify_tag = format_verify_badge(&prov.verify);
             lines.push(format!(
-                "{head} {} {}:{}@{} [{}]{mismatch_tag}{why_part}",
+                "{head} {} {}:{}@{} [{}]{verify_tag}{mismatch_tag}{why_part}",
                 prov.endpoint.service,
                 prov.endpoint.file,
                 prov.endpoint.line,
@@ -618,6 +710,18 @@ fn append_call_provider_lines_tracked(
         lines.push(format!("  +{} more", calls.len() - take));
     }
     Ok(())
+}
+
+fn format_verify_badge(meta: &EdgeVerifyMeta) -> String {
+    match PairVerifyState::from_keys(&meta.pair_key, &meta.verified_pair_key) {
+        PairVerifyState::Verified if !meta.verified_sha.is_empty() => {
+            format!(" [verified @{}]", short_sha(&meta.verified_sha))
+        }
+        PairVerifyState::UnverifiedSinceChange if !meta.verified_sha.is_empty() => {
+            format!(" [changed since verified @{}]", short_sha(&meta.verified_sha))
+        }
+        _ => String::new(),
+    }
 }
 
 fn wrap_why(why: &str, prefix: &str, suffix: &str) -> String {
@@ -680,8 +784,9 @@ fn format_grouped_callers(
             let mismatch_tag = check_request_mismatch(provider_req, edge.call.req_contract.as_ref())
                 .map(|m| format!(" [{}]", m.format_compact()))
                 .unwrap_or_default();
+            let verify_tag = format_verify_badge(&edge.verify);
             format!(
-                "  <- {} {}:{} [{}]{mismatch_tag}{}",
+                "  <- {} {}:{} [{}]{verify_tag}{mismatch_tag}{}",
                 edge.call.service,
                 edge.call.file,
                 edge.call.line,
@@ -707,6 +812,7 @@ fn format_spa_group(
     let mut seen_first = BTreeSet::new();
     let mut best_conf = Confidence::Suffix;
     let mut sample_why = "";
+    let mut verify_tag = String::new();
     for edge in group {
         unique_files.insert(edge.call.file.as_str());
         if !edge.call.area.is_empty() {
@@ -718,6 +824,10 @@ fn format_spa_group(
         if sample_why.is_empty() && !edge.call.why.is_empty() {
             sample_why = edge.call.why.as_str();
         }
+        let edge_badge = format_verify_badge(&edge.verify);
+        if edge_badge.contains("changed since") || (verify_tag.is_empty() && !edge_badge.is_empty()) {
+            verify_tag = edge_badge;
+        }
         if seen_first.insert(edge.call.file.as_str()) && first_files.len() < SPA_FILE_PREVIEW {
             first_files.push(format!("{}:{}", edge.call.file, edge.call.line));
         }
@@ -725,7 +835,7 @@ fn format_spa_group(
     let pages_text = format_spa_pages_text(unique_files.len(), &areas);
     let mismatch_tag = format_spa_mismatch_tag(provider_req, group);
     format!(
-        "  <- {service}: {pages_text} ({}) [{}]{mismatch_tag}{}",
+        "  <- {service}: {pages_text} ({}) [{}]{verify_tag}{mismatch_tag}{}",
         first_files.join(", "),
         best_conf.as_str(),
         why_dash(sample_why)
@@ -891,6 +1001,7 @@ mod tests {
                 peer_service: format!("service-{i}"),
                 method: HttpMethod::Post,
                 path_norm: format!("/api/v1/very/long/resource/path/segment/{i}"),
+                verify: EdgeVerifyMeta::default(),
             })
             .collect();
         let text = format_touch_impact(
@@ -912,6 +1023,7 @@ mod tests {
                     peer_service: "ez-commerce-api".to_owned(),
                     method: HttpMethod::Post,
                     path_norm: "/api/internal/invoices".to_owned(),
+                    verify: EdgeVerifyMeta::default(),
                 }],
             )],
             300,

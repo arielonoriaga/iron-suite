@@ -16,7 +16,7 @@ use super::scan::{
     rust_code_mask, skip_ascii_ws, sort_extracted_endpoints, split_top_level_args,
     unquote_double_string,
 };
-use super::types::{ExtractedEndpoint, HttpMethod, PrefixState};
+use super::types::{EndpointChunkRefs, ExtractedEndpoint, HttpMethod, PrefixState};
 
 const METHOD_MERGE: &str = "merge";
 const LAYER_METHODS: &[&str] = &["layer", "route_layer", "with_state"];
@@ -618,14 +618,15 @@ fn append_resolved_file_routes(
         );
         let path_norm = normalize_path(&full_raw);
         if !path_norm.is_empty() {
-            let (req_contract, res_contract) = resolve_route_contracts(
+            let resolved = resolve_route_contracts(
                 file,
                 &route.handler,
                 structs,
                 handlers,
                 dep_files.as_deref_mut(),
             );
-            let contract_hash = compute_contract_hash(req_contract.as_ref(), res_contract.as_ref());
+            let contract_hash =
+                compute_contract_hash(resolved.req.as_ref(), resolved.res.as_ref());
             endpoints.push(ExtractedEndpoint {
                 method: route.method,
                 path_raw: full_raw,
@@ -634,12 +635,20 @@ fn append_resolved_file_routes(
                 line: route.line,
                 handler: route.handler.clone(),
                 prefix_state,
-                req_contract,
-                res_contract,
+                req_contract: resolved.req,
+                res_contract: resolved.res,
                 contract_hash,
+                chunk_refs: resolved.chunk_refs,
             });
         }
     }
+}
+
+#[derive(Default)]
+struct ResolvedRouteMeta {
+    req: Option<PayloadContract>,
+    res: Option<PayloadContract>,
+    chunk_refs: EndpointChunkRefs,
 }
 
 fn resolve_route_contracts(
@@ -648,34 +657,47 @@ fn resolve_route_contracts(
     structs: &CrateStructIndex,
     handlers: &HandlerIndex,
     mut dep_files: Option<&mut HashSet<String>>,
-) -> (Option<PayloadContract>, Option<PayloadContract>) {
+) -> ResolvedRouteMeta {
     let Some(sig) = handlers.lookup(&file.crate_key, &file.rel_file, handler_name) else {
-        return (None, None);
+        return ResolvedRouteMeta::default();
     };
     if sig.file != file.rel_file
         && let Some(deps) = dep_files.as_deref_mut()
     {
         deps.insert(sig.file.clone());
     }
+    let mut chunk_refs = EndpointChunkRefs {
+        handler: Some((sig.file.clone(), sig.name.clone())),
+        req_type: None,
+        res_type: None,
+    };
     let req = sig.req.as_ref().map(|(kind, ty)| {
-        if let Some(sf) = structs.find_struct_file(&sig.crate_key, &sig.file, ty)
-            && sf != file.rel_file
-            && let Some(deps) = dep_files.as_deref_mut()
-        {
-            deps.insert(sf.to_owned());
+        if let Some(chunk_ref) = structs.find_struct_chunk_ref(&sig.crate_key, &sig.file, ty) {
+            if chunk_ref.0 != file.rel_file
+                && let Some(deps) = dep_files.as_deref_mut()
+            {
+                deps.insert(chunk_ref.0.clone());
+            }
+            chunk_refs.req_type = Some(chunk_ref);
         }
         structs.resolve_struct_contract(&sig.crate_key, &sig.file, ty, *kind, true)
     });
     let res = sig.res.as_ref().map(|ty| {
-        if let Some(sf) = structs.find_struct_file(&sig.crate_key, &sig.file, ty)
-            && sf != file.rel_file
-            && let Some(deps) = dep_files
-        {
-            deps.insert(sf.to_owned());
+        if let Some(chunk_ref) = structs.find_struct_chunk_ref(&sig.crate_key, &sig.file, ty) {
+            if chunk_ref.0 != file.rel_file
+                && let Some(deps) = dep_files
+            {
+                deps.insert(chunk_ref.0.clone());
+            }
+            chunk_refs.res_type = Some(chunk_ref);
         }
         structs.resolve_struct_contract(&sig.crate_key, &sig.file, ty, PayloadKind::Json, false)
     });
-    (req, res)
+    ResolvedRouteMeta {
+        req,
+        res,
+        chunk_refs,
+    }
 }
 
 fn collect_entry_module_prefixes(

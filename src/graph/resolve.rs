@@ -494,18 +494,15 @@ mod tests {
             service: service.to_owned(),
             repo: service.to_owned(),
             verified_sha: "abcdef123456".to_owned(),
-            ep: super::super::ExtractedEndpoint {
+            chunk_ids: Default::default(),
+            ep: super::super::ExtractedEndpoint::simple(
                 method,
-                path_raw: path_norm.to_owned(),
-                path_norm: path_norm.to_owned(),
-                file: "src/api.rs".to_owned(),
-                line: 10,
-                handler: "handler".to_owned(),
+                path_norm,
+                "src/api.rs",
+                10,
+                "handler",
                 prefix_state,
-                req_contract: None,
-                res_contract: None,
-                contract_hash: String::new(),
-            },
+            ),
         }
     }
 
@@ -523,6 +520,7 @@ mod tests {
             service: service.to_owned(),
             repo: repo.to_owned(),
             verified_sha: "123456abcdef".to_owned(),
+            caller_chunk_id: None,
             call: super::super::ExtractedCall {
                 method,
                 path_raw: path_norm.to_owned(),

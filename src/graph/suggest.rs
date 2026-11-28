@@ -838,44 +838,32 @@ mod tests {
         services.insert("svc-a".to_owned(), axum_svc("repo-a", None));
         services.insert("svc-b".to_owned(), axum_svc("repo-b", None));
         let config = GraphConfig::with_services(std::path::PathBuf::from("/tmp"), services);
+        let make_ep = |id, svc: &str, repo: &str, sha: &str, path: &str, file: &str, h: &str| {
+            EndpointRow {
+                id,
+                service: svc.to_owned(),
+                repo: repo.to_owned(),
+                verified_sha: sha.to_owned(),
+                chunk_ids: Default::default(),
+                ep: resolved_ep(HttpMethod::Get, path, file, h),
+            }
+        };
+        let make_call = |id, path: &str| CallRow {
+            id,
+            service: "svc-c".to_owned(),
+            repo: "repo-c".to_owned(),
+            verified_sha: "ccccccc".to_owned(),
+            caller_chunk_id: None,
+            call: fog_call(HttpMethod::Get, path, "src/mixed.rs"),
+        };
         let endpoints = vec![
-            EndpointRow {
-                id: 1,
-                service: "svc-a".to_owned(),
-                repo: "repo-a".to_owned(),
-                verified_sha: "aaaaaaa".to_owned(),
-                ep: resolved_ep(HttpMethod::Get, "/api/v1/orders", "src/a.rs", "orders_a"),
-            },
-            EndpointRow {
-                id: 2,
-                service: "svc-b".to_owned(),
-                repo: "repo-b".to_owned(),
-                verified_sha: "bbbbbbb".to_owned(),
-                ep: resolved_ep(HttpMethod::Get, "/pref/api/v1/orders", "src/b.rs", "orders_b"),
-            },
-            EndpointRow {
-                id: 3,
-                service: "svc-b".to_owned(),
-                repo: "repo-b".to_owned(),
-                verified_sha: "bbbbbbb".to_owned(),
-                ep: resolved_ep(HttpMethod::Get, "/pref/v1/extra", "src/b.rs", "extra_b"),
-            },
+            make_ep(1, "svc-a", "repo-a", "aaaaaaa", "/api/v1/orders", "src/a.rs", "orders_a"),
+            make_ep(2, "svc-b", "repo-b", "bbbbbbb", "/pref/api/v1/orders", "src/b.rs", "orders_b"),
+            make_ep(3, "svc-b", "repo-b", "bbbbbbb", "/pref/v1/extra", "src/b.rs", "extra_b"),
         ];
         let calls = vec![
-            CallRow {
-                id: 10,
-                service: "svc-c".to_owned(),
-                repo: "repo-c".to_owned(),
-                verified_sha: "ccccccc".to_owned(),
-                call: fog_call(HttpMethod::Get, "/api/v1/orders", "src/mixed.rs"),
-            },
-            CallRow {
-                id: 11,
-                service: "svc-c".to_owned(),
-                repo: "repo-c".to_owned(),
-                verified_sha: "ccccccc".to_owned(),
-                call: fog_call(HttpMethod::Get, "/v1/extra", "src/mixed.rs"),
-            },
+            make_call(10, "/api/v1/orders"),
+            make_call(11, "/v1/extra"),
         ];
         let mut suggestions = GraphSuggestions::default();
         suggestions

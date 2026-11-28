@@ -12,29 +12,41 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension, Transaction, Transactio
 
 use crate::aliases::ensure_private_dir;
 
+use super::chunks::compute_pair_key;
 use super::contracts::{BreakingKind, PayloadContract};
 use super::nginx::NginxRoute;
 use super::scan::matches_external_glob;
 use super::types::{
-    Confidence, ExtractedCall, ExtractedEndpoint, HttpMethod, PrefixState, ServiceConfig, Stack,
+    ChunkKind, Confidence, ExtractedCall, ExtractedChunk, ExtractedEndpoint, HttpMethod,
+    PrefixState, ServiceConfig, Stack,
 };
 
 const GRAPH_APPLICATION_ID: i64 = 0x4952_4750;
-const GRAPH_SCHEMA_VERSION: i64 = 3;
+const GRAPH_SCHEMA_VERSION: i64 = 4;
 const BUSY_TIMEOUT_SECS: u64 = 5;
 const LOCK_TIMEOUT_SECS: u64 = 10;
 const LOCK_POLL_MS: u64 = 20;
 const SCHEMA_OBJECT_TABLE: &str = "table";
 const TABLE_EDGE_HISTORY: &str = "edge_history";
 const SERVICE_SCOPED_TABLES: &[&str] = &["endpoints", "calls", "file_hashes"];
-const REPO_SCOPED_TABLES: &[&str] = &["endpoints", "calls", "file_hashes", "services", "repos"];
-const CROSS_REPO_SERVED_SQL: &str = "SELECT DISTINCT c.repo, c.service, ep.method, ep.path_norm
+const REPO_SCOPED_TABLES: &[&str] = &[
+    "endpoints",
+    "calls",
+    "file_hashes",
+    "chunks",
+    "removed_chunks",
+    "services",
+    "repos",
+];
+const CROSS_REPO_SERVED_SQL: &str = "SELECT DISTINCT c.repo, c.service, ep.method, ep.path_norm,
+            e.pair_key, e.verified_pair_key, e.verified_sha
      FROM endpoints ep
      JOIN edges e ON e.endpoint_id = ep.id
      JOIN calls c ON c.id = e.call_id
      WHERE ep.repo = ?1 AND ep.file = ?2 AND c.repo != ep.repo
      ORDER BY c.service, ep.method, ep.path_norm";
-const CROSS_REPO_CALLED_SQL: &str = "SELECT DISTINCT ep.repo, ep.service, c.method, ep.path_norm
+const CROSS_REPO_CALLED_SQL: &str = "SELECT DISTINCT ep.repo, ep.service, c.method, ep.path_norm,
+            e.pair_key, e.verified_pair_key, e.verified_sha
      FROM calls c
      JOIN edges e ON e.call_id = c.id
      JOIN endpoints ep ON ep.id = e.endpoint_id
@@ -133,6 +145,31 @@ pub struct FileHashRow {
     pub content_hash: String,
     pub service: String,
     pub has_router_deps: bool,
+    pub norm_file_hash: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ChunkRow {
+    pub id: i64,
+    pub repo: String,
+    pub file: String,
+    pub kind: ChunkKind,
+    pub qualified_name: String,
+    pub start_line: usize,
+    pub end_line: usize,
+    pub norm_hash: String,
+    pub first_seen_hash: String,
+    pub first_seen_at: i64,
+    pub hash_changed_at: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct RemovedChunkRow {
+    pub repo: String,
+    pub file: String,
+    pub kind: ChunkKind,
+    pub qualified_name: String,
+    pub removed_at: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -145,12 +182,27 @@ pub struct ServiceRow {
     pub base_prefix: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct EndpointChunkIds {
+    pub handler: Option<i64>,
+    pub req_type: Option<i64>,
+    pub res_type: Option<i64>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct EdgeVerifyMeta {
+    pub pair_key: String,
+    pub verified_pair_key: String,
+    pub verified_sha: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct EndpointRow {
     pub id: i64,
     pub service: String,
     pub repo: String,
     pub verified_sha: String,
+    pub chunk_ids: EndpointChunkIds,
     pub ep: ExtractedEndpoint,
 }
 
@@ -168,6 +220,7 @@ pub struct CallRow {
     pub service: String,
     pub repo: String,
     pub verified_sha: String,
+    pub caller_chunk_id: Option<i64>,
     pub call: ExtractedCall,
 }
 
@@ -207,6 +260,9 @@ pub struct ExistingEdgeSnapshot {
     pub last_seen_sha: String,
     pub seen_count: i64,
     pub first_seen_at: i64,
+    pub verify: EdgeVerifyMeta,
+    pub verified_at: i64,
+    pub pair_changed_at: i64,
 }
 
 impl ExistingEdgeSnapshot {
@@ -251,6 +307,7 @@ pub struct CrossRepoEdgeInfo {
     pub peer_service: String,
     pub method: HttpMethod,
     pub path_norm: String,
+    pub verify: EdgeVerifyMeta,
 }
 
 #[derive(Debug, Clone)]
@@ -258,12 +315,27 @@ pub struct CallerEdge {
     pub call: CallRow,
     pub service_stack: Stack,
     pub confidence: Confidence,
+    pub verify: EdgeVerifyMeta,
 }
 
 #[derive(Debug, Clone)]
 pub struct ProviderEdge {
     pub endpoint: EndpointRow,
     pub confidence: Confidence,
+    pub verify: EdgeVerifyMeta,
+}
+
+#[derive(Debug, Clone)]
+pub struct UnverifiedEdgeRow {
+    pub source: SiteRef,
+    pub target: SiteRef,
+    pub method: HttpMethod,
+    pub path_norm: String,
+    pub confidence: Confidence,
+    pub verify: EdgeVerifyMeta,
+    pub pair_changed_at: i64,
+    pub caller_chunk: String,
+    pub handler_chunk: String,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -273,11 +345,14 @@ pub struct GraphCounts {
     pub edges: usize,
     pub fog: usize,
     pub fog_by_repo: BTreeMap<String, usize>,
+    pub chunks: usize,
+    pub chunks_by_repo: BTreeMap<String, usize>,
 }
 
 pub struct GraphStore {
     conn: Connection,
     has_contract_cols: bool,
+    has_chunk_cols: bool,
 }
 
 pub struct GraphWriteTx<'a> {
@@ -303,7 +378,30 @@ CREATE TABLE IF NOT EXISTS file_hashes (
     content_hash TEXT NOT NULL,
     service TEXT NOT NULL DEFAULT '',
     has_router_deps INTEGER NOT NULL DEFAULT 0,
+    norm_file_hash TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (repo, file)
+);
+CREATE TABLE IF NOT EXISTS chunks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    repo TEXT NOT NULL,
+    file TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    qualified_name TEXT NOT NULL,
+    start_line INTEGER NOT NULL,
+    end_line INTEGER NOT NULL,
+    norm_hash TEXT NOT NULL,
+    first_seen_hash TEXT NOT NULL DEFAULT '',
+    first_seen_at INTEGER NOT NULL DEFAULT 0,
+    hash_changed_at INTEGER NOT NULL DEFAULT 0,
+    UNIQUE (repo, file, kind, qualified_name)
+);
+CREATE TABLE IF NOT EXISTS removed_chunks (
+    repo TEXT NOT NULL,
+    file TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    qualified_name TEXT NOT NULL,
+    removed_at INTEGER NOT NULL,
+    PRIMARY KEY (repo, file, kind, qualified_name)
 );
 CREATE TABLE IF NOT EXISTS services (
     name TEXT PRIMARY KEY,
@@ -327,7 +425,10 @@ CREATE TABLE IF NOT EXISTS endpoints (
     verified_sha TEXT NOT NULL,
     req_contract TEXT NOT NULL DEFAULT '',
     res_contract TEXT NOT NULL DEFAULT '',
-    contract_hash TEXT NOT NULL DEFAULT ''
+    contract_hash TEXT NOT NULL DEFAULT '',
+    handler_chunk_id INTEGER,
+    req_type_chunk_id INTEGER,
+    res_type_chunk_id INTEGER
 );
 CREATE TABLE IF NOT EXISTS calls (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -344,7 +445,8 @@ CREATE TABLE IF NOT EXISTS calls (
     why TEXT NOT NULL,
     external INTEGER NOT NULL DEFAULT 0,
     verified_sha TEXT NOT NULL,
-    req_contract TEXT NOT NULL DEFAULT ''
+    req_contract TEXT NOT NULL DEFAULT '',
+    caller_chunk_id INTEGER
 );
 CREATE TABLE IF NOT EXISTS edges (
     call_id INTEGER NOT NULL REFERENCES calls(id) ON DELETE CASCADE,
@@ -355,6 +457,11 @@ CREATE TABLE IF NOT EXISTS edges (
     seen_count INTEGER NOT NULL DEFAULT 1,
     first_seen_at INTEGER NOT NULL DEFAULT 0,
     last_seen_at INTEGER NOT NULL DEFAULT 0,
+    pair_key TEXT NOT NULL DEFAULT '',
+    verified_pair_key TEXT NOT NULL DEFAULT '',
+    verified_sha TEXT NOT NULL DEFAULT '',
+    verified_at INTEGER NOT NULL DEFAULT 0,
+    pair_changed_at INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (call_id, endpoint_id)
 );
 CREATE TABLE IF NOT EXISTS edge_history (
@@ -378,6 +485,9 @@ CREATE TABLE IF NOT EXISTS edge_history (
     reason TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_file_hashes_service ON file_hashes(repo, service);
+CREATE INDEX IF NOT EXISTS idx_chunks_repo_file ON chunks(repo, file);
+CREATE INDEX IF NOT EXISTS idx_chunks_repo_name ON chunks(repo, qualified_name);
+CREATE INDEX IF NOT EXISTS idx_removed_chunks_repo ON removed_chunks(repo);
 CREATE INDEX IF NOT EXISTS idx_endpoints_lookup ON endpoints(method, path_norm);
 CREATE INDEX IF NOT EXISTS idx_endpoints_path ON endpoints(path_norm);
 CREATE INDEX IF NOT EXISTS idx_endpoints_file ON endpoints(repo, file);
@@ -391,36 +501,62 @@ CREATE INDEX IF NOT EXISTS idx_edges_call ON edges(call_id);
 CREATE INDEX IF NOT EXISTS idx_edge_history_removed ON edge_history(removed_at);
 ";
 
+const POST_MIGRATION_INDEXES_SQL: &str = "
+CREATE INDEX IF NOT EXISTS idx_endpoints_handler_chunk ON endpoints(handler_chunk_id);
+CREATE INDEX IF NOT EXISTS idx_calls_caller_chunk ON calls(caller_chunk_id);
+";
+
+const FILE_HASH_MIGRATION_COLUMNS: &[(&str, &str)] = &[
+    ("norm_file_hash", "TEXT NOT NULL DEFAULT ''"),
+];
 const EDGE_MIGRATION_COLUMNS: &[(&str, &str)] = &[
     ("first_seen_sha", "TEXT NOT NULL DEFAULT ''"),
     ("last_seen_sha", "TEXT NOT NULL DEFAULT ''"),
     ("seen_count", "INTEGER NOT NULL DEFAULT 1"),
     ("first_seen_at", "INTEGER NOT NULL DEFAULT 0"),
     ("last_seen_at", "INTEGER NOT NULL DEFAULT 0"),
+    ("pair_key", "TEXT NOT NULL DEFAULT ''"),
+    ("verified_pair_key", "TEXT NOT NULL DEFAULT ''"),
+    ("verified_sha", "TEXT NOT NULL DEFAULT ''"),
+    ("verified_at", "INTEGER NOT NULL DEFAULT 0"),
+    ("pair_changed_at", "INTEGER NOT NULL DEFAULT 0"),
 ];
 const ENDPOINT_MIGRATION_COLUMNS: &[(&str, &str)] = &[
     ("req_contract", "TEXT NOT NULL DEFAULT ''"),
     ("res_contract", "TEXT NOT NULL DEFAULT ''"),
     ("contract_hash", "TEXT NOT NULL DEFAULT ''"),
+    ("handler_chunk_id", "INTEGER"),
+    ("req_type_chunk_id", "INTEGER"),
+    ("res_type_chunk_id", "INTEGER"),
 ];
 const CALL_MIGRATION_COLUMNS: &[(&str, &str)] = &[
     ("req_contract", "TEXT NOT NULL DEFAULT ''"),
+    ("caller_chunk_id", "INTEGER"),
 ];
 const EDGE_HISTORY_MIGRATION_COLUMNS: &[(&str, &str)] = &[
     ("breaking", "INTEGER NOT NULL DEFAULT 0"),
     ("reason", "TEXT NOT NULL DEFAULT ''"),
 ];
 
-const ENDPOINT_SELECT: &str = "SELECT id, service, repo, method, path_raw, path_norm, file, line, handler, prefix_state, verified_sha, req_contract, res_contract, contract_hash FROM endpoints";
-const ENDPOINT_SELECT_V2: &str = "SELECT id, service, repo, method, path_raw, path_norm, file, line, handler, prefix_state, verified_sha, '' AS req_contract, '' AS res_contract, '' AS contract_hash FROM endpoints";
-const CALL_SELECT: &str = "SELECT id, service, repo, method, path_raw, path_norm, file, line, base_ref, symbol, area, why, external, verified_sha, req_contract FROM calls";
-const CALL_SELECT_V2: &str = "SELECT id, service, repo, method, path_raw, path_norm, file, line, base_ref, symbol, area, why, external, verified_sha, '' AS req_contract FROM calls";
+const EDGE_CHUNK_JOIN_SQL: &str = "
+FROM edges e
+JOIN calls c ON c.id = e.call_id
+JOIN endpoints ep ON ep.id = e.endpoint_id
+LEFT JOIN chunks cc ON cc.id = c.caller_chunk_id
+LEFT JOIN chunks hc ON hc.id = ep.handler_chunk_id";
+const CHUNK_SELECT: &str = "SELECT id, repo, file, kind, qualified_name, start_line, end_line, norm_hash, first_seen_hash, first_seen_at, hash_changed_at FROM chunks";
+const ENDPOINT_SELECT: &str = "SELECT id, service, repo, method, path_raw, path_norm, file, line, handler, prefix_state, verified_sha, req_contract, res_contract, contract_hash, handler_chunk_id, req_type_chunk_id, res_type_chunk_id FROM endpoints";
+const ENDPOINT_SELECT_V3: &str = "SELECT id, service, repo, method, path_raw, path_norm, file, line, handler, prefix_state, verified_sha, req_contract, res_contract, contract_hash, NULL AS handler_chunk_id, NULL AS req_type_chunk_id, NULL AS res_type_chunk_id FROM endpoints";
+const ENDPOINT_SELECT_V2: &str = "SELECT id, service, repo, method, path_raw, path_norm, file, line, handler, prefix_state, verified_sha, '' AS req_contract, '' AS res_contract, '' AS contract_hash, NULL AS handler_chunk_id, NULL AS req_type_chunk_id, NULL AS res_type_chunk_id FROM endpoints";
+const CALL_SELECT: &str = "SELECT id, service, repo, method, path_raw, path_norm, file, line, base_ref, symbol, area, why, external, verified_sha, req_contract, caller_chunk_id FROM calls";
+const CALL_SELECT_V3: &str = "SELECT id, service, repo, method, path_raw, path_norm, file, line, base_ref, symbol, area, why, external, verified_sha, req_contract, NULL AS caller_chunk_id FROM calls";
+const CALL_SELECT_V2: &str = "SELECT id, service, repo, method, path_raw, path_norm, file, line, base_ref, symbol, area, why, external, verified_sha, '' AS req_contract, NULL AS caller_chunk_id FROM calls";
 const SNAPSHOT_SELECT_SQL: &str = "
 SELECT c.service, c.repo, c.file, c.line,
        ep.service, ep.repo, ep.file, ep.line,
        ep.method, ep.path_norm, c.path_norm, e.confidence,
        e.first_seen_sha, e.last_seen_sha, e.seen_count, e.first_seen_at,
-       c.method
+       c.method, e.pair_key, e.verified_pair_key, e.verified_sha, e.verified_at, e.pair_changed_at
 FROM edges e
 JOIN calls c ON c.id = e.call_id
 JOIN endpoints ep ON ep.id = e.endpoint_id";
@@ -458,12 +594,14 @@ impl GraphStore {
             conn.execute_batch("PRAGMA journal_mode = WAL;")?;
             conn.execute_batch(SCHEMA_SQL)?;
             migrate_schema_columns(&conn)?;
+            conn.execute_batch(POST_MIGRATION_INDEXES_SQL)?;
             conn.pragma_update(None, "application_id", GRAPH_APPLICATION_ID)?;
             conn.pragma_update(None, "user_version", GRAPH_SCHEMA_VERSION)?;
         }
         Ok(Self {
             conn,
             has_contract_cols: true,
+            has_chunk_cols: true,
         })
     }
 
@@ -486,23 +624,32 @@ impl GraphStore {
         conn.execute_batch("PRAGMA query_only = ON;")?;
         let has_contract_cols = table_has_column(&conn, "endpoints", "req_contract")?
             && table_has_column(&conn, "calls", "req_contract")?;
+        let has_chunk_cols = table_exists(&conn, "chunks")?
+            && table_has_column(&conn, "edges", "pair_key")?
+            && table_has_column(&conn, "endpoints", "handler_chunk_id")?
+            && table_has_column(&conn, "calls", "caller_chunk_id")?;
         Ok(Some(Self {
             conn,
             has_contract_cols,
+            has_chunk_cols,
         }))
     }
 
     fn endpoint_select_sql(&self) -> &'static str {
-        if self.has_contract_cols {
+        if self.has_chunk_cols {
             ENDPOINT_SELECT
+        } else if self.has_contract_cols {
+            ENDPOINT_SELECT_V3
         } else {
             ENDPOINT_SELECT_V2
         }
     }
 
     fn call_select_sql(&self) -> &'static str {
-        if self.has_contract_cols {
+        if self.has_chunk_cols {
             CALL_SELECT
+        } else if self.has_contract_cols {
+            CALL_SELECT_V3
         } else {
             CALL_SELECT_V2
         }
@@ -536,7 +683,7 @@ impl GraphStore {
 
     pub fn load_file_hashes(&self, repo: &str) -> Result<HashMap<String, FileHashRow>> {
         let mut stmt = self.conn.prepare(
-            "SELECT file, content_hash, service, has_router_deps FROM file_hashes WHERE repo = ?1",
+            "SELECT file, content_hash, service, has_router_deps, norm_file_hash FROM file_hashes WHERE repo = ?1",
         )?;
         let rows = collect_rows(stmt.query_map(params![repo], map_file_hash_row)?)?;
         Ok(rows.into_iter().map(|r| (r.file.clone(), r)).collect())
@@ -554,13 +701,121 @@ impl GraphStore {
     pub fn get_file_hash(&self, repo: &str, file: &str) -> Result<Option<FileHashRow>> {
         self.conn
             .query_row(
-                "SELECT file, content_hash, service, has_router_deps
+                "SELECT file, content_hash, service, has_router_deps, norm_file_hash
                  FROM file_hashes WHERE repo = ?1 AND file = ?2",
                 params![repo, file],
                 map_file_hash_row,
             )
             .optional()
             .map_err(Into::into)
+    }
+
+    pub fn load_chunks_for_file(&self, repo: &str, file: &str) -> Result<Vec<ChunkRow>> {
+        if !self.has_chunk_cols {
+            return Ok(Vec::new());
+        }
+        load_chunks_for_file_conn(&self.conn, repo, file)
+    }
+
+    pub fn load_chunks_for_repo(&self, repo: Option<&str>) -> Result<Vec<ChunkRow>> {
+        if !self.has_chunk_cols {
+            return Ok(Vec::new());
+        }
+        let mut stmt = self.conn.prepare(&format!(
+            "{CHUNK_SELECT} WHERE (?1 IS NULL OR repo = ?1) ORDER BY repo, file, start_line"
+        ))?;
+        collect_rows(stmt.query_map(params![repo], map_chunk_row)?)
+    }
+
+    pub fn load_removed_chunks(&self, repo: Option<&str>) -> Result<Vec<RemovedChunkRow>> {
+        if !self.has_chunk_cols || !table_exists(&self.conn, "removed_chunks")? {
+            return Ok(Vec::new());
+        }
+        let mut stmt = self.conn.prepare(
+            "SELECT repo, file, kind, qualified_name, removed_at
+             FROM removed_chunks
+             WHERE (?1 IS NULL OR repo = ?1)
+             ORDER BY removed_at DESC",
+        )?;
+        collect_rows(stmt.query_map(params![repo], |r| {
+            let kind_raw: String = r.get(2)?;
+            Ok(RemovedChunkRow {
+                repo: r.get(0)?,
+                file: r.get(1)?,
+                kind: ChunkKind::parse(&kind_raw).unwrap_or(ChunkKind::Fn),
+                qualified_name: r.get(3)?,
+                removed_at: r.get(4)?,
+            })
+        })?)
+    }
+
+    pub fn chunk_names_by_ids(&self, ids: &[i64]) -> Result<Vec<(String, String, String)>> {
+        if !self.has_chunk_cols || ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut stmt = self
+            .conn
+            .prepare("SELECT repo, file, qualified_name FROM chunks WHERE id = ?1")?;
+        let mut seen = HashSet::new();
+        let mut out = Vec::new();
+        for &id in ids {
+            if !seen.insert(id) {
+                continue;
+            }
+            if let Some(row) = stmt
+                .query_row(params![id], |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, String>(2)?,
+                    ))
+                })
+                .optional()?
+            {
+                out.push(row);
+            }
+        }
+        Ok(out)
+    }
+
+    pub fn load_unverified_cross_repo_edges(
+        &self,
+        repo: Option<&str>,
+    ) -> Result<Vec<UnverifiedEdgeRow>> {
+        if !self.has_chunk_cols {
+            return Ok(Vec::new());
+        }
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT c.service, c.repo, c.file, c.line,
+                    ep.service, ep.repo, ep.file, ep.line,
+                    ep.method, ep.path_norm, e.confidence,
+                    e.pair_key, e.verified_pair_key, e.verified_sha, e.pair_changed_at,
+                    COALESCE(cc.qualified_name, ''), COALESCE(hc.qualified_name, '')
+             {EDGE_CHUNK_JOIN_SQL}
+             WHERE c.repo != ep.repo
+               AND e.pair_key != ''
+               AND e.pair_key != e.verified_pair_key
+               AND (?1 IS NULL OR c.repo = ?1 OR ep.repo = ?1)
+             ORDER BY
+               CASE WHEN e.verified_pair_key != '' THEN 0 ELSE 1 END,
+               e.pair_changed_at DESC,
+               ep.repo, ep.method, ep.path_norm, c.repo, c.file, c.line"
+        ))?;
+        collect_rows(stmt.query_map(params![repo], |r| {
+            let method_raw: String = r.get(8)?;
+            let conf_raw: String = r.get(10)?;
+            Ok(UnverifiedEdgeRow {
+                source: map_site_ref(r, 0)?,
+                target: map_site_ref(r, 4)?,
+                method: HttpMethod::parse(&method_raw).unwrap_or(HttpMethod::Any),
+                path_norm: r.get(9)?,
+                confidence: Confidence::parse(&conf_raw).unwrap_or(Confidence::Suffix),
+                verify: map_verify_meta(r, 11)?,
+                pair_changed_at: r.get(14)?,
+                caller_chunk: r.get(15)?,
+                handler_chunk: r.get(16)?,
+            })
+        })?)
     }
 
     pub fn load_all_compose_env(
@@ -606,19 +861,22 @@ impl GraphStore {
     }
 
     pub fn callers_for_endpoint(&self, endpoint_id: i64) -> Result<Vec<CallerEdge>> {
-        callers_for_endpoint_conn(&self.conn, endpoint_id, self.has_contract_cols)
+        callers_for_endpoint_conn(
+            &self.conn,
+            endpoint_id,
+            self.has_contract_cols,
+            self.has_chunk_cols,
+        )
     }
 
     pub fn providers_for_call(&self, call_id: i64) -> Result<Vec<ProviderEdge>> {
-        let ep_contract_cols = if self.has_contract_cols {
-            "ep.req_contract, ep.res_contract, ep.contract_hash"
-        } else {
-            "'' AS req_contract, '' AS res_contract, '' AS contract_hash"
-        };
+        let ep_contract_cols = ep_contract_cols_sql(self.has_contract_cols);
+        let ep_chunk_cols = ep_chunk_cols_sql(self.has_chunk_cols);
+        let edge_pair_cols = edge_pair_cols_sql(self.has_chunk_cols);
         let mut stmt = self.conn.prepare(&format!(
             "SELECT ep.id, ep.service, ep.repo, ep.method, ep.path_raw, ep.path_norm, ep.file,
                     ep.line, ep.handler, ep.prefix_state, ep.verified_sha,
-                    {ep_contract_cols}, e.confidence
+                    {ep_contract_cols}, {ep_chunk_cols}, e.confidence, {edge_pair_cols}
              FROM edges e
              JOIN endpoints ep ON ep.id = e.endpoint_id
              WHERE e.call_id = ?1
@@ -626,10 +884,11 @@ impl GraphStore {
         ))?;
         collect_rows(stmt.query_map(params![call_id], |r| {
             let endpoint = map_endpoint_row(r)?;
-            let conf_raw: String = r.get(14)?;
+            let conf_raw: String = r.get(17)?;
             Ok(ProviderEdge {
                 endpoint,
                 confidence: Confidence::parse(&conf_raw).unwrap_or(Confidence::Suffix),
+                verify: map_verify_meta(r, 18)?,
             })
         })?)
     }
@@ -663,14 +922,11 @@ impl GraphStore {
     }
 
     pub fn unresolved_calls(&self, repo: Option<&str>) -> Result<Vec<CallRow>> {
-        let call_contract_col = if self.has_contract_cols {
-            "c.req_contract"
-        } else {
-            "'' AS req_contract"
-        };
+        let call_contract_col = call_contract_col_sql(self.has_contract_cols);
+        let call_chunk_col = call_chunk_col_sql(self.has_chunk_cols);
         let mut stmt = self.conn.prepare(&format!(
             "SELECT c.id, c.service, c.repo, c.method, c.path_raw, c.path_norm, c.file, c.line,
-                    c.base_ref, c.symbol, c.area, c.why, c.external, c.verified_sha, {call_contract_col}
+                    c.base_ref, c.symbol, c.area, c.why, c.external, c.verified_sha, {call_contract_col}, {call_chunk_col}
              FROM calls c
              LEFT JOIN edges e ON e.call_id = c.id
              WHERE c.external = 0 AND e.call_id IS NULL AND (?1 IS NULL OR c.repo = ?1)
@@ -683,8 +939,9 @@ impl GraphStore {
         if !self.has_contract_cols {
             return Ok(Vec::new());
         }
+        let ep_sel = self.endpoint_select_sql();
         let mut stmt = self.conn.prepare(&format!(
-            "{ENDPOINT_SELECT} WHERE (req_contract != '' OR res_contract != '') AND (?1 IS NULL OR repo = ?1) ORDER BY repo, service, method, path_norm"
+            "{ep_sel} WHERE (req_contract != '' OR res_contract != '') AND (?1 IS NULL OR repo = ?1) ORDER BY repo, service, method, path_norm"
         ))?;
         collect_rows(stmt.query_map(params![repo], map_endpoint_row)?)
     }
@@ -693,21 +950,23 @@ impl GraphStore {
         if !self.has_contract_cols {
             return Ok(Vec::new());
         }
-        let mut stmt = self.conn.prepare(
+        let ep_chunk_cols = ep_chunk_cols_sql(self.has_chunk_cols);
+        let call_chunk_col = call_chunk_col_sql(self.has_chunk_cols);
+        let mut stmt = self.conn.prepare(&format!(
             "SELECT ep.id, ep.service, ep.repo, ep.method, ep.path_raw, ep.path_norm, ep.file,
                     ep.line, ep.handler, ep.prefix_state, ep.verified_sha,
-                    ep.req_contract, ep.res_contract, ep.contract_hash,
+                    ep.req_contract, ep.res_contract, ep.contract_hash, {ep_chunk_cols},
                     c.id, c.service, c.repo, c.method, c.path_raw, c.path_norm, c.file, c.line,
-                    c.base_ref, c.symbol, c.area, c.why, c.external, c.verified_sha, c.req_contract
+                    c.base_ref, c.symbol, c.area, c.why, c.external, c.verified_sha, c.req_contract, {call_chunk_col}
              FROM edges e
              JOIN endpoints ep ON ep.id = e.endpoint_id
              JOIN calls c ON c.id = e.call_id
              WHERE (?1 IS NULL OR ep.repo = ?1 OR c.repo = ?1)
-             ORDER BY ep.repo, ep.method, ep.path_norm, c.repo, c.file, c.line",
-        )?;
+             ORDER BY ep.repo, ep.method, ep.path_norm, c.repo, c.file, c.line"
+        ))?;
         collect_rows(stmt.query_map(params![repo], |r| {
             let ep = map_endpoint_row_at(r, 0)?;
-            let call = map_call_row_at(r, 14)?;
+            let call = map_call_row_at(r, 17)?;
             Ok((ep, call))
         })?)
     }
@@ -729,6 +988,74 @@ impl GraphStore {
     ) -> Result<(Vec<CrossRepoEdgeInfo>, Vec<CrossRepoEdgeInfo>)> {
         let served = self.query_cross_repo_edges(CROSS_REPO_SERVED_SQL, repo, file)?;
         let called = self.query_cross_repo_edges(CROSS_REPO_CALLED_SQL, repo, file)?;
+        Ok((served, called))
+    }
+
+    pub fn cross_repo_edges_for_changed_chunks(
+        &self,
+        repo: &str,
+        file: &str,
+        changed_chunk_ids: &HashSet<i64>,
+    ) -> Result<(Vec<CrossRepoEdgeInfo>, Vec<CrossRepoEdgeInfo>)> {
+        if !self.has_chunk_cols || changed_chunk_ids.is_empty() {
+            return Ok((Vec::new(), Vec::new()));
+        }
+        let file_chunks = self.load_chunks_for_file(repo, file)?;
+        let mut served_stmt = self.conn.prepare(
+            "SELECT DISTINCT c.repo, c.service, ep.method, ep.path_norm,
+                    e.pair_key, e.verified_pair_key, e.verified_sha,
+                    ep.file, ep.line, ep.handler_chunk_id, ep.req_type_chunk_id, ep.res_type_chunk_id
+             FROM endpoints ep
+             JOIN edges e ON e.endpoint_id = ep.id
+             JOIN calls c ON c.id = e.call_id
+             WHERE ep.repo = ?1 AND c.repo != ep.repo
+             ORDER BY c.service, ep.method, ep.path_norm",
+        )?;
+        let mut served = Vec::new();
+        for row in served_stmt.query_map(params![repo], |r| {
+            Ok((
+                map_cross_repo_info(r)?,
+                r.get::<_, String>(7)?,
+                r.get::<_, i64>(8)?.max(0) as usize,
+                r.get::<_, Option<i64>>(9)?,
+                r.get::<_, Option<i64>>(10)?,
+                r.get::<_, Option<i64>>(11)?,
+            ))
+        })? {
+            let (info, ep_file, ep_line, h_id, req_id, res_id) = row?;
+            let enclosing_id = if ep_file == file {
+                enclosing_chunk_id(&file_chunks, ep_line)
+            } else {
+                None
+            };
+            let hit = [h_id, req_id, res_id, enclosing_id]
+                .into_iter()
+                .flatten()
+                .any(|cid| changed_chunk_ids.contains(&cid));
+            if hit {
+                served.push(info);
+            }
+        }
+
+        let mut called_stmt = self.conn.prepare(
+            "SELECT DISTINCT ep.repo, ep.service, c.method, ep.path_norm,
+                    e.pair_key, e.verified_pair_key, e.verified_sha,
+                    c.caller_chunk_id
+             FROM calls c
+             JOIN edges e ON e.call_id = c.id
+             JOIN endpoints ep ON ep.id = e.endpoint_id
+             WHERE c.repo = ?1 AND c.file = ?2 AND ep.repo != c.repo
+             ORDER BY ep.service, c.method, ep.path_norm",
+        )?;
+        let mut called = Vec::new();
+        for row in called_stmt.query_map(params![repo, file], |r| {
+            Ok((map_cross_repo_info(r)?, r.get::<_, Option<i64>>(7)?))
+        })? {
+            let (info, caller_id) = row?;
+            if caller_id.is_some_and(|cid| changed_chunk_ids.contains(&cid)) {
+                called.push(info);
+            }
+        }
         Ok((served, called))
     }
 
@@ -813,9 +1140,8 @@ impl GraphStore {
         let edges: i64 = self
             .conn
             .query_row("SELECT COUNT(*) FROM edges", [], |r| r.get(0))?;
-        let mut fog_by_repo = BTreeMap::new();
-        let mut fog_total = 0usize;
-        let mut stmt = self.conn.prepare(
+        let (fog_total, fog_by_repo) = count_by_repo_conn(
+            &self.conn,
             "SELECT c.repo, COUNT(*)
              FROM calls c
              LEFT JOIN edges e ON e.call_id = c.id
@@ -823,18 +1149,22 @@ impl GraphStore {
              GROUP BY c.repo
              ORDER BY c.repo",
         )?;
-        for row in stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))? {
-            let (repo, count) = row?;
-            let count = count.max(0) as usize;
-            fog_total += count;
-            fog_by_repo.insert(repo, count);
-        }
+        let (chunks_total, chunks_by_repo) = if self.has_chunk_cols {
+            count_by_repo_conn(
+                &self.conn,
+                "SELECT repo, COUNT(*) FROM chunks GROUP BY repo ORDER BY repo",
+            )?
+        } else {
+            (0, BTreeMap::new())
+        };
         Ok(GraphCounts {
             endpoints: endpoints.max(0) as usize,
             calls: calls.max(0) as usize,
             edges: edges.max(0) as usize,
             fog: fog_total,
             fog_by_repo,
+            chunks: chunks_total,
+            chunks_by_repo,
         })
     }
 }
@@ -990,22 +1320,159 @@ impl GraphWriteTx<'_> {
         Ok(())
     }
 
+    pub fn delete_chunks_for_files(
+        &self,
+        repo: &str,
+        files: &[String],
+        now_ms: i64,
+    ) -> Result<usize> {
+        if files.is_empty() {
+            return Ok(0);
+        }
+        let mut ins_rem = self.tx.prepare(
+            "INSERT OR REPLACE INTO removed_chunks(repo, file, kind, qualified_name, removed_at)
+             SELECT repo, file, kind, qualified_name, ?3 FROM chunks WHERE repo = ?1 AND file = ?2",
+        )?;
+        let mut del = self
+            .tx
+            .prepare("DELETE FROM chunks WHERE repo = ?1 AND file = ?2")?;
+        let mut removed = 0usize;
+        for file in files {
+            ins_rem.execute(params![repo, file, now_ms])?;
+            removed += del.execute(params![repo, file])?;
+        }
+        Ok(removed)
+    }
+
+    pub fn upsert_file_chunks(
+        &self,
+        repo: &str,
+        file: &str,
+        chunks: &[ExtractedChunk],
+        now_ms: i64,
+    ) -> Result<(usize, Vec<i64>)> {
+        let old_rows = load_chunks_for_file_conn(&self.tx, repo, file)?;
+        let mut old_by_key: HashMap<(ChunkKind, String), ChunkRow> = old_rows
+            .into_iter()
+            .map(|r| ((r.kind, r.qualified_name.clone()), r))
+            .collect();
+
+        let mut upsert_stmt = self.tx.prepare(
+            "INSERT INTO chunks(
+                repo, file, kind, qualified_name, start_line, end_line,
+                norm_hash, first_seen_hash, first_seen_at, hash_changed_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, ?8, 0)
+             ON CONFLICT(repo, file, kind, qualified_name) DO UPDATE SET
+               start_line = excluded.start_line,
+               end_line = excluded.end_line,
+               hash_changed_at = CASE
+                 WHEN chunks.norm_hash != excluded.norm_hash THEN excluded.first_seen_at
+                 ELSE chunks.hash_changed_at
+               END,
+               norm_hash = excluded.norm_hash",
+        )?;
+        let mut id_stmt = self.tx.prepare(
+            "SELECT id FROM chunks WHERE repo = ?1 AND file = ?2 AND kind = ?3 AND qualified_name = ?4",
+        )?;
+        let mut clear_rem = self.tx.prepare(
+            "DELETE FROM removed_chunks WHERE repo = ?1 AND file = ?2 AND kind = ?3 AND qualified_name = ?4",
+        )?;
+
+        let mut changed_count = 0usize;
+        let mut changed_ids = Vec::new();
+        for chunk in chunks {
+            let key = (chunk.kind, chunk.qualified_name.clone());
+            let prev = old_by_key.remove(&key);
+            let hash_changed = prev
+                .as_ref()
+                .is_none_or(|p| p.norm_hash != chunk.norm_hash);
+            let lines_changed = prev
+                .as_ref()
+                .is_none_or(|p| p.start_line != chunk.start_line || p.end_line != chunk.end_line);
+            if hash_changed || lines_changed {
+                upsert_stmt.execute(params![
+                    repo,
+                    file,
+                    chunk.kind.as_str(),
+                    chunk.qualified_name,
+                    chunk.start_line as i64,
+                    chunk.end_line as i64,
+                    chunk.norm_hash,
+                    now_ms,
+                ])?;
+            }
+            if hash_changed {
+                changed_count += 1;
+                if prev.is_none() {
+                    clear_rem.execute(params![
+                        repo,
+                        file,
+                        chunk.kind.as_str(),
+                        chunk.qualified_name,
+                    ])?;
+                }
+                let cid: i64 = id_stmt.query_row(
+                    params![repo, file, chunk.kind.as_str(), chunk.qualified_name],
+                    |r| r.get(0),
+                )?;
+                changed_ids.push(cid);
+            }
+        }
+        drop(upsert_stmt);
+        drop(id_stmt);
+        drop(clear_rem);
+
+        if !old_by_key.is_empty() {
+            let mut del_stmt = self.tx.prepare("DELETE FROM chunks WHERE id = ?1")?;
+            let mut rem_stmt = self.tx.prepare(
+                "INSERT OR REPLACE INTO removed_chunks(repo, file, kind, qualified_name, removed_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+            )?;
+            for ((kind, qname), old_row) in old_by_key {
+                del_stmt.execute(params![old_row.id])?;
+                rem_stmt.execute(params![repo, file, kind.as_str(), qname, now_ms])?;
+                changed_count += 1;
+            }
+        }
+        Ok((changed_count, changed_ids))
+    }
+
     pub fn insert_endpoints(
         &self,
         repo: &str,
         head_sha: &str,
         service_endpoints: &[(String, Vec<ExtractedEndpoint>)],
     ) -> Result<()> {
+        let mut chunk_cache: HashMap<String, Vec<ChunkRow>> = HashMap::new();
         let mut stmt = self.tx.prepare(
             "INSERT INTO endpoints(
                 service, repo, method, path_raw, path_norm, file, line, handler, prefix_state,
-                verified_sha, req_contract, res_contract, contract_hash
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                verified_sha, req_contract, res_contract, contract_hash,
+                handler_chunk_id, req_type_chunk_id, res_type_chunk_id
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
         )?;
         for (service, endpoints) in service_endpoints {
             for ep in endpoints {
                 let req_json = serialize_contract(ep.req_contract.as_ref());
                 let res_json = serialize_contract(ep.res_contract.as_ref());
+                let handler_chunk_id = resolve_endpoint_handler_chunk(
+                    &self.tx,
+                    repo,
+                    ep,
+                    &mut chunk_cache,
+                )?;
+                let req_type_chunk_id = resolve_chunk_ref_cached(
+                    &self.tx,
+                    repo,
+                    ep.chunk_refs.req_type.as_ref(),
+                    &mut chunk_cache,
+                )?;
+                let res_type_chunk_id = resolve_chunk_ref_cached(
+                    &self.tx,
+                    repo,
+                    ep.chunk_refs.res_type.as_ref(),
+                    &mut chunk_cache,
+                )?;
                 stmt.execute(params![
                     service,
                     repo,
@@ -1020,6 +1487,9 @@ impl GraphWriteTx<'_> {
                     req_json,
                     res_json,
                     ep.contract_hash,
+                    handler_chunk_id,
+                    req_type_chunk_id,
+                    res_type_chunk_id,
                 ])?;
             }
         }
@@ -1032,15 +1502,18 @@ impl GraphWriteTx<'_> {
         head_sha: &str,
         service_calls: &[(String, Vec<ExtractedCall>)],
     ) -> Result<()> {
+        let mut chunk_cache: HashMap<String, Vec<ChunkRow>> = HashMap::new();
         let mut stmt = self.tx.prepare(
             "INSERT INTO calls(
                 service, repo, method, path_raw, path_norm, file, line, base_ref, symbol, area,
-                why, external, verified_sha, req_contract
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                why, external, verified_sha, req_contract, caller_chunk_id
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
         )?;
         for (service, calls) in service_calls {
             for c in calls {
                 let req_json = serialize_contract(c.req_contract.as_ref());
+                let file_chunks = cached_file_chunks(&self.tx, repo, &c.file, &mut chunk_cache)?;
+                let caller_chunk_id = enclosing_chunk_id(file_chunks, c.line);
                 stmt.execute(params![
                     service,
                     repo,
@@ -1056,6 +1529,7 @@ impl GraphWriteTx<'_> {
                     i64::from(c.external),
                     head_sha,
                     req_json,
+                    caller_chunk_id,
                 ])?;
             }
         }
@@ -1067,12 +1541,13 @@ impl GraphWriteTx<'_> {
             return Ok(());
         }
         let mut stmt = self.tx.prepare(
-            "INSERT INTO file_hashes(repo, file, content_hash, service, has_router_deps)
-             VALUES (?1, ?2, ?3, ?4, ?5)
+            "INSERT INTO file_hashes(repo, file, content_hash, service, has_router_deps, norm_file_hash)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
              ON CONFLICT(repo, file) DO UPDATE SET
                content_hash = excluded.content_hash,
                service = excluded.service,
-               has_router_deps = excluded.has_router_deps",
+               has_router_deps = excluded.has_router_deps,
+               norm_file_hash = excluded.norm_file_hash",
         )?;
         for row in rows {
             stmt.execute(params![
@@ -1081,8 +1556,17 @@ impl GraphWriteTx<'_> {
                 row.content_hash,
                 row.service,
                 i64::from(row.has_router_deps),
+                row.norm_file_hash,
             ])?;
         }
+        Ok(())
+    }
+
+    pub fn update_file_content_hash(&self, repo: &str, file: &str, content_hash: &str) -> Result<()> {
+        self.tx.execute(
+            "UPDATE file_hashes SET content_hash = ?1 WHERE repo = ?2 AND file = ?3",
+            params![content_hash, repo, file],
+        )?;
         Ok(())
     }
 
@@ -1232,7 +1716,7 @@ impl GraphWriteTx<'_> {
     }
 
     pub fn callers_for_endpoint(&self, endpoint_id: i64) -> Result<Vec<CallerEdge>> {
-        callers_for_endpoint_conn(&self.tx, endpoint_id, true)
+        callers_for_endpoint_conn(&self.tx, endpoint_id, true, true)
     }
 
     pub fn endpoint_exists(
@@ -1273,7 +1757,8 @@ impl GraphWriteTx<'_> {
     pub fn load_unresolved_calls_in_file(&self, repo: &str, file: &str) -> Result<Vec<CallRow>> {
         let mut stmt = self.tx.prepare(
             "SELECT c.id, c.service, c.repo, c.method, c.path_raw, c.path_norm, c.file, c.line,
-                    c.base_ref, c.symbol, c.area, c.why, c.external, c.verified_sha, c.req_contract
+                    c.base_ref, c.symbol, c.area, c.why, c.external, c.verified_sha, c.req_contract,
+                    c.caller_chunk_id
              FROM calls c
              LEFT JOIN edges e ON e.call_id = c.id
              WHERE c.repo = ?1 AND c.file = ?2 AND c.external = 0 AND e.call_id IS NULL
@@ -1329,6 +1814,7 @@ impl GraphWriteTx<'_> {
             }
         }
 
+        let chunk_hashes = load_chunk_hashes_for_edges(&self.tx, batch.calls_by_id, batch.eps_by_id)?;
         let old_by_key: HashMap<EdgeLogicalKey, &ExistingEdgeSnapshot> = batch
             .old_snapshots
             .iter()
@@ -1340,8 +1826,9 @@ impl GraphWriteTx<'_> {
         let mut ins_edge = self.tx.prepare(
             "INSERT OR REPLACE INTO edges(
                 call_id, endpoint_id, confidence, first_seen_sha, last_seen_sha,
-                seen_count, first_seen_at, last_seen_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                seen_count, first_seen_at, last_seen_at,
+                pair_key, verified_pair_key, verified_sha, verified_at, pair_changed_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
         )?;
         for edge in batch.new_edges {
             let (Some(call), Some(ep)) = (
@@ -1369,12 +1856,41 @@ impl GraphWriteTx<'_> {
             } else {
                 ep.verified_sha.as_str()
             };
+            let prev = old_by_key.get(&key).copied();
             let (first_sha, seen_count, first_at) = resolve_history_fields(
-                old_by_key.get(&key).copied(),
+                prev,
                 current_sha,
                 batch.now_ms,
                 &mut added,
             );
+            let caller_hash = call
+                .caller_chunk_id
+                .and_then(|id| chunk_hashes.get(&id))
+                .map(String::as_str)
+                .unwrap_or("");
+            let handler_hash = ep
+                .chunk_ids
+                .handler
+                .and_then(|id| chunk_hashes.get(&id))
+                .map(String::as_str)
+                .unwrap_or("");
+            let pair_key = compute_pair_key(caller_hash, handler_hash, &ep.contract_hash);
+            let (verified_pair_key, verified_sha, verified_at, pair_changed_at) = match prev {
+                Some(p) => {
+                    let changed_at = if !p.verify.pair_key.is_empty() && p.verify.pair_key != pair_key {
+                        batch.now_ms
+                    } else {
+                        p.pair_changed_at
+                    };
+                    (
+                        p.verify.verified_pair_key.as_str(),
+                        p.verify.verified_sha.as_str(),
+                        p.verified_at,
+                        changed_at,
+                    )
+                }
+                None => ("", "", 0, 0),
+            };
             surviving_keys.insert(key);
             ins_edge.execute(params![
                 edge.call_id,
@@ -1385,6 +1901,11 @@ impl GraphWriteTx<'_> {
                 seen_count,
                 first_at,
                 batch.now_ms,
+                pair_key,
+                verified_pair_key,
+                verified_sha,
+                verified_at,
+                pair_changed_at,
             ])?;
         }
         drop(ins_edge);
@@ -1396,6 +1917,72 @@ impl GraphWriteTx<'_> {
             }
         }
         Ok((added, lost))
+    }
+
+    pub fn refresh_pair_keys_for_chunks(
+        &self,
+        changed_chunk_ids: &[i64],
+        now_ms: i64,
+    ) -> Result<usize> {
+        if changed_chunk_ids.is_empty() {
+            return Ok(0);
+        }
+        let mut edge_stmt = self.tx.prepare(&format!(
+            "SELECT e.call_id, e.endpoint_id, e.pair_key,
+                    COALESCE(cc.norm_hash, ''), COALESCE(hc.norm_hash, ''), ep.contract_hash
+             {EDGE_CHUNK_JOIN_SQL}
+             WHERE c.caller_chunk_id = ?1 OR ep.handler_chunk_id = ?1"
+        ))?;
+        let mut updates = Vec::new();
+        let mut seen = HashSet::new();
+        for &cid in changed_chunk_ids {
+            let rows = collect_rows(edge_stmt.query_map(params![cid], map_edge_quad_str)?)?;
+            for (call_id, ep_id, old_pair, caller_h, handler_h, contract_h) in rows {
+                if !seen.insert((call_id, ep_id)) {
+                    continue;
+                }
+                let new_pair = compute_pair_key(&caller_h, &handler_h, &contract_h);
+                if new_pair != old_pair {
+                    updates.push((call_id, ep_id, new_pair));
+                }
+            }
+        }
+        drop(edge_stmt);
+        let mut upd = self.tx.prepare(
+            "UPDATE edges SET pair_key = ?1, pair_changed_at = ?2 WHERE call_id = ?3 AND endpoint_id = ?4",
+        )?;
+        for (call_id, ep_id, new_pair) in &updates {
+            upd.execute(params![new_pair, now_ms, call_id, ep_id])?;
+        }
+        Ok(updates.len())
+    }
+
+    pub fn verify_repo_edges(&self, repo: &str, target_sha: &str, now_ms: i64) -> Result<usize> {
+        let head_sha: Option<String> = self
+            .tx
+            .query_row(
+                "SELECT head_sha FROM repos WHERE repo = ?1",
+                params![repo],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let Some(head_sha) = head_sha else {
+            return Ok(0);
+        };
+        if !sha_matches(&head_sha, target_sha) {
+            return Ok(0);
+        }
+        let updated = self.tx.execute(
+            "UPDATE edges
+             SET verified_pair_key = pair_key, verified_sha = ?1, verified_at = ?2
+             WHERE pair_key != ''
+               AND (
+                   call_id IN (SELECT id FROM calls WHERE repo = ?3)
+                   OR endpoint_id IN (SELECT id FROM endpoints WHERE repo = ?3)
+               )",
+            params![target_sha, now_ms, repo],
+        )?;
+        Ok(updated)
     }
 
     pub fn record_lost_edge_history(
@@ -1524,6 +2111,7 @@ fn insert_history_row(
 }
 
 fn migrate_schema_columns(conn: &Connection) -> Result<()> {
+    migrate_table_columns(conn, "file_hashes", FILE_HASH_MIGRATION_COLUMNS)?;
     migrate_table_columns(conn, "edges", EDGE_MIGRATION_COLUMNS)?;
     migrate_table_columns(conn, "endpoints", ENDPOINT_MIGRATION_COLUMNS)?;
     migrate_table_columns(conn, "calls", CALL_MIGRATION_COLUMNS)?;
@@ -1552,20 +2140,204 @@ fn table_has_column(conn: &Connection, table: &str, col: &str) -> Result<bool> {
     Ok(cols.iter().any(|c| c == col))
 }
 
+fn table_exists(conn: &Connection, table: &str) -> Result<bool> {
+    let exists: bool = conn.query_row(
+        "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type = ?1 AND name = ?2",
+        params![SCHEMA_OBJECT_TABLE, table],
+        |r| r.get(0),
+    )?;
+    Ok(exists)
+}
+
+fn load_chunks_for_file_conn(conn: &Connection, repo: &str, file: &str) -> Result<Vec<ChunkRow>> {
+    let mut stmt = conn.prepare(&format!(
+        "{CHUNK_SELECT} WHERE repo = ?1 AND file = ?2 ORDER BY start_line, id"
+    ))?;
+    collect_rows(stmt.query_map(params![repo, file], map_chunk_row)?)
+}
+
+fn count_by_repo_conn(conn: &Connection, sql: &str) -> Result<(usize, BTreeMap<String, usize>)> {
+    let mut by_repo = BTreeMap::new();
+    let mut total = 0usize;
+    let mut stmt = conn.prepare(sql)?;
+    for row in stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))? {
+        let (repo, count) = row?;
+        let count = count.max(0) as usize;
+        total += count;
+        by_repo.insert(repo, count);
+    }
+    Ok((total, by_repo))
+}
+
+fn cached_file_chunks<'a>(
+    conn: &Connection,
+    repo: &str,
+    file: &str,
+    cache: &'a mut HashMap<String, Vec<ChunkRow>>,
+) -> Result<&'a [ChunkRow]> {
+    if !cache.contains_key(file) {
+        let rows = load_chunks_for_file_conn(conn, repo, file)?;
+        cache.insert(file.to_owned(), rows);
+    }
+    Ok(cache.get(file).map(Vec::as_slice).unwrap_or(&[]))
+}
+
+fn enclosing_chunk_id(chunks: &[ChunkRow], line: usize) -> Option<i64> {
+    chunks
+        .iter()
+        .filter(|c| line >= c.start_line && line <= c.end_line)
+        .min_by_key(|c| c.end_line.saturating_sub(c.start_line))
+        .map(|c| c.id)
+}
+
+fn match_chunk_by_name(chunks: &[ChunkRow], name: &str) -> Option<i64> {
+    let tail = name
+        .rsplit_once("::")
+        .map_or(name, |(_, t)| t)
+        .trim();
+    if let Some(exact) = chunks.iter().find(|c| c.qualified_name == name) {
+        return Some(exact.id);
+    }
+    let suffix_colons = format!("::{tail}");
+    let suffix_dot = format!(".{tail}");
+    chunks
+        .iter()
+        .find(|c| {
+            c.qualified_name == tail
+                || c.qualified_name.ends_with(&suffix_colons)
+                || c.qualified_name.ends_with(&suffix_dot)
+        })
+        .map(|c| c.id)
+}
+
+fn resolve_chunk_ref_cached(
+    conn: &Connection,
+    repo: &str,
+    chunk_ref: Option<&(String, String)>,
+    cache: &mut HashMap<String, Vec<ChunkRow>>,
+) -> Result<Option<i64>> {
+    let Some((file, name)) = chunk_ref else {
+        return Ok(None);
+    };
+    let rows = cached_file_chunks(conn, repo, file, cache)?;
+    Ok(match_chunk_by_name(rows, name))
+}
+
+fn resolve_endpoint_handler_chunk(
+    conn: &Connection,
+    repo: &str,
+    ep: &ExtractedEndpoint,
+    cache: &mut HashMap<String, Vec<ChunkRow>>,
+) -> Result<Option<i64>> {
+    if let Some(id) = resolve_chunk_ref_cached(conn, repo, ep.chunk_refs.handler.as_ref(), cache)? {
+        return Ok(Some(id));
+    }
+    let rows = cached_file_chunks(conn, repo, &ep.file, cache)?;
+    if !ep.handler.is_empty()
+        && !ep.handler.starts_with('<')
+        && let Some(id) = match_chunk_by_name(rows, &ep.handler)
+    {
+        return Ok(Some(id));
+    }
+    Ok(enclosing_chunk_id(rows, ep.line))
+}
+
+fn load_chunk_hashes_for_edges(
+    conn: &Connection,
+    calls_by_id: &HashMap<i64, &CallRow>,
+    eps_by_id: &HashMap<i64, &EndpointRow>,
+) -> Result<HashMap<i64, String>> {
+    let mut ids = HashSet::new();
+    for call in calls_by_id.values() {
+        if let Some(id) = call.caller_chunk_id {
+            ids.insert(id);
+        }
+    }
+    for ep in eps_by_id.values() {
+        if let Some(id) = ep.chunk_ids.handler {
+            ids.insert(id);
+        }
+    }
+    let mut hashes = HashMap::with_capacity(ids.len());
+    if ids.is_empty() {
+        return Ok(hashes);
+    }
+    let mut stmt = conn.prepare("SELECT norm_hash FROM chunks WHERE id = ?1")?;
+    for id in ids {
+        if let Some(h) = stmt
+            .query_row(params![id], |r| r.get::<_, String>(0))
+            .optional()?
+        {
+            hashes.insert(id, h);
+        }
+    }
+    Ok(hashes)
+}
+
+fn ep_contract_cols_sql(has_contract_cols: bool) -> &'static str {
+    if has_contract_cols {
+        "ep.req_contract, ep.res_contract, ep.contract_hash"
+    } else {
+        "'' AS req_contract, '' AS res_contract, '' AS contract_hash"
+    }
+}
+
+fn ep_chunk_cols_sql(has_chunk_cols: bool) -> &'static str {
+    if has_chunk_cols {
+        "ep.handler_chunk_id, ep.req_type_chunk_id, ep.res_type_chunk_id"
+    } else {
+        "NULL AS handler_chunk_id, NULL AS req_type_chunk_id, NULL AS res_type_chunk_id"
+    }
+}
+
+fn call_contract_col_sql(has_contract_cols: bool) -> &'static str {
+    if has_contract_cols {
+        "c.req_contract"
+    } else {
+        "'' AS req_contract"
+    }
+}
+
+fn call_chunk_col_sql(has_chunk_cols: bool) -> &'static str {
+    if has_chunk_cols {
+        "c.caller_chunk_id"
+    } else {
+        "NULL AS caller_chunk_id"
+    }
+}
+
+fn edge_pair_cols_sql(has_chunk_cols: bool) -> &'static str {
+    if has_chunk_cols {
+        "e.pair_key, e.verified_pair_key, e.verified_sha"
+    } else {
+        "'' AS pair_key, '' AS verified_pair_key, '' AS verified_sha"
+    }
+}
+
+pub(crate) fn sha_matches(stored: &str, target: &str) -> bool {
+    if stored.is_empty() || target.is_empty() {
+        return false;
+    }
+    if stored == target {
+        return true;
+    }
+    (target.len() >= 7 && stored.starts_with(target))
+        || (stored.len() >= 7 && target.starts_with(stored))
+}
+
 fn callers_for_endpoint_conn(
     conn: &Connection,
     endpoint_id: i64,
     has_contract_cols: bool,
+    has_chunk_cols: bool,
 ) -> Result<Vec<CallerEdge>> {
-    let req_col = if has_contract_cols {
-        "c.req_contract"
-    } else {
-        "'' AS req_contract"
-    };
+    let req_col = call_contract_col_sql(has_contract_cols);
+    let caller_chunk_col = call_chunk_col_sql(has_chunk_cols);
+    let edge_pair_cols = edge_pair_cols_sql(has_chunk_cols);
     let mut stmt = conn.prepare(&format!(
         "SELECT c.id, c.service, c.repo, c.method, c.path_raw, c.path_norm, c.file, c.line,
-                c.base_ref, c.symbol, c.area, c.why, c.external, c.verified_sha, {req_col},
-                COALESCE(s.stack, ?2), e.confidence
+                c.base_ref, c.symbol, c.area, c.why, c.external, c.verified_sha, {req_col}, {caller_chunk_col},
+                COALESCE(s.stack, ?2), e.confidence, {edge_pair_cols}
          FROM edges e
          JOIN calls c ON c.id = e.call_id
          LEFT JOIN services s ON s.name = c.service
@@ -1574,12 +2346,13 @@ fn callers_for_endpoint_conn(
     ))?;
     collect_rows(stmt.query_map(params![endpoint_id, Stack::Axum.as_str()], |r| {
         let call = map_call_row(r)?;
-        let stack_raw: String = r.get(15)?;
-        let conf_raw: String = r.get(16)?;
+        let stack_raw: String = r.get(16)?;
+        let conf_raw: String = r.get(17)?;
         Ok(CallerEdge {
             call,
             service_stack: Stack::parse(&stack_raw).unwrap_or(Stack::Axum),
             confidence: Confidence::parse(&conf_raw).unwrap_or(Confidence::Suffix),
+            verify: map_verify_meta(r, 18)?,
         })
     })?)
 }
@@ -1702,6 +2475,24 @@ fn map_file_hash_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<FileHashRow> {
         content_hash: r.get(1)?,
         service: r.get(2)?,
         has_router_deps: r.get::<_, i64>(3)? != 0,
+        norm_file_hash: r.get(4)?,
+    })
+}
+
+fn map_chunk_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<ChunkRow> {
+    let kind_raw: String = r.get(3)?;
+    Ok(ChunkRow {
+        id: r.get(0)?,
+        repo: r.get(1)?,
+        file: r.get(2)?,
+        kind: ChunkKind::parse(&kind_raw).unwrap_or(ChunkKind::Fn),
+        qualified_name: r.get(4)?,
+        start_line: r.get::<_, i64>(5)?.max(0) as usize,
+        end_line: r.get::<_, i64>(6)?.max(0) as usize,
+        norm_hash: r.get(7)?,
+        first_seen_hash: r.get(8)?,
+        first_seen_at: r.get(9)?,
+        hash_changed_at: r.get(10)?,
     })
 }
 
@@ -1732,6 +2523,20 @@ fn map_endpoint_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<EndpointRow> {
     map_endpoint_row_at(r, 0)
 }
 
+fn map_edge_quad_str(
+    r: &rusqlite::Row<'_>,
+) -> rusqlite::Result<(i64, i64, String, String, String, String)> {
+    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))
+}
+
+fn map_verify_meta(r: &rusqlite::Row<'_>, offset: usize) -> rusqlite::Result<EdgeVerifyMeta> {
+    Ok(EdgeVerifyMeta {
+        pair_key: r.get(offset)?,
+        verified_pair_key: r.get(offset + 1)?,
+        verified_sha: r.get(offset + 2)?,
+    })
+}
+
 fn map_endpoint_row_at(r: &rusqlite::Row<'_>, offset: usize) -> rusqlite::Result<EndpointRow> {
     let (method, path_raw, path_norm, file, line) = map_route_common_at(r, offset)?;
     let prefix_raw: String = r.get(offset + 9)?;
@@ -1742,6 +2547,11 @@ fn map_endpoint_row_at(r: &rusqlite::Row<'_>, offset: usize) -> rusqlite::Result
         service: r.get(offset + 1)?,
         repo: r.get(offset + 2)?,
         verified_sha: r.get(offset + 10)?,
+        chunk_ids: EndpointChunkIds {
+            handler: r.get(offset + 14)?,
+            req_type: r.get(offset + 15)?,
+            res_type: r.get(offset + 16)?,
+        },
         ep: ExtractedEndpoint {
             method,
             path_raw,
@@ -1753,6 +2563,7 @@ fn map_endpoint_row_at(r: &rusqlite::Row<'_>, offset: usize) -> rusqlite::Result
             req_contract: deserialize_contract(&req_raw),
             res_contract: deserialize_contract(&res_raw),
             contract_hash: r.get(offset + 13)?,
+            chunk_refs: super::types::EndpointChunkRefs::default(),
         },
     })
 }
@@ -1769,6 +2580,7 @@ fn map_call_row_at(r: &rusqlite::Row<'_>, offset: usize) -> rusqlite::Result<Cal
         service: r.get(offset + 1)?,
         repo: r.get(offset + 2)?,
         verified_sha: r.get(offset + 13)?,
+        caller_chunk_id: r.get(offset + 15)?,
         call: ExtractedCall {
             method,
             path_raw,
@@ -1801,6 +2613,9 @@ fn map_edge_snapshot(r: &rusqlite::Row<'_>) -> rusqlite::Result<ExistingEdgeSnap
         last_seen_sha: r.get(13)?,
         seen_count: r.get(14)?,
         first_seen_at: r.get(15)?,
+        verify: map_verify_meta(r, 17)?,
+        verified_at: r.get(20)?,
+        pair_changed_at: r.get(21)?,
     })
 }
 
@@ -1811,6 +2626,7 @@ fn map_cross_repo_info(r: &rusqlite::Row<'_>) -> rusqlite::Result<CrossRepoEdgeI
         peer_service: r.get(1)?,
         method: HttpMethod::parse(&method_raw).unwrap_or(HttpMethod::Any),
         path_norm: r.get(3)?,
+        verify: map_verify_meta(r, 4)?,
     })
 }
 

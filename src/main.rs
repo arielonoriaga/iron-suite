@@ -213,6 +213,20 @@ enum GraphCommand {
         #[command(flatten)]
         opts: GraphQueryArgs,
     },
+    Verify {
+        #[arg(long)]
+        repo: String,
+        #[arg(long)]
+        sha: Option<String>,
+    },
+    Unverified {
+        #[command(flatten)]
+        opts: GraphQueryArgs,
+    },
+    StaleMemories {
+        #[command(flatten)]
+        opts: GraphQueryArgs,
+    },
 }
 
 #[derive(Args)]
@@ -300,6 +314,15 @@ fn run_graph(db: &std::path::Path, command: GraphCommand) -> Result<()> {
             opts.limit,
             opts.max_bytes,
         )?,
+        GraphCommand::Verify { repo, sha } => {
+            output::encode(&graph::verify(db, &repo, sha.as_deref())?)?
+        }
+        GraphCommand::Unverified { opts } => {
+            graph::query_unverified(db, opts.repo.as_deref(), opts.limit, opts.max_bytes)?
+        }
+        GraphCommand::StaleMemories { opts } => {
+            graph::query_stale_memories(db, opts.repo.as_deref(), opts.limit, opts.max_bytes)?
+        }
     };
     io::stdout().lock().write_all(text.as_bytes())?;
     Ok(())

@@ -9,9 +9,9 @@ pub type WebExportsMap = BTreeMap<String, BTreeMap<String, String>>;
 
 use super::contracts::extract_ts_call_opts;
 use super::scan::{
-    LineIndex, ROOT_SLASH, extract_ts_area, extract_url_host, extract_why_ts, find_matching_delim,
-    for_each_masked_ident, is_ident_byte, is_test_file, is_web_source, join_paths,
-    matches_external_glob, normalize_path, parallel_map, read_files_parallel,
+    LineIndex, ROOT_SLASH, extract_ts_area, extract_url_host, extract_why_ts, find_astro_blocks,
+    find_matching_delim, for_each_masked_ident, is_ident_byte, is_test_file, is_web_source,
+    join_paths, matches_external_glob, normalize_path, parallel_map, read_files_parallel,
     resolve_ts_relative_import, skip_ascii_ws, sort_extracted_calls, split_top_level_args,
     split_ts_import_clause, ts_code_mask, under_root, unquote_ts_string,
 };
@@ -20,7 +20,6 @@ use super::types::ExtractedCall;
 const FETCH_FN: &str = "fetch";
 const FETCH_IMPL_SUFFIX: &str = "typeof fetch = fetch";
 const ASTRO_EXT: &str = ".astro";
-const FRONTMATTER_FENCE: &str = "---";
 
 static ENV_FALLBACK_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
@@ -46,21 +45,13 @@ static FETCH_PARAM_ALIAS_RE: LazyLock<Regex> = LazyLock::new(|| {
         .expect("valid fetch alias regex")
 });
 
-static SCRIPT_OPEN_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)<script\b[^>]*>").expect("valid script open regex")
-});
-
-static SCRIPT_CLOSE_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)</script>").expect("valid script close regex")
-});
-
 #[derive(Debug, Clone, Default)]
 struct BaseBinding {
     env_var: Option<String>,
     literal_url: Option<String>,
 }
 
-fn read_web_sources(
+pub fn read_web_sources(
     repo_dir: &Path,
     files: &[String],
     service_root: &str,
@@ -74,6 +65,23 @@ fn read_web_sources(
     (candidates, sources)
 }
 
+pub fn extract_from_sources_with_exports(
+    repo: &str,
+    service_root: &str,
+    base_service: Option<&str>,
+    external_globs: &[String],
+    candidates: Vec<String>,
+    sources: &[(String, String)],
+) -> (Vec<ExtractedCall>, WebExportsMap, HashSet<String>) {
+    let known_files: HashSet<String> = candidates.into_iter().collect();
+    let exports_map = collect_exported_url_consts(sources);
+    let dep_files: HashSet<String> = exports_map.keys().cloned().collect();
+    let calls = extract_sources_calls(
+        repo, service_root, base_service, external_globs, sources, &known_files, &exports_map,
+    );
+    (calls, exports_map, dep_files)
+}
+
 pub fn extract_service_with_exports(
     repo: &str,
     repo_dir: &Path,
@@ -83,11 +91,28 @@ pub fn extract_service_with_exports(
     tracked_files: &[String],
 ) -> Result<(Vec<ExtractedCall>, WebExportsMap, HashSet<String>)> {
     let (candidates, sources) = read_web_sources(repo_dir, tracked_files, service_root);
-    let known_files: HashSet<String> = candidates.into_iter().collect();
-    let exports_map = collect_exported_url_consts(&sources);
-    let dep_files: HashSet<String> = exports_map.keys().cloned().collect();
-    let calls = extract_sources_calls(repo, service_root, base_service, external_globs, &sources, &known_files, &exports_map);
-    Ok((calls, exports_map, dep_files))
+    Ok(extract_from_sources_with_exports(
+        repo, service_root, base_service, external_globs, candidates, &sources,
+    ))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn extract_sources_incremental(
+    repo: &str,
+    service_root: &str,
+    base_service: Option<&str>,
+    external_globs: &[String],
+    sources: &[(String, String)],
+    all_known_files: &HashSet<String>,
+    exports_map: &WebExportsMap,
+) -> (Vec<ExtractedCall>, bool) {
+    if !collect_exported_url_consts(sources).is_empty() {
+        return (Vec::new(), true);
+    }
+    let calls = extract_sources_calls(
+        repo, service_root, base_service, external_globs, sources, all_known_files, exports_map,
+    );
+    (calls, false)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -102,11 +127,9 @@ pub fn extract_files_incremental(
     exports_map: &WebExportsMap,
 ) -> (Vec<ExtractedCall>, bool) {
     let (_, sources) = read_web_sources(repo_dir, changed_files, service_root);
-    if !collect_exported_url_consts(&sources).is_empty() {
-        return (Vec::new(), true);
-    }
-    let calls = extract_sources_calls(repo, service_root, base_service, external_globs, &sources, all_known_files, exports_map);
-    (calls, false)
+    extract_sources_incremental(
+        repo, service_root, base_service, external_globs, &sources, all_known_files, exports_map,
+    )
 }
 
 fn extract_sources_calls(
@@ -406,23 +429,9 @@ fn format_base_ref(env_var: Option<&str>, host: Option<&str>) -> String {
 fn extract_astro_script_mask_source(raw: &str) -> String {
     let bytes = raw.as_bytes();
     let mut keep = vec![false; bytes.len()];
-
-    let mut search_from = 0usize;
-    if let Some((fm_start, fm_end)) = find_astro_frontmatter(raw) {
-        keep[fm_start..fm_end].fill(true);
-        search_from = fm_end;
+    for block in find_astro_blocks(raw) {
+        keep[block.start..block.end].fill(true);
     }
-
-    while let Some(open_m) = SCRIPT_OPEN_RE.find(&raw[search_from..]) {
-        let body_start = search_from + open_m.end();
-        let Some(close_m) = SCRIPT_CLOSE_RE.find(&raw[body_start..]) else {
-            break;
-        };
-        let body_end = body_start + close_m.start();
-        keep[body_start..body_end].fill(true);
-        search_from = body_start + close_m.end();
-    }
-
     let mut out = bytes.to_vec();
     for i in 0..out.len() {
         if !keep[i] && out[i] != b'\n' {
@@ -430,22 +439,6 @@ fn extract_astro_script_mask_source(raw: &str) -> String {
         }
     }
     String::from_utf8(out).unwrap_or_else(|_| raw.to_owned())
-}
-
-fn find_astro_frontmatter(raw: &str) -> Option<(usize, usize)> {
-    let trimmed_start = raw.len() - raw.trim_start().len();
-    let after_open = raw[trimmed_start..].strip_prefix(FRONTMATTER_FENCE)?;
-    let nl = after_open.find('\n')?;
-    let fm_start = trimmed_start + FRONTMATTER_FENCE.len() + nl + 1;
-    let mut pos = fm_start;
-    while pos < raw.len() {
-        let line_end = raw[pos..].find('\n').map_or(raw.len(), |n| pos + n);
-        if raw[pos..line_end].trim() == FRONTMATTER_FENCE {
-            return Some((fm_start, pos));
-        }
-        pos = (line_end + 1).min(raw.len());
-    }
-    None
 }
 
 #[cfg(test)]
