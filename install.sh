@@ -11,6 +11,7 @@ INSTALL_BINARY=1
 INSTALL_BROWSER=0
 INSTALL_TERM=0
 REGISTER_MCP=1
+INSTALL_HOOKS=0
 
 usage() {
   cat <<'EOF'
@@ -32,6 +33,7 @@ Install The Iron Stack (https://github.com/arielonoriaga/iron-stack):
     --binary-only   Install only the `iron` binary
     --skills-only   Install only skills & subagent definitions
     --no-mcp        Do not auto-register MCP servers in Claude Code
+    --hooks         Install Claude Code hooks (memory recall on Read, system-graph impact on Edit/Write) into ~/.claude/hooks/iron and merge them into settings.json
     --help, -h      Show this help message
 EOF
 }
@@ -44,6 +46,7 @@ while [[ $# -gt 0 ]]; do
     --term) INSTALL_TERM=1 ;;
     --all) INSTALL_BINARY=1; INSTALL_SKILLS=1; INSTALL_BROWSER=1; INSTALL_TERM=1 ;;
     --no-mcp) REGISTER_MCP=0 ;;
+    --hooks) INSTALL_HOOKS=1 ;;
     --help|-h) usage; exit 0 ;;
     *) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
   esac
@@ -244,11 +247,41 @@ register_mcp() {
   fi
 }
 
+install_claude_hooks() {
+  local src_dir="$1"
+  local hook_dir="$CLAUDE_DIR/hooks/iron"
+  local settings="$CLAUDE_DIR/settings.json"
+  mkdir -p "$hook_dir"
+  install -m 0755 "$src_dir/integration/claude-hooks/iron-recall.sh" "$hook_dir/iron-recall.sh"
+  install -m 0755 "$src_dir/integration/claude-hooks/iron-graph-touch.sh" "$hook_dir/iron-graph-touch.sh"
+  ok "Installed Claude Code hooks -> $hook_dir/"
+  if ! command -v jq >/dev/null 2>&1; then
+    warn "jq not found; add PostToolUse hooks manually: Read -> $hook_dir/iron-recall.sh, Edit|Write|MultiEdit -> $hook_dir/iron-graph-touch.sh"
+    return 0
+  fi
+  [[ -f "$settings" ]] || printf '{}\n' > "$settings"
+  cp -p "$settings" "$settings.iron-backup"
+  local merged
+  merged="$(jq --arg recall "bash $hook_dir/iron-recall.sh" --arg touch "bash $hook_dir/iron-graph-touch.sh" '
+    def add_hook($matcher; $cmd):
+      if ([.hooks.PostToolUse[]?.hooks[]?.command] | index($cmd)) then .
+      else .hooks.PostToolUse += [{matcher: $matcher, hooks: [{type: "command", command: $cmd, timeout: 5}]}] end;
+    .hooks //= {} | .hooks.PostToolUse //= []
+    | add_hook("Read"; $recall)
+    | add_hook("Edit|Write|MultiEdit"; $touch)' "$settings")"
+  printf '%s\n' "$merged" > "$settings.iron-tmp" && mv "$settings.iron-tmp" "$settings"
+  ok "Registered PostToolUse hooks in $settings (backup: $settings.iron-backup)"
+  if [[ ! -f "$HOME/.local/share/iron/system-graph.json" ]]; then
+    warn "System graph is off until you create ~/.local/share/iron/system-graph.json (template: $src_dir/integration/system-graph.example.json)"
+  fi
+}
+
 SRC_TREE="$(resolve_source_tree)"
 [[ "$INSTALL_BINARY" -eq 1 ]]  && install_binary "$SRC_TREE"
 [[ "$INSTALL_SKILLS" -eq 1 ]]  && install_skills_and_agents "$SRC_TREE"
 [[ "$INSTALL_BROWSER" -eq 1 ]] && install_browser "$SRC_TREE"
 [[ "$INSTALL_TERM" -eq 1 ]]    && install_term "$SRC_TREE"
 [[ "$REGISTER_MCP" -eq 1 ]]    && register_mcp
+[[ "$INSTALL_HOOKS" -eq 1 ]]   && install_claude_hooks "$SRC_TREE"
 
 log "The Iron Stack is ready. Ensure $INSTALL_BIN_DIR is on your PATH."

@@ -28,6 +28,7 @@ Gather evidence before judging:
 2nd `iron memory consolidate --project <p>` → lessons repeated ≥3× = promotion candidates (KEEP in the instruction file, one line).
 3rd `iron memory search '<section topic>' --project <p> --max-bytes 2000` → existing memory already covering a section = DUP-in-memory.
 4th Morning Review Queue / Trust Desk in `iron ui` → contradictions and superseded entries to resolve, not copy.
+5th `iron memory graph who-calls|impact` → a hand-written "Links"/"who calls what" section the system graph already covers = DUP; replace it with a one-line pointer to the graph query.
 
 No Iron Memory → do the same checks with `rg` over the memory dirs + `git log`.
 

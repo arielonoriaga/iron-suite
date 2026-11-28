@@ -122,7 +122,7 @@ iron ui --port 7420
 
 ![Iron Memory Second Brain UI](docs/iron-ui-second-brain.png)
 
-### Memory MCP Server (`iron mcp` — 5 Tools)
+### Memory MCP Server (`iron mcp` — 6 Tools)
 - `memory_search` — hybrid FTS5 BM25 + pure-Rust 512-dim RRF ranking, bounded Hebbian reinforcement, supersession decay, role scoping (`developer`/`reviewer`/`verifier`), and strict `max_bytes` (`256..65536`).
 - `memory_get` — UTF-8 byte-paginated retrieval (`offset`/`next_offset`) with cold `archive.db` fallback. Accepts record IDs only.
 - `memory_related` — traverses explicit `references`, `supersedes`, `co_used`, and high-IDF cross-session `shares_anchor` edges.
@@ -146,6 +146,25 @@ Point laptops and remote devboxes at one workstation SQLite WAL store over plain
 See [docs/ssh-hub-rollout.md](docs/ssh-hub-rollout.md) and `integration/` for `systemd --user` timers.
 
 ---
+
+### System Graph — cross-repo "who calls what" (`iron memory graph`)
+
+A deterministic map of how your services talk to each other, built from code with zero LLM tokens and stored in `graph.db` next to `memory.db`.
+
+- **Extracts:** Axum routes (incl. `nest`/`merge` prefixes and multi-line `.route(`), Rust reqwest clients (`format!("{}/path", self.base_url)` + same-file wrappers), and SPA clients (`api.<group>.<call>()` resolved through the client file, grouped by page).
+- **Links:** config (`clients`, `env`, `prefixes`) → unique `(method, path)` across all providers → name hint → suffix. Anything unresolved is reported as **fog**, never dropped.
+- **Incremental:** per-file blob hashes; a no-change refresh takes tens of ms, and `graph touch <file>` re-maps one edited file from the working tree.
+- **Self-improving:** `graph suggest [--apply]` learns mount prefixes, external hosts and env→service rules from fog; `graph changes` shows added/removed cross-repo edges over time.
+
+```sh
+cp integration/system-graph.example.json ~/.local/share/iron/system-graph.json   # describe your services
+iron memory graph refresh
+iron memory graph who-calls "POST /api/internal/invoices"
+iron memory graph impact --file ~/Projects/worker/src/clients/shop.rs
+iron memory graph fog && iron memory graph suggest --apply
+```
+
+MCP: `system_graph {query, direction: callers|callees|impact}`. With `install.sh --hooks`, Claude Code gets two PostToolUse hooks: **Read** of a memory file credits it to the session (so verify verdicts reinforce memories that were actually used), and **Edit/Write** of a source file re-maps it and injects a ≤300-byte impact note only when the file crosses a service boundary. `integration/iron-memory-refresh.service` refreshes the graph after each memory import.
 
 ## 2. [IronBrowser](packages/iron-browser) — Dual-Viewport Chromium & 26-Tool MCP Server
 
