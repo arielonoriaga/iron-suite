@@ -4,6 +4,7 @@ set -euo pipefail
 REPO="${IRON_STACK_REPO:-${IRON_SUITE_REPO:-arielonoriaga/iron-stack}}"
 INSTALL_BIN_DIR="${IRON_BIN_DIR:-$HOME/.local/bin}"
 INSTALL_SHARE_DIR="${IRON_STACK_SHARE_DIR:-$HOME/.local/share/iron-stack}"
+IRON_DATA_DIR="${IRON_DATA_DIR:-$HOME/.local/share/iron}"
 CLAUDE_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 AGENTS_SKILLS_DIR="${AGENTS_SKILLS_DIR:-$HOME/.agents/skills}"
 INSTALL_SKILLS=1
@@ -96,6 +97,7 @@ resolve_source_tree() {
 
 install_binary() {
   mkdir -p "$INSTALL_BIN_DIR"
+  mkdir -p "$IRON_DATA_DIR" && chmod 700 "$IRON_DATA_DIR"
   local target=""
   target="$(detect_target || true)"
 
@@ -271,8 +273,8 @@ install_claude_hooks() {
     | add_hook("Edit|Write|MultiEdit"; $touch)' "$settings")"
   printf '%s\n' "$merged" > "$settings.iron-tmp" && mv "$settings.iron-tmp" "$settings"
   ok "Registered PostToolUse hooks in $settings (backup: $settings.iron-backup)"
-  if [[ ! -f "$HOME/.local/share/iron/system-graph.json" ]]; then
-    warn "System graph is off until you create ~/.local/share/iron/system-graph.json (template: $src_dir/integration/system-graph.example.json)"
+  if [[ ! -f "$IRON_DATA_DIR/system-graph.json" ]]; then
+    warn "System graph is off until you create $IRON_DATA_DIR/system-graph.json (template: $src_dir/integration/system-graph.example.json)"
   fi
 }
 

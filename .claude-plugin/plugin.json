@@ -1,6 +1,6 @@
 {
   "name": "iron-stack",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "The Iron Stack — Iron Memory (zero-cloud SQLite FTS5 + stdio MCP memory hub), IronBrowser (26-tool dual-viewport MCP browser), IronTerm (Rust+GPUI terminal), and 10 adversarial engineering, design and maintenance skills (incl. iron-maintain).",
   "author": {
     "name": "Ariel Onoriaga",

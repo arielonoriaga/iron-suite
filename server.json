@@ -3,7 +3,7 @@
   "name": "io.github.arielonoriaga/iron-stack",
   "title": "Iron Stack (Iron Memory) — Zero-Cloud SQLite FTS5 Memory Hub",
   "description": "Zero-cloud SQLite FTS5 stdio MCP memory hub, cross-repo system graph and local Second Brain UI.",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "websiteUrl": "https://iron.huggian.com",
   "repository": {
     "url": "https://github.com/arielonoriaga/iron-stack",
@@ -13,7 +13,7 @@
     {
       "registryType": "cargo",
       "identifier": "iron-stack",
-      "version": "0.4.0",
+      "version": "0.4.1",
       "transport": {
         "type": "stdio"
       },
