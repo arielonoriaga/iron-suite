@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/iron-browser-cover.png" alt="IronBrowser — Dual-viewport Chromium developer browser and 26-tool Rust MCP server for The Iron Stack" width="100%" />
+  <img src="assets/iron-browser-cover.webp" alt="IronBrowser — Dual-viewport Chromium developer browser and 26-tool Rust MCP server for The Iron Stack" width="100%" />
 </p>
 
 # IronBrowser
@@ -41,7 +41,7 @@ IronBrowser runs **Portrait and Landscape live side-by-side inside one native mu
 ## How IronBrowser Works
 
 <p align="center">
-  <img src="assets/iron-browser-architecture.png" alt="IronBrowser Architecture — Agent Runtimes & Embedded Dock, Single-Flight Sync Core, Dual Chromium Compositor, and WebGL & Hardware Lab" width="100%" />
+  <img src="assets/iron-browser-architecture.webp" alt="IronBrowser Architecture — Agent Runtimes & Embedded Dock, Single-Flight Sync Core, Dual Chromium Compositor, and WebGL & Hardware Lab" width="100%" />
 </p>
 
 ```mermaid
@@ -201,7 +201,7 @@ IronBrowser is part of **The Iron Stack** — zero-cloud, local-first Rust & Typ
    Native **Rust + GPUI** multi-agent terminal and fleet orchestrator (*Alacritty Blade*):
 
 <p align="center">
-  <img src="assets/iron-term-preview.png" alt="IronTerm — Coming Soon Native Rust + GPUI Multi-Agent Fleet Terminal (Alacritty Blade)" width="100%" />
+  <img src="assets/iron-term-preview.webp" alt="IronTerm — Coming Soon Native Rust + GPUI Multi-Agent Fleet Terminal (Alacritty Blade)" width="100%" />
 </p>
    - **Headless `iron-agentd` Daemon (`portable-pty` + `alacritty_terminal` + SQLite):** Decouples PTY execution from GPU rendering so 20+ concurrent agents (`claude`, `agy`, `codex`, `opencode`, shells) run with **0 off-screen GPU frames**, while idle multi-day sessions hibernate to **`0 MB` live RAM** with 1-line *"where I left off"* checkpoints, `--resume` tokens, and git worktree freshness checks (`dirty` / `behind origin/main`).
    - **90–98% Raw Terminal Pixels (`iron-gpui`):** Zero dashboard card bloat — native `⌘D` split panes, collapsible `236px` monospace **Urgency Whisper Rail** (`NEEDS YOU` · `ACTIVE` · `DORMANT`), and a 1-keystroke **Ghost Action Bar** with *Fix-Before-Destroy* prompt actions (`[1] Run via runq instead`, `[2] Allow`, `[3] Deny`).

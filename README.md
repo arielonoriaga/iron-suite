@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/iron-stack-cover.png" alt="The Iron Stack — Zero-cloud local-first AI engineering stack: Iron Memory, IronBrowser, IronTerm, and Adversarial Skills" width="100%" />
+  <img src="assets/iron-stack-cover.webp" alt="The Iron Stack — Zero-cloud local-first AI engineering stack: Iron Memory, IronBrowser, IronTerm, and Adversarial Skills" width="100%" />
 </p>
 
 <p align="center"><sub><b>100% OPEN SOURCE · MIT MONOREPO · LOCAL-FIRST · ZERO LOCK-IN</b></sub></p>
@@ -75,7 +75,7 @@ flowchart TB
 ```
 
 <p align="center">
-  <img src="assets/iron-stack-architecture.png" alt="Iron Stack Core Architecture — Read-Only Sources & Privacy Scrubber, SQLite FTS5 + Hybrid RRF Engine, Native Agent Runtimes + Adversarial Harness, Human Second Brain UI, and Closed Self-Correction Loop" width="100%" />
+  <img src="assets/iron-stack-architecture.webp" alt="Iron Stack Core Architecture — Read-Only Sources & Privacy Scrubber, SQLite FTS5 + Hybrid RRF Engine, Native Agent Runtimes + Adversarial Harness, Human Second Brain UI, and Closed Self-Correction Loop" width="100%" />
 </p>
 
 ---
@@ -233,7 +233,7 @@ With `install.sh --hooks`, Claude Code gets two PostToolUse hooks: **Read** of a
 ### Verify 390×844 mobile and 1280×720 desktop in one single-flight window.
 
 <p align="center">
-  <img src="packages/iron-browser/assets/iron-browser-cover.png" alt="IronBrowser — Dual-viewport Chromium developer browser and 26-tool Rust MCP server" width="100%" />
+  <img src="packages/iron-browser/assets/iron-browser-cover.webp" alt="IronBrowser — Dual-viewport Chromium developer browser and 26-tool Rust MCP server" width="100%" />
 </p>
 
 Two live Chromium views side-by-side. Every click, PIN keystroke, dialog dismissal, and canvas drag mirrors across both viewports — while HTTP mutations, WebSockets, SSE, and binary SFS2X streams collapse onto **a single upstream flight**. Mirrored clicks never double-charge a card.
@@ -252,7 +252,7 @@ Two live Chromium views side-by-side. Every click, PIN keystroke, dialog dismiss
 ### Run dozens of CLI coding agents across desktop and laptop without melting RAM or focus.
 
 <p align="center">
-  <img src="packages/iron-term/assets/iron-term-cover.png" alt="IronTerm — Native Rust + GPUI Multi-Agent Terminal & Headless PTY Daemon" width="100%" />
+  <img src="packages/iron-term/assets/iron-term-cover.webp" alt="IronTerm — Native Rust + GPUI Multi-Agent Terminal & Headless PTY Daemon" width="100%" />
 </p>
 
 Built on the *Alacritty Blade* architecture: a headless Rust PTY daemon (`iron-agentd`) paired with a GPU-accelerated `iron-gpui` client, for engineers running **10–25+ concurrent CLI agents** across sibling git worktrees.

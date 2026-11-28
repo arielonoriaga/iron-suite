@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/iron-term-cover.png" alt="IronTerm — Native Rust + GPUI Multi-Agent Terminal & Headless PTY Daemon for The Iron Stack" width="100%" />
+  <img src="assets/iron-term-cover.webp" alt="IronTerm — Native Rust + GPUI Multi-Agent Terminal & Headless PTY Daemon for The Iron Stack" width="100%" />
 </p>
 
 # IronTerm
@@ -37,7 +37,7 @@ IronTerm decouples **execution (`iron-agentd`)** from **rendering (`iron-gpui`)*
 ## Architecture
 
 <p align="center">
-  <img src="assets/iron-term-architecture.png" alt="IronTerm Architecture — Native GPUI Client (iron-gpui), Headless Rust Daemon (iron-agentd), Control CLI (iron-termctl), and The Iron Stack" width="100%" />
+  <img src="assets/iron-term-architecture.webp" alt="IronTerm Architecture — Native GPUI Client (iron-gpui), Headless Rust Daemon (iron-agentd), Control CLI (iron-termctl), and The Iron Stack" width="100%" />
 </p>
 
 ```mermaid
