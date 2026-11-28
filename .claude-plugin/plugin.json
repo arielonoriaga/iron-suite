@@ -1,12 +1,12 @@
 {
   "name": "iron-suite",
-  "version": "0.3.0",
-  "description": "Iron Memory (zero-cloud SQLite FTS5 + stdio MCP memory hub) + Iron Engineering, Browser & Design Skills (iron-design, iron-browser, irondev, iron-hunt, iron-audit, iron-debug, iron-perf) & adversarial review agents.",
+  "version": "0.3.1",
+  "description": "The Iron Stack — Iron Memory (zero-cloud SQLite FTS5 + stdio MCP memory hub), IronBrowser (26-tool dual-viewport MCP browser), IronTerm (Rust+GPUI terminal), and 9 adversarial engineering/design skills.",
   "author": {
     "name": "Ariel Onoriaga",
     "url": "https://github.com/arielonoriaga"
   },
-  "repository": "https://github.com/arielonoriaga/iron-suite",
+  "repository": "https://github.com/arielonoriaga/iron-stack",
   "license": "MIT",
   "keywords": [
     "memory",

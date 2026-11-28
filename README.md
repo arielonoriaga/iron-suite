@@ -1,23 +1,102 @@
 <p align="center">
-  <img src="assets/iron-suite-cover.png" alt="Iron Suite — Turn AI coding agents into a senior engineer you can trust" width="100%" />
+  <img src="assets/iron-suite-cover.png" alt="The Iron Stack — Zero-cloud local-first AI engineering stack: Iron Memory, IronBrowser, IronTerm, and Adversarial Skills" width="100%" />
 </p>
 
-# Iron Suite
+# The Iron Stack
 
-**Zero-cloud SQLite FTS5 + stdio MCP memory hub (`iron`) and adversarial multi-agent engineering skills (`iron-*`) for Claude Code, Codex, OpenCode, Cursor, and Antigravity — anchor of [The Iron Stack](#the-iron-stack-ecosystem) alongside [`iron-browser` (Public Beta)](https://github.com/arielonoriaga/iron-browser) and `iron-term` (Coming Soon).**
+**The zero-cloud, local-first AI engineering stack — unifying bounded-byte SQLite FTS5 agent memory (`iron`), a dual-viewport 26-tool MCP developer browser (`packages/iron-browser`), a native Rust + GPUI multi-agent terminal (`packages/iron-term`), and 9 adversarial `iron-*` engineering skills in one MIT monorepo.**
 
-[![crates.io](https://img.shields.io/crates/v/iron-suite.svg)](https://crates.io/crates/iron-suite) [![MCP Registry](https://img.shields.io/badge/MCP%20Registry-active-brightgreen.svg)](https://registry.modelcontextprotocol.io/v0.1/servers?search=iron-suite) [![IronBrowser: Public Beta](https://img.shields.io/badge/iron--browser-public%20beta-E8622C.svg)](https://github.com/arielonoriaga/iron-browser) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) [![M8ven Score](https://m8ven.ai/badge/mcp/arielonoriaga-iron-suite-88adhm)](https://m8ven.ai/mcp/arielonoriaga-iron-suite-88adhm?s=readme)
+[![Website: iron.huggian.com](https://img.shields.io/badge/web-iron.huggian.com-0B1220.svg)](https://iron.huggian.com) [![crates.io](https://img.shields.io/crates/v/iron-suite.svg)](https://crates.io/crates/iron-suite) [![MCP Registry](https://img.shields.io/badge/MCP%20Registry-active-brightgreen.svg)](https://registry.modelcontextprotocol.io/v0.1/servers?search=iron-suite) [![IronBrowser: 26 MCP Tools](https://img.shields.io/badge/iron--browser-26%20MCP%20tools-14B8A6.svg)](packages/iron-browser) [![IronTerm: Rust + GPUI](https://img.shields.io/badge/iron--term-Rust%20%2B%20GPUI-E8622C.svg)](packages/iron-term) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Iron Suite solves two recurring failures in agentic software engineering:
+The Iron Stack augments your existing coding agents (**Claude Code, Codex, OpenCode, Cursor, Antigravity**) over `stdio` MCP, `0600` Unix domain sockets, and plain SSH — with **zero vector clouds, zero telemetry, zero hosted API keys, and zero heavyweight orchestration wrappers**:
 
-1. **Unbounded, noisy, cloud-locked agent memory:** `iron` indexes your curated Markdown memories and session history into a compact local SQLite FTS5 + WAL store (with integer-keyed 32-byte SHA-256 content deduplication and hot/cold archive tiering), serves **5 deterministic MCP tools** over `stdio` (locally or across machines via plain `ssh`), auto-links lessons across separate conversations via shared technical anchors, reinforces helpful memories while decaying superseded ones, enforces **hard UTF-8 byte budgets (`--max-bytes`)**, and scrubs credentials/private spans before indexing — with **zero vector databases, zero hosted APIs, and zero background daemons**.
-2. **Rubber-stamp "looks good" AI coding loops:** The bundled **9 `iron-*` skills** and **7 role-isolated subagents** enforce grounded mobile-first UX design (`iron-design`), simultaneous dual-viewport mobile+desktop verification (`iron-browser`), bounded ownership (`irondev`), fresh-context adversarial code & security review (`irondev-review`), offensive vulnerability hunting with `1 -> N` structural variant sweeps (`iron-hunt`), measurement-first performance profiling (`iron-perf`), systematic production forensics (`iron-debug`), and read-only architecture/security audits (`iron-audit`).
+| Pillar | Location | Status | What It Does |
+| :--- | :--- | :--- | :--- |
+| **1. Iron Memory (`iron`) & `iron-*` Skills** | Root (`src/`, `skills/`, `agents/`) | **Stable (`v0.3.1`)** | Zero-cloud SQLite FTS5 + hybrid RRF MCP memory hub (`5` stdio tools), local `iron ui` Second Brain workbench, `9` engineering/UX/security skills, and `7` role-isolated subagents. |
+| **2. [IronBrowser](packages/iron-browser)** | [`packages/iron-browser/`](packages/iron-browser) | **Public Beta (`v0.1.1`)** | Simultaneous `390×844` Portrait + `1280×720` Landscape Chromium browser, HTTP/WS/SSE/SFS2X dedup, WebGL & V8 CPU/Heap profilers, Rust `TabEventBus` (`~878 ns/op`), embedded multi-CLI Agent Chat Dock, and **26 MCP tools**. |
+| **3. [IronTerm](packages/iron-term)** | [`packages/iron-term/`](packages/iron-term) | **Public Preview (`v0.1.0`)** | Native Rust + GPUI multi-agent terminal (*Alacritty Blade*): `95%` raw terminal glass, headless `iron-agentd` PTY daemon, `0` off-screen GPU frames, `0 MB` live-RAM SQLite hibernation, Urgency Whisper Rail, and `iron-termctl` RPC. |
 
 ---
 
-## Why Iron Suite?
+## Architecture
 
-| Capability | Plain `MEMORY.md` | Cloud Vector MCPs | **Iron Suite (`v0.3.0`)** |
+```mermaid
+flowchart TB
+  subgraph Stack["The Iron Stack (Zero-Cloud · Local-First · MIT Monorepo)"]
+    Memory["1. Iron Memory & iron-* Skills (root)\nSQLite FTS5 + Hybrid RRF · 5 MCP Tools · iron ui Second Brain · 9 Skills · 7 Subagents"]
+    Browser["2. IronBrowser (packages/iron-browser)\nDual-Viewport 390×844 + 1280×720 · HTTP/WS/SFS2X Dedup · WebGL/CPU/Heap · 26 MCP Tools"]
+    Term["3. IronTerm (packages/iron-term)\nNative Rust + GPUI Terminal · Headless iron-agentd · 0 MB Hibernation · iron-termctl"]
+  end
+
+  Term <-->|"iron mcp (stdio / SSH)"| Memory
+  Term <-->|"IRON_BROWSER_SOCKET + browser_events"| Browser
+  Browser <-->|"iron-browser skill + verified invariants"| Memory
+```
+
+<p align="center">
+  <img src="assets/iron-suite-architecture.png" alt="Iron Stack Core Architecture — Read-Only Sources & Privacy Scrubber, SQLite FTS5 + Hybrid RRF Engine, Native Agent Runtimes + Adversarial Harness, Human Second Brain UI, and Closed Self-Correction Loop" width="100%" />
+</p>
+
+---
+
+## Quick Install
+
+### One-Command Unified Installer
+```sh
+# Default: iron CLI/MCP binary + 9 iron-* skills + 7 subagents + Claude Code MCP registration
+curl -fsSL https://raw.githubusercontent.com/arielonoriaga/iron-stack/main/install.sh | bash
+
+# Include IronBrowser (requires bun + cargo) and/or IronTerm (requires cargo):
+curl -fsSL https://raw.githubusercontent.com/arielonoriaga/iron-stack/main/install.sh | bash -s -- --browser
+curl -fsSL https://raw.githubusercontent.com/arielonoriaga/iron-stack/main/install.sh | bash -s -- --term
+curl -fsSL https://raw.githubusercontent.com/arielonoriaga/iron-stack/main/install.sh | bash -s -- --all
+```
+
+### Install Skills Only (`skills.sh` — Claude Code, Codex, Cursor, Antigravity)
+```sh
+npx skills add arielonoriaga/iron-stack
+```
+
+### Claude Code Plugin Marketplace
+```text
+/plugin marketplace add arielonoriaga/iron-stack
+/plugin install iron-suite@iron-suite-marketplace
+```
+
+### Cargo / `cargo-binstall` (`iron` Memory CLI + MCP Server)
+```sh
+cargo binstall iron-suite
+# or from source:
+cargo install --git https://github.com/arielonoriaga/iron-stack --locked
+```
+
+---
+
+## Monorepo Layout
+
+```text
+iron-stack/
+├── Cargo.toml                  # Root pure-Rust `iron-suite` crate (`iron` CLI + MCP + `iron ui`)
+├── install.sh                  # Unified installer (--binary-only, --skills-only, --browser, --term, --all)
+├── src/                        # SQLite FTS5 + Hybrid RRF memory engine, stdio MCP server & `iron ui`
+├── skills/                     # 9 adversarial engineering, browser, UX & security skills (`iron-*`)
+├── agents/                     # 7 role-isolated subagents (`iron-*-dev`, `iron-*-review`, `iron-verifier`)
+├── eval/                       # Byte-budget recall, replay idempotency & subprocess latency benchmarks
+├── packages/
+│   ├── iron-browser/           # Dual-viewport Chromium + Rust N-API TabEventBus + 26-tool `iron-browser-mcp`
+│   └── iron-term/              # Native Rust + GPUI terminal (`iron-gpui`), `iron-agentd`, `iron-termctl`
+└── docs/                       # SSH hub rollout, Second Brain UI & design contracts
+```
+
+Each package under `packages/` preserves its own independent `Cargo.toml` / build toolchain so `cargo install iron-suite`, `Dockerfile`, and MCP Registry builds remain pure, zero-bloat Rust without pulling in Chromium/Electron or GPUI/Vulkan dependencies unless explicitly requested.
+
+---
+
+## 1. Iron Memory (`iron`) — Bounded-Byte SQLite FTS5 Memory Hub
+
+Solves unbounded, noisy, cloud-locked agent memory with a single local Rust binary:
+
+| Capability | Plain `MEMORY.md` | Cloud Vector MCPs | **Iron Memory (`v0.3.1`)** |
 | :--- | :--- | :--- | :--- |
 | **Zero cloud / zero API keys** | Yes | No (hosted / paid) | **Yes (single Rust binary + SQLite)** |
 | **Hard byte budget (`--max-bytes`)** | No (dumps whole files) | Rarely | **Yes (exact UTF-8 serialized cap)** |
@@ -27,123 +106,31 @@ Iron Suite solves two recurring failures in agentic software engineering:
 | **Visual Second Brain & verification UI** | No | Hosted dashboard | **Yes (embedded local `iron ui`)** |
 | **Role isolation (`reviewer` = curated only)** | No | No | **Yes (built-in + `iron-*` skills)** |
 
----
-
-## How Iron Suite Works
-
-<p align="center">
-  <img src="assets/iron-suite-architecture.png" alt="Iron Suite Architecture — Sources & Capture, Iron Core SQLite FTS5 Engine, Native Agent Runtimes + Adversarial Harness, Human Second Brain UI, and Closed Self-Correction Loop" width="100%" />
-</p>
-
-Iron Suite is designed around a **native-runtime, closed-loop architecture** — it augments your existing coding agents (Claude Code, Codex, Cursor, Antigravity) directly over `stdio` MCP and modular skills rather than wrapping them inside a heavyweight Python orchestration framework or syncing code to a hosted vector cloud:
-
-1. **Read-Only Sources & Pre-Index Safety Gate:** Curated Markdown notes (`MEMORY.md`, project rules), optional session history (`Cavemem`), and replay-safe native notes (`memory_remember`) pass through a deterministic **Privacy Scrubber** (`<private>` spans, PEM keys, bearer tokens, credential assignments) and a private **`0600` `aliases.json`** project-normalization layer before anything is hashed or indexed. Source files on disk are never mutated by imports.
-2. **Authoritative Local Core (`memory.db` + `archive.db`):** A single local SQLite v2 WAL database indexes text with `unicode61` FTS5 and 32-byte SHA-256 deduplicated bodies, keeping hot curated rules fast while pushing older session logs into a read-only cold `archive.db` fallback. Ranking combines **BM25**, bounded **Hebbian reinforcement** (`uses + 2× confirms`), and **supersession decay (`0.15×`)** inside a hard serialized UTF-8 byte budget (`--max-bytes`) that always distinguishes `truncated: true` from `no_match: true`. Cross-session linking combines explicit Markdown `references`/`supersedes` edges with high-IDF `shares_anchor` links across shared files, symbols, and CWEs.
-3. **Native AI Runtimes & Adversarial `iron-*` Harness:** Coding agents connect via `iron mcp` (local `stdio` or plain `ssh` to a single workstation hub) with **role-scoped retrieval** (`developer` sees curated + native + history; `reviewer` sees curated Markdown only; `verifier` inspects independently). The `iron-*` skills enforce bounded implementation (`irondev`), fresh-context adversarial review (`irondev-review`), `1 -> N` vulnerability sweeps (`iron-hunt`), profiling (`iron-perf`), debugging (`iron-debug`), and audits (`iron-audit`) — backpropagating verified invariants into memory.
-4. **Human Second Brain Workbench (`iron ui`) & Closed Self-Correction Loop:** Because agent memory silently drifts if nobody inspects it, `iron ui` embeds a zero-dependency local HTTP/1.1 workbench (`Host`-allowlisted, CSRF-protected, strictly read-only on inspection) with an interactive **Second Brain** orbital graph, **Today & 14-Day Evolution Rates** (Signal-to-Noise lift, Verification Coverage, Native Velocity, Self-Correction), a **Trust Desk** (`Still True` / `Update & Supersede` / `Contradicted`), an **Agent Lens** retrieval simulator, and one-click **Project Merge / Rename (`aliases.json`)**. Every confirmation, supersession, correction, or project merge feeds directly back into the SQLite ranking engine and alias layer so your second brain compounds signal over time.
-
----
-
-## Quick Install
-
-### One-Command Install (Binary + Skills + Agents + Claude MCP)
 ```sh
-curl -fsSL https://raw.githubusercontent.com/arielonoriaga/iron-suite/main/install.sh | bash
-```
+# Import curated Markdown memories read-only & search under a strict UTF-8 byte ceiling
+iron memory import --claude-root ~/.claude
+iron memory search 'tenant isolation' --project commerce-core --strict-project --max-bytes 2000
 
-### Install Skills Only (`skills.sh` — Claude Code, Codex, Cursor, Antigravity)
-```sh
-npx skills add arielonoriaga/iron-suite
-```
-
-### Claude Code Plugin Marketplace
-```text
-/plugin marketplace add arielonoriaga/iron-suite
-/plugin install iron-suite@iron-suite-marketplace
-```
-
-### Cargo / `cargo-binstall` (`iron` Memory CLI + MCP Server)
-```sh
-cargo binstall iron-suite
-# or from source:
-cargo install --git https://github.com/arielonoriaga/iron-suite --locked
-```
-
----
-
-## What's Inside
-
-### 1. `iron` — Bounded-Byte SQLite FTS5 Memory CLI & MCP Hub
-
-```sh
-# Import curated Markdown memories (and optional Cavemem SQLite history) read-only
-iron memory import --claude-root ~/.claude --cavemem-db ~/.cavemem/data.db
-
-# Search with a strict serialized UTF-8 byte ceiling
-iron memory search 'cargo target directory' --repo . --max-bytes 2000
-iron memory search 'tenant isolation' --project commerce-core --strict-project
-
-# Paginated byte-exact fetch (or targeted Markdown section) & explicit graph traversal
-iron memory get mem_ID --max-bytes 4000
-iron memory get mem_ID --section 'Rollback' --max-bytes 4000
-iron memory related mem_ID --relation references
-iron context 'migration rollback' --project commerce-core --role reviewer
-
-# Save durable native notes or corrections (superseding outdated guidance & auto-linking past sessions)
-iron memory remember --project iron-suite --agent claude --kind correction \
-  --supersedes mem_OLD_ID \
-  --title 'Shared memory hub' --content 'Desktop holds the authoritative Iron v2 store.'
-iron memory feedback mem_ID --outcome helpful
-iron memory outcome --outcome pass --project commerce-core
-
-# Nightly sleep consolidation, code-drift audit, project merge & hot/cold v2 archive split
+# Save replay-safe notes/corrections & run nightly drift/contradiction consolidation
+iron memory remember --project iron-stack --agent claude --kind correction \
+  --supersedes mem_OLD_ID --title 'Shared memory hub' --content 'Desktop holds the authoritative store.'
 iron memory sleep --repos-root ~/Projects
-iron memory audit-drift --project commerce-core --repo ~/Projects/commerce-core
-iron memory consolidate --min-occurrences 3
-iron memory merge-project --from legacy-shop --to commerce-core
-iron memory migrate --from ~/.local/share/iron/memory.v1.db \
-  --output ~/.local/share/iron/memory.db --archive-output ~/.local/share/iron/archive.db
-iron memory backup --output ~/backups/iron-snapshot.db
 
-# Launch the zero-dependency Second Brain & Memory Verification Web UI (loopback by default)
+# Launch the zero-dependency Second Brain & Trust Desk Web UI (loopback by default)
 iron ui --port 7420
 ```
 
-#### Second Brain & Verification Web UI (`iron ui`)
-
-`iron ui` embeds a zero-dependency local HTTP/1.1 workbench directly inside the `iron` binary (pure Rust `std::net`, zero extra Cargo dependencies, `Host`-allowlisted and CSRF-protected) so you can visually inspect, verify, and curate the second brain your agents rely on:
-
 ![Iron Memory Second Brain UI](docs/iron-ui-second-brain.png)
 
-- **Second Brain (Interactive Knowledge Graph):** Obsidian-style orbital knowledge bubbles grouped by **Project Zones**, **Link Clusters**, or **Trust Zones**, with explicit reference edges, cross-session auto-anchor bridges, search spotlighting, day-growth halos, and dark/light themes.
-- **Today Pulse & 14-Day Evolution Rates:** Time-travel day selector (`◀ Today ▶`) and 14-day stacked activity chart tracking curated signal-to-noise lift, human verification coverage, native rule velocity, and self-correction rate.
-- **Trust Desk (Strictly Read-Only Inspection):** Inspect full Markdown/native memory prose, exact trust multiplier (`2.0×`/`2.2×` vs `0.15×` superseded decay), supersession lineage, `Drifted from HEAD` repo-path warnings, duplicate-body clusters, and the prioritized **Morning Review Queue** (correction flags, potential contradictions, drifted rules, and high-use unverified hubs) without mutating `use_count` until you click **Still True**, **Update & Supersede**, **Contradicted**, or **Outdated**.
-- **Agent Lens (Retrieval Simulator):** Run exact `developer`, `reviewer`, `verifier`, or side-by-side Dev-vs-Reviewer retrieval queries with live byte-budget rulers, truncation visibility, and provenance badges (`semantic_rrf`, `graph_neighbor`, `drifted:0.5x`).
-- **Project Merge, Rename & Persistent Aliases (`aliases.json`):** Consolidate fragmented or renamed projects directly from the UI (`⇄ Merge / Rename`) or CLI (`iron memory merge-project --from <OLD> --to <NEW>`). Saving a permanent alias writes a private `0600` `aliases.json` sibling file next to `memory.db` (zero schema changes) so future imports, `memory_remember`, and searches transparently resolve old names and subpaths/worktrees to the canonical project.
-- **Compounding Intelligence Engine (Zero-ML, Zero-Cloud):**
-  - **Hybrid Semantic RRF (`semantic.idx`):** Pure-Rust 512-dim sublinear TF + char n-gram + bilingual engineering-concept vectors fused with FTS5 BM25 via Reciprocal Rank Fusion, plus `camelCase`/`snake_case` query splitting, section-aware snippets, and 1-hop graph expansion (`references`, `co_used`, `shares_anchor`).
-  - **Code-Drift & Contradiction Auditing (`iron memory sleep` / `audit-drift`):** Verifies cited repo file paths against `git ls-files` (applying a `0.5×` rank decay to drifted memories), detects opposing directives sharing high-IDF technical anchors, and populates the Morning Review Queue.
-  - **Automatic Outcome Feedback & Co-Use Hebbian Edges (`iron memory outcome`):** Tracks session recalls in a bounded `0600` `session-ledger.json`, wires co-retrieved memories with bidirectional `co_used` edges, reinforces memories on verified `pass` outcomes, and flags memories for review on `fail`/`correction` hooks.
+### Memory MCP Server (`iron mcp` — 5 Tools)
+- `memory_search` — hybrid FTS5 BM25 + pure-Rust 512-dim RRF ranking, bounded Hebbian reinforcement, supersession decay, role scoping (`developer`/`reviewer`/`verifier`), and strict `max_bytes` (`256..65536`).
+- `memory_get` — UTF-8 byte-paginated retrieval (`offset`/`next_offset`) with cold `archive.db` fallback. Accepts record IDs only.
+- `memory_related` — traverses explicit `references`, `supersedes`, `co_used`, and high-IDF cross-session `shares_anchor` edges.
+- `memory_remember` — replay-safe native note & correction persistence with `<private>`/credential redaction prior to hashing.
+- `memory_feedback` — reinforces `helpful` memories or demotes `outdated`/`contradicted` entries.
 
-#### MCP Server (`iron mcp`)
-Exposes 5 tools over newline-delimited JSON-RPC `stdio` (`2025-06-18` / `2025-03-26` / `2024-11-05`):
-- `memory_search` — tokenized FTS5 retrieval ranked by BM25, bounded Hebbian usage/confirmation boost, and supersession decay, with `project`, `strict_project`, `role`, `source` (`all|curated|history|native|archive`), and `max_bytes` (`256..65536`, default `4000`).
-- `memory_get` — UTF-8 byte-paginated record retrieval (`offset` / `next_offset`) with supersession metadata, cold `archive.db` fallback, and per-session implicit usage reinforcement. Accepts record IDs only, never arbitrary file paths.
-- `memory_related` — traverses explicit Markdown `references`, `supersedes` chains, and deterministic high-IDF cross-conversation `shares_anchor` edges (including matched file/path/symbol/CWE/CVE evidence).
-- `memory_remember` — replay-safe native note & `correction` persistence (`supersedes: [...]`) with write-time cross-session `related_memories` discovery and `<private>`/credential redaction prior to hashing.
-- `memory_feedback` — explicitly reinforces `helpful` memories or demotes `outdated`/`contradicted` memories (with optional `superseded_by` pointer).
-
-#### Zero-Cloud Multi-Machine Shared Hub over SSH
-Run one authoritative SQLite WAL store on your workstation (`desktop`) and point every AI client on your laptop or remote devboxes at it over authenticated SSH — no sync conflicts, no open ports, no third-party cloud:
-
-```mermaid
-flowchart LR
-    Laptop["Laptop: Claude / Codex / Antigravity"] <-->|SSH stdio| Iron["iron mcp on desktop"]
-    Desktop["Desktop AI clients"] <-->|local stdio| Iron
-    More["Additional devboxes"] <-->|SSH stdio| Iron
-    Iron <--> Store[("Authoritative SQLite FTS5 + WAL")]
-    Sources["Curated Markdown & session snapshots"] -->|read-only import| Store
-```
+#### Zero-Cloud Multi-Machine Hub over SSH
+Point laptops and remote devboxes at one workstation SQLite WAL store over plain SSH (no open ports, no sync conflicts):
 
 ```json
 {
@@ -156,20 +143,52 @@ flowchart LR
 }
 ```
 
-See [docs/ssh-hub-rollout.md](docs/ssh-hub-rollout.md) and `integration/` for `systemd --user` refresh and 3-2-1 `gitleaks`-gated backup timers.
+See [docs/ssh-hub-rollout.md](docs/ssh-hub-rollout.md) and `integration/` for `systemd --user` timers.
 
 ---
 
-### 2. Bundled `iron-*` Skills (`skills/`) & Subagents (`agents/`)
+## 2. [IronBrowser](packages/iron-browser) — Dual-Viewport Chromium & 26-Tool MCP Server
+
+<p align="center">
+  <img src="packages/iron-browser/assets/iron-browser-cover.png" alt="IronBrowser — Dual-viewport Chromium developer browser and 26-tool Rust MCP server" width="100%" />
+</p>
+
+Runs **Portrait (`390×844`) and Landscape (`1280×720`) live side-by-side** in a single Chromium window with 3-tier mirrored input and **zero double-submitted mutations**:
+
+- **Full-Stack Single-Flight Dedup:** Deduplicates concurrent `POST`/`PUT`/`PATCH`/`DELETE` HTTP mutations (with correlation-ID remapping & gzip/br/deflate decompression), multiplexes WebSockets + SSE + **SmartFoxServer 2X (`SFS2X`)** binary frames over one upstream socket, and synchronizes `sessionStorage` + zero-reload `spa_sync` routes across panes (`Shared` vs `Isolated` partitions).
+- **Causal Rust `TabEventBus` (`~878 ns/op`) & Visual Forensics:** Tags downstream network, storage, download, popup, and route events with their originating `gestureSeq`; exports clipped-overflow screenshots, deterministic frame-stepped PNG filmstrips (`browser_repro` / `browser_filmstrip`), and `before`/`during`/`after` mark traces.
+- **WebGL, POS Hardware Lab & Off-Thread V8 Profilers:** Inspects WebGL/WebGL2 draw calls & stacking-context render order (`browser_webgl`), emulates `sunmi-v2-pro` / `low-end-android` hardware (`browser_emulate`), and runs non-blocking off-thread V8 CPU (`browser_profile` inclusive `callTree`) and Heap (`browser_heap` dominators, sampling, and leak diffs) profilers.
+- **26 Bounded-Byte MCP Tools + Embedded Agent Chat Dock:** Full tab lifecycle (`browser_open` with `background: true`, `browser_close_tab` with single/bulk `{ session, all }`, `browser_select_tab`, `browser_reload`, `browser_navigate_history`, `browser_wait_for`, `browser_storage`, `browser_metrics` with `tab_id`), focus-safe `--smoke` headless mode, setup-agnostic Linux Wayland/X11 detection, and an 8-edge resizable floating Agent Chat Dock (`agy`, `claude`, `codex`, `opencode`, custom CLI, or live `tmux`/IronTerm attach with live Markdown/code formatting).
+
+Read the full package documentation in [`packages/iron-browser/README.md`](packages/iron-browser/README.md).
+
+---
+
+## 3. [IronTerm](packages/iron-term) — Native Rust + GPUI Multi-Agent Fleet Terminal
+
+<p align="center">
+  <img src="packages/iron-term/assets/iron-term-cover.png" alt="IronTerm — Native Rust + GPUI Multi-Agent Terminal & Headless PTY Daemon" width="100%" />
+</p>
+
+Built for engineers running **10–25+ concurrent CLI agents** across sibling git worktrees without burning GPU VRAM or losing multi-day session state:
+
+- **Strict Daemon / Renderer Split (`iron-agentd` + `iron-gpui`):** Only the 1–2 visible terminal panes paint GPU frames (`95%` pure terminal glass); background sessions stay headless inside `portable-pty` + `alacritty_terminal` (`0` off-screen GPU frames); idle sessions hibernate to **`0 MB` live RAM** backed by SQLite checkpoints, todo checklists, workflow phases, and `--resume` tokens.
+- **Urgency-First Triage:** Collapsible `236px` **Whisper Rail** (`NEEDS YOU` · `ACTIVE` · `DORMANT`), 1-keystroke `28px` **Ghost Action Bar** (`Ctrl+1`/`2`/`3` or `Alt+1`/`2`/`3`), Fleet Overlay, Omnibox, native split panes, portable socket/host discovery, XDG `.desktop` installer, and a scriptable `iron-termctl` control CLI over `0600` Unix domain sockets.
+
+Read the full package documentation in [`packages/iron-term/README.md`](packages/iron-term/README.md).
+
+---
+
+## 4. Bundled `iron-*` Skills (`skills/`) & Subagents (`agents/`)
 
 | Skill | Purpose |
 | :--- | :--- |
-| **`iron-design`** | Ground-truth UX/UI design orchestrator: parallel FE + BE + anonymized prod audit -> `UX.md` brief -> 3 structurally distinct proposals (plus Gen-2 genetic recombination) in an isolated clickable `390px` + desktop UX Lab -> Plain-to-Magic elevation -> verified handoff to `irondev`. |
-| **`iron-browser`** | Dual-viewport (`390×844` Portrait + `1280×720` Landscape) Chromium verification skill driving [IronBrowser](https://github.com/arielonoriaga/iron-browser)'s 18-tool Rust MCP server: mirrored input, single-flight HTTP/WS/SSE/SFS2X dedup, causal `gestureSeq` bus forensics, POS/slow-device throttling (`sunmi-v2-pro`), off-thread `.cpuprofile` hotspot capture, clipped-overflow audits, and focus-safe `--smoke` runs. |
-| **`irondev`** | End-to-end feature/fix orchestrator: bounded implementer brief -> fresh-context review -> real-surface verification -> curated learning. |
+| **`iron-design`** | Ground-truth UX/UI design orchestrator: FE + BE + anonymized prod audit -> `UX.md` -> 3 structurally distinct proposals + Gen-2 recombination in an isolated `390px` + desktop UX Lab -> Plain-to-Magic elevation -> verified handoff to `irondev`. |
+| **`iron-browser`** | Dual-viewport Chromium verification skill driving IronBrowser's **26-tool** Rust MCP server (`browser_open` `background`, `browser_close_tab`, `browser_webgl`, `browser_emulate`, `browser_profile`, `browser_heap`, `browser_events`, `--smoke`). |
+| **`irondev`** | End-to-end feature/fix orchestrator: bounded implementer brief -> fresh-context adversarial review -> real-surface verification -> curated learning. |
 | **`irondev-dev`** | Shared implementation discipline for backend, frontend, and security engineering roles with canonical handoff contracts. |
 | **`irondev-review`** | Fresh-context adversarial code review selecting correctness, architecture, systems, and security lenses proportional to change risk. |
-| **`iron-hunt`** | Proactive read-only/sandboxed offensive vulnerability hunter: attack-surface mapping, scanner triage (`gitleaks`, `osv-scanner`, `semgrep`, `zizmor`, `ast-grep`), source-to-sink taint tracing, safe local repro proof, and `1 -> N` structural variant sweeps. |
+| **`iron-hunt`** | Proactive read-only/sandboxed offensive vulnerability hunter: attack-surface mapping, scanner triage (`gitleaks`, `osv-scanner`, `semgrep`, `zizmor`, `ast-grep`), taint tracing, safe local repro proof, and `1 -> N` variant sweeps. |
 | **`iron-audit`** | Read-only multi-lens codebase health & pre-release sweep producing severity-ranked findings and remediation briefs. |
 | **`iron-debug`** | Production-grade systematic debugging (`repro -> hypothesis -> instrument -> root cause -> fix -> invariant backprop`). |
 | **`iron-perf`** | Measurement-first performance engineering: baseline flamegraphs, query plans, and RUM evidence before any optimization edit. |
@@ -180,56 +199,12 @@ Bundled subagents (`agents/iron-*.md`): `iron-backend-dev`, `iron-backend-review
 
 ## Design Contracts & Honest Non-Claims
 
-- **Hard serialized UTF-8 byte budgets:** `--max-bytes` bounds the serialized JSON output (including escapes and trailing newline). Budget exhaustion sets `truncated: true` and is explicitly distinguished from `no_match: true`.
-- **Evidence, not authority:** Recalled memories retain timestamps and source locators; historical notes can be stale and never override live repository verification or user authorization.
-- **Best-effort redaction:** Derived-index import and `memory_remember` scrub `<private>` spans, PEM keys, bearer tokens, URL passwords, and common credential assignments, while leaving source files untouched. Heuristics do not replace secret management.
-- **Independent evaluation (`eval/`):** Fixtures under `eval/` measure source recall within byte budgets, replay idempotency, and subprocess latency; they do not claim billed token or invoice savings without provider telemetry. See [docs/upstream-learnings.md](docs/upstream-learnings.md).
-
----
-
-## The Iron Stack Ecosystem
-
-Iron Suite is the memory and skill foundation of **The Iron Stack** — three local-first, zero-cloud Rust & TypeScript systems engineered to work together over `stdio` MCP, `0600` Unix domain sockets, and plain SSH:
-
-```mermaid
-flowchart TB
-  subgraph Stack["The Iron Stack (Zero-Cloud · Local-First · MIT)"]
-    Suite["1. iron-suite (Available Now)\nSQLite FTS5 + Hybrid RRF Memory Hub · iron ui Second Brain · 9 iron-* Skills"]
-    Browser["2. iron-browser (Public Beta v0.1.1 — Available Now)\nDual-Viewport Chromium (390×844 + 1280×720) · WebGL & Heap Inspector · 20 MCP Tools"]
-    Term["3. iron-term (Coming Soon)\nNative Rust + GPUI Multi-Agent Fleet Terminal · Headless iron-agentd · 0 MB Hibernation"]
-  end
-
-  Term <-->|"iron mcp (stdio / SSH)"| Suite
-  Term <-->|"IRON_BROWSER_SOCKET + browser_events"| Browser
-  Browser <-->|"iron-browser skill + verified invariants"| Suite
-```
-
-### 1. [`iron-browser`](https://github.com/arielonoriaga/iron-browser) — *Public Beta (Available Now)*
-
-Dual-viewport Chromium developer browser and **20-tool native Rust MCP sidecar** (`iron-browser-mcp`) built so agents and humans verify mobile (`390×844`) and desktop (`1280×720`) simultaneously without double-submitting mutations:
-
-- **3-Tier Mirrored Input + Full-Stack Single-Flight Dedup:** Synchronizes proportional scroll, semantic DOM selectors (including Kobalte/Radix/`<dialog open>` backdrop dismissals and `preventDefault` PIN keypads), and `<canvas>` coordinates while deduplicating concurrent `POST`/`PUT`/`PATCH`/`DELETE` HTTP mutations (with correlation-ID remapping), multiplexing WebSockets + SSE + **SmartFoxServer 2X (`SFS2X`)** binary packets onto a single upstream connection, and replicating `sessionStorage` + zero-reload `spa_sync` transitions across panes.
-- **Causal Rust `TabEventBus` (`~878 ns/op`) & Visual Forensics:** Links every downstream network, storage, download, popup, and route effect to its originating `gestureSeq`; exports exact-size screenshots with per-element `clippedItems` overflow highlights, deterministic frame-stepped PNG filmstrips (`browser_repro` / `browser_filmstrip`), and `before`/`during`/`after` mark traces.
-- **POS & Slow-Device Hardware Lab + Off-Thread CPU/Heap & Crash Diagnostics:** Ships `sunmi-v2-pro` (`360×720`, `6×` CPU, `slow-4g`, `2 GB` `deviceMemory`, Android 7.1 UA) and `low-end-android` CDP profiles with host-to-target CPU `calibrate`, off-thread Worker V8 CPU (`browser_profile` inclusive `callTree`) & Heap (`browser_heap` snapshots, dominators, sampling, and leak diffs) profilers, network initiator call stacks, local Crashpad minidumps + stall/abnormal-exit watchdogs (`browser_health` / `iron-browser doctor`), and invisible focus-safe `--smoke` execution.
-
-### 2. `iron-term` — *Coming Soon*
-
-<p align="center">
-  <img src="assets/iron-term-preview.png" alt="IronTerm — Coming Soon Native Rust + GPUI Multi-Agent Fleet Terminal (Alacritty Blade)" width="100%" />
-</p>
-
-Native **Rust + GPUI** multi-agent terminal and cross-machine fleet orchestrator (*Alacritty Blade* architecture) designed for engineers running 15–30+ concurrent CLI coding sessions (`claude`, `agy`, `codex`, `opencode`, shells) across workstation and laptop without melting RAM, GPU, or human attention:
-
-- **Strict Daemon / Renderer Split (`iron-agentd` + `iron-gpui`):**
-  - **`iron-agentd` (Headless Rust Daemon — zero GUI deps):** Owns `portable-pty` master file descriptors, `alacritty_terminal` virtual grids, SQLite session state, and structured OSC/hook telemetry over `$XDG_RUNTIME_DIR/iron-term/agentd.sock` (`0600`) locally or multiplexed over plain `ssh -T <host> iron-termctl stdio-bridge` across machines (zero extra open ports).
-  - **`iron-gpui` (Native GPUI Desktop Client — *Alacritty Blade*):** Keeps **90–98% of screen pixels as pure GPU-accelerated terminal glass** (`⌘D` native split panes, zero web-app card walls). Only the 1–2 visible panes stream `alacritty_terminal` grid deltas; background active agents cost **`0` GPU frames**, and idle multi-day sessions **hibernate to `0 MB` live RAM** while preserving scrollback tails, `--resume` tokens, 1-line *"where I left off"* checkpoints, and wake-time git worktree freshness checks (`dirty` / `behind origin/main`).
-- **Urgency-First Triage Without Scrolling 300 Lines of ANSI:**
-  - **Collapsible `236px` Whisper Rail (`⌘\`):** Groups every session across machines strictly by actionability — `NEEDS YOU` (structured approval / guardrail / `review✓`), `ACTIVE` (live host + RAM badge), and collapsed-by-default `▸ DORMANT (0 MB)`.
-  - **1-Line Ghost Action Bar (*Fix-Before-Destroy*):** Surfaces `[1] Run via runq instead` · `[2] Allow` · `[3] Deny` hotkeys at the bottom hairline only when an agent is blocked, plus a single chained `<SideSheet>` (`Agent → Git Diff → Iron Memory → Browser Events`) with zero stacked modals.
-- **Multi-PC Thermal & Build-Queue Control (`runq`) + Zero-Dep `390px` Tailscale Companion:** Enforces host CPU/RAM slot policies (`free` / `shared 50%` work-hours cap / `off`) and local-DB host pins (`🔒`) across desktop and laptop, auto-wires spawned agents to `iron mcp` and `IRON_BROWSER_SOCKET`, and embeds an opt-in, CSRF/token-guarded `390px` mobile web companion inside `iron-agentd` so you can unblock approvals or hibernate sessions from your phone over Tailscale.
+- **Hard serialized UTF-8 byte budgets:** `--max-bytes` bounds serialized JSON output across `iron` and `iron-browser-mcp`; truncation sets `truncated: true` and is explicitly distinguished from empty matches.
+- **Evidence, not authority:** Recalled memories retain timestamps and source locators and never override live code verification or user authorization.
+- **Best-effort redaction & `0600` local IPC:** Memory imports, `TabEventBus`, structured logs, and profiler dumps scrub sensitive tokens/credentials and use `0600` Unix sockets/files; heuristics do not replace secret managers.
+- **Independent evaluation (`eval/`):** Fixtures verify byte-budget recall, replay idempotency, and subprocess latency without claiming unmeasured billed token savings.
 
 ### Companion CLI Utilities
-
 - **[entropy-hunter](https://github.com/arielonoriaga/entropy-hunter)** — Deterministic software-entropy analyzer CLI for Rust and TypeScript codebases.
 - **[lazyfetch](https://github.com/arielonoriaga/lazyfetch)** — Keyboard-driven terminal HTTP client (`Rust + ratatui`).
 - **[claude-statusline-bar](https://github.com/arielonoriaga/claude-statusline-bar)** — Information-dense terminal status line with live context, git, and rate-limit ramps.
@@ -240,12 +215,20 @@ Native **Rust + GPUI** multi-agent terminal and cross-machine fleet orchestrator
 ## Build & Verify
 
 ```sh
+# Core Iron Memory + eval harness
 cargo test --locked
 python3 -m unittest discover -s eval -p test_runner.py -v
+
+# IronBrowser (unit + Rust bus & 26-tool MCP tests)
+(cd packages/iron-browser/app && bun install && bun run build && bun test)
+cargo test --manifest-path packages/iron-browser/Cargo.toml --workspace --no-fail-fast
+
+# IronTerm (Rust workspace tests)
+cargo test --manifest-path packages/iron-term/Cargo.toml --workspace --no-fail-fast
 ```
 
 ## License
 
 MIT — Copyright (c) 2026 Ariel Onoriaga.
 
-MCP Registry: `mcp-name: io.github.arielonoriaga/iron-suite` · Listed on [Official MCP Registry](https://registry.modelcontextprotocol.io/v0.1/servers?search=iron-suite), [crates.io](https://crates.io/crates/iron-suite), and [Glama MCP Servers](https://glama.ai/mcp/servers/arielonoriaga/iron-suite)
+Website: [iron.huggian.com](https://iron.huggian.com) · MCP Registry: `mcp-name: io.github.arielonoriaga/iron-suite` · Listed on [Official MCP Registry](https://registry.modelcontextprotocol.io/v0.1/servers?search=iron-suite), [crates.io](https://crates.io/crates/iron-suite), and [Glama MCP Servers](https://glama.ai/mcp/servers/arielonoriaga/iron-suite)

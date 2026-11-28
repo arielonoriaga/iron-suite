@@ -1,12 +1,12 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.arielonoriaga/iron-suite",
-  "title": "Iron Suite — Zero-Cloud SQLite FTS5 Memory Hub",
-  "description": "Zero-cloud SQLite FTS5 stdio MCP memory hub with byte budgets, drift audit & local Second Brain UI.",
+  "title": "Iron Stack (Iron Memory) — Zero-Cloud SQLite FTS5 Memory Hub",
+  "description": "Zero-cloud SQLite FTS5 stdio MCP memory hub with byte budgets, drift audit & local Second Brain UI — core of The Iron Stack.",
   "version": "0.3.1",
-  "websiteUrl": "https://github.com/arielonoriaga/iron-suite",
+  "websiteUrl": "https://iron.huggian.com",
   "repository": {
-    "url": "https://github.com/arielonoriaga/iron-suite",
+    "url": "https://github.com/arielonoriaga/iron-stack",
     "source": "github"
   },
   "packages": [

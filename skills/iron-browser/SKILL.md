@@ -1,23 +1,24 @@
 ---
 name: iron-browser
-description: "Dual-viewport (390x844 Portrait + 1280x720 Landscape) Chromium developer browser & 20-tool Rust MCP server (`iron-browser` / `iron-browser-mcp`) with 3-tier mirrored pointer/keyboard input, HTTP/WS/SSE/SFS2X deduplication, native Rust `TabEventBus` (`browser_events` causal `gestureSeq`), WebGL draw-call & rendering-order inspection (`browser_webgl`), POS/slow-device emulation (`browser_emulate`), off-thread V8 CPU & Heap profiling (`browser_profile` inclusive `callTree`, `browser_heap` snapshots/sampling/diff), network initiator stacks (`browser_network`), crash/hang diagnostics (`browser_health` / `iron-browser doctor`), embedded multi-CLI Agent Chat Dock, deterministic `browser_repro`/`browser_filmstrip`, `browser_trace_start`/`stop`, and silent `--smoke` offscreen verification. Use whenever testing responsive mobile+desktop UI parity, WebGL draw calls/render order, slow Android/POS hardware, heap leaks, live multiplayer/WebSocket/RGS apps, UX Labs, clipped overflow, or multi-viewport regressions."
+description: "Dual-viewport (390x844 Portrait + 1280x720 Landscape) Chromium developer browser & 26-tool Rust MCP server (`iron-browser` / `iron-browser-mcp`) with 3-tier mirrored pointer/keyboard input, HTTP/WS/SSE/SFS2X deduplication, native Rust `TabEventBus` (`browser_events` causal `gestureSeq`), WebGL draw-call & rendering-order inspection (`browser_webgl`), POS/slow-device emulation (`browser_emulate`), off-thread V8 CPU & Heap profiling (`browser_profile` inclusive `callTree`, `browser_heap` snapshots/sampling/diff), network initiator stacks (`browser_network`), crash/hang diagnostics (`browser_health` / `iron-browser doctor`), tab lifecycle & storage control (`browser_close_tab`, `browser_select_tab`, `browser_reload`, `browser_navigate_history`, `browser_wait_for`, `browser_storage`), background tabs, embedded multi-CLI Agent Chat Dock (8-edge float resize + Markdown view), deterministic `browser_repro`/`browser_filmstrip`, `browser_trace_start`/`stop`, and silent `--smoke` offscreen verification. Use whenever testing responsive mobile+desktop UI parity, WebGL draw calls/render order, slow Android/POS hardware, heap leaks, live multiplayer/WebSocket/RGS apps, UX Labs, clipped overflow, or multi-viewport regressions."
 ---
 
 # IronBrowser (`iron-browser` & `iron-browser-mcp`)
 
-Site-agnostic dual-viewport Chromium developer browser (`https://github.com/arielonoriaga/iron-browser`, installed at `~/.local/bin/iron-browser` and `~/.local/bin/iron-browser-mcp`).
+Site-agnostic dual-viewport Chromium developer browser (`https://github.com/arielonoriaga/iron-stack` under `packages/iron-browser`, installed at `~/.local/bin/iron-browser` and `~/.local/bin/iron-browser-mcp`).
 
 ## When to Use `iron-browser` vs Other Browser Tools
 
 | Tool | Best For |
 | :--- | :--- |
-| **`iron-browser` / `iron-browser-mcp`** | Simultaneous **Portrait (`390×844`) + Landscape (`1280×720`)** parity, UX Lab validation, mirrored click/type/key/scroll/canvas testing, **HTTP + WebSocket + SSE + SFS2X binary deduplication**, cross-viewport `sessionStorage` sync, `sunmi-v2-pro` / slow-device CPU & network emulation (`browser_emulate`), off-thread `.cpuprofile` hotspot profiling (`browser_profile`), `browser_incidents` cross-pane error grouping, `browser_events` causal `gestureSeq` forensics, `browser_repro`/`browser_filmstrip` frame-stepping, `browser_trace_start`/`stop` mark windows, `browser_health` / `iron-browser doctor` diagnostics, and silent `--smoke` headless checks. |
+| **`iron-browser` / `iron-browser-mcp`** | Simultaneous **Portrait (`390×844`) + Landscape (`1280×720`)** parity, UX Lab validation, mirrored click/type/key/scroll/canvas testing, **HTTP + WebSocket + SSE + SFS2X binary deduplication**, cross-viewport `sessionStorage` sync, `sunmi-v2-pro` / slow-device CPU & network emulation (`browser_emulate`), off-thread `.cpuprofile` & `.heapsnapshot` profiling (`browser_profile`, `browser_heap`), `browser_incidents` cross-pane error grouping, `browser_events` causal `gestureSeq` forensics, `browser_repro`/`browser_filmstrip` frame-stepping, `browser_trace_start`/`stop` mark windows, `browser_health` / `iron-browser doctor` diagnostics, background tab lifecycle (`browser_open` `background: true`, `browser_close_tab`), and silent `--smoke` headless checks. |
 | **`browser-use`** | Single-tab automation inside the user's daily Chrome profile (existing SSO cookies) or stealth/multi-IP scraping via Browser Use Cloud. |
 
-## Display & Focus Safety (`--smoke`)
+## Display & Focus Safety (`--smoke` & Background Tabs)
 
-When running automated verification, E2E scripts, or background probes while the user is working, ALWAYS pass `--smoke` (or `launchElectronSession({ smoke: true })` in `app/test/e2e/lib/electron-harness.ts`).
+- When running automated verification, E2E scripts, or background probes while the user is working, ALWAYS pass `--smoke` (or `launchElectronSession({ smoke: true })` in `app/test/e2e/lib/electron-harness.ts`).
 - `--smoke` launches IronBrowser hidden offscreen (`--class=iron-browser-e2e`, `show: false`) and uses compositor `ForceRedraw` + Aura bounds-nudge capture (`~50–390ms`) so **zero windows pop onto the user's active monitor**.
+- When opening measurement or UX Lab tabs against a live user window, pass `background: true` and `session: "isolated"` to `browser_open`, and clean up afterward with `browser_close_tab({ tab_id })` or `browser_close_tab({ session: "isolated", all: true })`.
 
 ## Architecture & Synchronization Guarantees (`Dual + Mirror + Shared + Dedup`)
 
@@ -35,16 +36,18 @@ When running automated verification, E2E scripts, or background probes while the
 4. **Navigation Convergence, Zero-Reload SPA Sync & Auth Route Reconciliation (`handleNavSync`):**
    - **One-shot 302 launch convergence:** Converges initial 302 session-token redirects (`?user=...&token=...`) from Landscape onto Portrait once per programmatic navigation without mobile/desktop redirect ping-pong.
    - **Main-frame SPA `spa_sync` & `spa_auth_reconcile`:** Ignores subframe `did-navigate-in-page` (`isMainFrame === false`), transitions main-frame `pushState`/`replaceState` routes in-page without dropping WebSockets/SSE, and reconciles diverged routes when one pane unlocks via `sessionStorage` auth or hits an interactive `target-not-found` miss on a stale route.
+5. **Setup-Agnostic Linux Portability & Embedded Agent Chat Dock:**
+   - Auto-detects Wayland/X11 Ozone (`--ozone-platform-hint=auto`), discovers agent CLIs on `$PATH` (`agy`, `claude`, `codex`, `opencode`, custom CLI) without hardcoding personal dotfiles, optionally attaches to live `tmux` panes or IronTerm `iron-agentd` sockets when present, and provides an 8-edge resizable floating Agent Chat Dock with O(N) live Markdown/code/ANSI rendering.
 
-## Complete 20-Tool MCP Surface (`iron-browser mcp`)
+## Complete 26-Tool MCP Surface (`iron-browser-mcp`)
 
 | Tool | Purpose & Key Arguments |
 | :--- | :--- |
 | `browser_tabs` | List tabs, URLs, `mode` (`single`/`dual`), `mirror`, `dedup`, `session`, `dedupCount`, `loading`, and `viewportReport` (`requestedSize`, `effectiveCssSize`, `dpr`, `capturedPixels`, `sizeMismatch`). |
-| `browser_open` | Open URL (`mode: "dual"\|"single"`, `session: "shared"\|"isolated"`, `portrait_preset`, `landscape_preset`, `portrait_size`, `landscape_size`). |
+| `browser_open` | Open URL (`mode: "dual"\|"single"`, `session: "shared"\|"isolated"`, `background: true\|false`, `portrait_preset`, `landscape_preset`, `portrait_size`, `landscape_size`). |
 | `browser_navigate` | Navigate `tab_id` (syncs both panes in dual mode; `waitForTabReady` tracks `wcLoadStates` + `pendingReloads`). |
 | `browser_screenshot` | Capture `portrait`, `landscape`, or `both` PNGs with `layoutAudit` (`clippedItems` selectors/bounds/`overflowPx`), `exact_size: true`, `highlight_clipped: true`, `clip`, and partial per-pane timeout recovery. |
-| `browser_metrics` | Live telemetry: `gpuProcessCpuPercent` (separated from `gpuExecutionTimeMs`), per-pane CPU%/RAM MB, `rAF` FPS/p95/jank, CDP JS heap & DOM nodes, `mirrorMiss`, `dedupCount`, and active `emulation`. |
+| `browser_metrics` | Live telemetry (`tab_id` optional): `gpuProcessCpuPercent` (separated from `gpuExecutionTimeMs`), per-pane CPU%/RAM MB, `rAF` FPS/p95/jank, CDP JS heap & DOM nodes, `mirrorMiss`, `dedupCount`, and active `emulation`. |
 | `browser_interact` | Trusted Chromium `click` \| `type` \| `scroll` \| `key` \| `hover` via `selector` or normalized `(x, y)` with `mirror: true\|false` (opens causal `gestureSeq`). |
 | `browser_console` | Bounded console entries (`viewport`, `level`, `limit`, `include_incidents`). |
 | `browser_network` | Recent HTTP/WS entries (`filter: "all"\|"failed"\|"4xx"\|"5xx"`, `url_contains`, sync + async JS `initiator` call stacks, monotonic `ttfbMs`/`durationMs`, `encodedBytes`/`decodedBytes`, `include_incidents`). |
@@ -60,6 +63,12 @@ When running automated verification, E2E scripts, or background probes while the
 | `browser_heap` | Off-thread V8 Heap profiler (`action: "snapshot"\|"sampling_start"\|"sampling_stop"\|"diff"`) streaming `0600` `.heapsnapshot` files, computing Cooper-Harvey-Kennedy dominator retained sizes, top 30 constructors, detached DOM counts, top retainers, allocation stacks, and snapshot leak diffs. |
 | `browser_health` | Live main-thread event-loop lag, renderer crash/unresponsive flags, watchdog stalls, per-instance `main.log` tail (`process.abnormal_exit`), and offline Crashpad `.dmp` inspection. |
 | `browser_webgl` | WebGL/WebGL2 draw calls, triangles/vertices, instanced draws, shader switches, texture binds, FBO render passes, GPU resource counts, 1-frame chronological draw-call log (`action: "capture_frame"`), and CSS/Canvas paint & stacking-context rendering order (`rendering_order`). |
+| `browser_close_tab` | Close tab by `tab_id` (defaults to active tab), or bulk-close by `session: "isolated"\|"shared"` and/or `all: true` (strict `additionalProperties: false`; preserves a clean fallback tab if closing the last tab). |
+| `browser_select_tab` | Switch active tab by `tab_id`, waking sleeping tabs and syncing Dual/Single viewports. |
+| `browser_reload` | Reload active viewports with optional `ignore_cache` bypass (defaults to `true`). |
+| `browser_navigate_history` | Navigate `back` or `forward` in tab history across mirrored viewports. |
+| `browser_wait_for` | Bounded wait for `selector`, `text`, `url_includes`, and/or `network_idle_ms` (ignoring long-lived WS/SSE streams). |
+| `browser_storage` | Inspect, set, remove, or clear `cookies`, `localStorage`, and `sessionStorage` respecting `Shared` vs `Isolated` partitions. |
 
 ## CLI & MCP Configuration
 
@@ -70,7 +79,7 @@ iron-browser --smoke
 iron-browser doctor
 
 # Stdio MCP server (connects to $IRON_BROWSER_SOCKET or $XDG_RUNTIME_DIR/iron-browser/ctl.sock)
-iron-browser mcp
+iron-browser-mcp
 ```
 
 ```json

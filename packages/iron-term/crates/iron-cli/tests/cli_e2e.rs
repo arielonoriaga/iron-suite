@@ -197,9 +197,10 @@ async fn cli_works_in_isolated_env_via_iron_term_socket_without_personal_hosts()
     assert_eq!(hosts.len(), 1);
     assert_eq!(hosts[0]["id"].as_str(), Some(local_host.as_str()));
     assert_eq!(hosts[0]["hostname"].as_str(), Some(local_host.as_str()));
-    assert_ne!(hosts[0]["id"].as_str(), Some("desktop"));
-    assert_ne!(hosts[0]["id"].as_str(), Some("laptop"));
-    assert_ne!(hosts[0]["hostname"].as_str(), Some("desktop-exo"));
+    assert!(hosts
+        .iter()
+        .all(|h| h["id"].as_str() == Some(local_host.as_str())
+            && h["hostname"].as_str() == Some(local_host.as_str())));
 
     // Full spawn -> hibernate -> wake lifecycle under isolated env.
     let spawn = run_ctl_isolated(

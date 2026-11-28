@@ -828,9 +828,8 @@ async fn daemon_binary_uses_generic_local_host_in_isolated_env_and_respects_flee
             assert_eq!(hosts[0].hostname, local_host);
             assert_eq!(hosts[0].cap_pct, 95);
             assert_eq!(hosts[0].max_slots, 2);
-            assert_ne!(hosts[0].id, "desktop");
-            assert_ne!(hosts[0].id, "laptop");
-            assert_ne!(hosts[0].hostname, "desktop-exo");
+            // Must never inject hardcoded peers alongside the resolved local hostname
+            assert!(hosts.iter().all(|h| h.id == local_host && h.hostname == local_host));
         }
         other => panic!("expected Fleet, got {other:?}"),
     }
