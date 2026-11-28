@@ -8,10 +8,10 @@ use regex::Regex;
 use super::scan::{
     LineIndex, enclosing_fn_name, extract_why_rust, find_matching_delim, find_rust_functions,
     find_semicolon_at_depth_zero, for_each_dot_call, is_ident_byte, matches_external_glob,
-    normalize_path, read_rust_service_files, rust_code_mask, skip_angle_generics, skip_ascii_ws,
-    sort_extracted_calls, split_top_level_args, unquote_double_string,
+    normalize_path, parallel_map, read_rust_service_files, rust_code_mask, skip_angle_generics,
+    skip_ascii_ws, sort_extracted_calls, split_top_level_args, unquote_double_string,
 };
-use super::{ExtractedCall, HttpMethod};
+use super::types::{ExtractedCall, HttpMethod};
 
 const SELF_RECEIVERS: &[&str] = &["self", "&self", "&mut self", "mut self"];
 const POSITIONAL_WRAPPER_FMTS: &[&str] = &["{}{}", "{}/{}"];
@@ -48,6 +48,22 @@ struct WrapperDef {
     call_pos: usize,
 }
 
+pub fn extract_from_sources(
+    repo: &str,
+    external_globs: &[String],
+    sources: &[(String, String)],
+) -> Vec<ExtractedCall> {
+    let mut calls: Vec<ExtractedCall> = parallel_map(sources, |(rel, stripped)| {
+        let external = matches_external_glob(external_globs, repo, rel);
+        extract_file(rel, stripped, external)
+    })
+    .into_iter()
+    .flatten()
+    .collect();
+    sort_extracted_calls(&mut calls);
+    calls
+}
+
 pub fn extract_service(
     repo: &str,
     repo_dir: &Path,
@@ -55,13 +71,8 @@ pub fn extract_service(
     external_globs: &[String],
     tracked_files: &[String],
 ) -> Result<Vec<ExtractedCall>> {
-    let mut calls = Vec::new();
-    for (rel, stripped) in read_rust_service_files(repo_dir, service_root, tracked_files) {
-        let external = matches_external_glob(external_globs, repo, &rel);
-        calls.extend(extract_file(&rel, &stripped, external));
-    }
-    sort_extracted_calls(&mut calls);
-    Ok(calls)
+    let sources = read_rust_service_files(repo_dir, service_root, tracked_files);
+    Ok(extract_from_sources(repo, external_globs, &sources))
 }
 
 struct FileCtx<'a> {

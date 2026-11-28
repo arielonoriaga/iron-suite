@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::Path;
@@ -5,9 +6,9 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
-use super::scan::path_segment_count;
+use super::scan::{is_compose_file, join_paths, normalize_path, path_segment_count};
 use super::store::{CallRow, EdgeRow, EndpointRow, ServiceRow};
-use super::{Confidence, GraphConfig, HttpMethod, PrefixState};
+use super::types::{Confidence, GraphConfig, HttpMethod, PrefixState, ServiceConfig};
 
 const MIN_UNIQUE_SEGMENTS: usize = 3;
 const MIN_SUFFIX_SEGMENTS: usize = 2;
@@ -30,13 +31,12 @@ struct ResolverIndex<'a> {
 pub fn collect_compose_env(
     repo_dir: &Path,
     tracked_files: &[String],
-    services: &BTreeMap<String, super::ServiceConfig>,
+    services: &BTreeMap<String, ServiceConfig>,
 ) -> BTreeMap<String, String> {
     let mut discovered = BTreeMap::new();
     let known_names: Vec<String> = services.keys().cloned().collect();
     for rel in tracked_files {
-        let lower = rel.to_ascii_lowercase();
-        if !(lower.contains("compose") && (lower.ends_with(".yml") || lower.ends_with(".yaml"))) {
+        if !is_compose_file(rel) {
             continue;
         }
         let Ok(content) = fs::read_to_string(repo_dir.join(rel)) else {
@@ -52,6 +52,23 @@ pub fn collect_compose_env(
         }
     }
     discovered
+}
+
+pub(crate) fn effective_call_path<'a>(config: &GraphConfig, call: &'a CallRow) -> (Cow<'a, str>, bool) {
+    let key = format!("{}:{}", call.repo, call.file);
+    if let Some(prefix) = config.prefixes.get(&key).filter(|p| !p.is_empty()) {
+        let norm_prefix = normalize_path(prefix);
+        if !norm_prefix.is_empty()
+            && call.path_norm != norm_prefix
+            && !call.path_norm.starts_with(&format!("{norm_prefix}/"))
+        {
+            return (
+                Cow::Owned(normalize_path(&join_paths(&norm_prefix, &call.path_norm))),
+                true,
+            );
+        }
+    }
+    (Cow::Borrowed(call.path_norm.as_str()), false)
 }
 
 pub fn resolve_edges(
@@ -124,23 +141,57 @@ fn resolve_single_call<'a>(
     index: &ResolverIndex<'a>,
     call: &CallRow,
 ) -> Option<(Vec<&'a EndpointRow>, Confidence)> {
-    if let Some(target_svc) = configured_service_for_call(call, index) {
-        if let Some(eps) = lookup_service_endpoints(&index.by_svc_method_path, target_svc, call) {
-            return Some((eps, Confidence::Configured));
-        }
-        return match_partial_suffix(call, Some(target_svc), &index.partial_endpoints)
-            .map(|eps| (eps, Confidence::Suffix));
+    let (eff_path, prefix_applied) = effective_call_path(index.config, call);
+    if let Some(hit) = resolve_for_path(index, call, &eff_path, prefix_applied) {
+        return Some(hit);
     }
-    if let Some(eps) = match_unique_provider(call, &index.by_method_path) {
-        return Some((eps, Confidence::Unique));
+    if prefix_applied {
+        return resolve_for_path(index, call, &call.path_norm, false);
     }
-    if let Some(eps) = match_name_hint(call, &index.by_method_path) {
-        return Some((eps, Confidence::Name));
-    }
-    match_partial_suffix(call, None, &index.partial_endpoints).map(|eps| (eps, Confidence::Suffix))
+    None
 }
 
-fn merge_env_maps(
+fn resolve_for_path<'a>(
+    index: &ResolverIndex<'a>,
+    call: &CallRow,
+    path_norm: &str,
+    prefix_applied: bool,
+) -> Option<(Vec<&'a EndpointRow>, Confidence)> {
+    if let Some(target_svc) = configured_service_for_call_with_maps(
+        index.config,
+        &index.env_map,
+        &index.service_base,
+        call,
+    ) {
+        if let Some(eps) =
+            lookup_service_endpoints(&index.by_svc_method_path, target_svc, call.method, path_norm)
+        {
+            return Some((eps, Confidence::Configured));
+        }
+        return match_partial_suffix(call.method, path_norm, Some(target_svc), &index.partial_endpoints)
+            .map(|eps| (eps, Confidence::Suffix));
+    }
+    if prefix_applied
+        && let Some(eps) = match_unique_provider_min(call.method, path_norm, &index.by_method_path, 1)
+    {
+        return Some((eps, Confidence::Configured));
+    }
+    if let Some(eps) = match_unique_provider_min(
+        call.method,
+        path_norm,
+        &index.by_method_path,
+        MIN_UNIQUE_SEGMENTS,
+    ) {
+        return Some((eps, Confidence::Unique));
+    }
+    if let Some(eps) = match_name_hint(call, path_norm, &index.by_method_path) {
+        return Some((eps, Confidence::Name));
+    }
+    match_partial_suffix(call.method, path_norm, None, &index.partial_endpoints)
+        .map(|eps| (eps, Confidence::Suffix))
+}
+
+pub(crate) fn merge_env_maps(
     auto_env: &BTreeMap<String, String>,
     explicit_env: &BTreeMap<String, String>,
 ) -> BTreeMap<String, String> {
@@ -151,17 +202,22 @@ fn merge_env_maps(
     merged
 }
 
-fn configured_service_for_call<'a>(call: &CallRow, index: &'a ResolverIndex<'a>) -> Option<&'a str> {
+pub(crate) fn configured_service_for_call_with_maps<'a>(
+    config: &'a GraphConfig,
+    env_map: &'a BTreeMap<String, String>,
+    service_base: &HashMap<&'a str, &'a str>,
+    call: &CallRow,
+) -> Option<&'a str> {
     let key = format!("{}:{}", call.repo, call.file);
-    if let Some(target) = index.config.clients.get(&key) {
+    if let Some(target) = config.clients.get(&key) {
         return Some(target.as_str());
     }
     if !call.base_ref.is_empty() {
-        if let Some(target) = index.env_map.get(&call.base_ref) {
+        if let Some(target) = env_map.get(&call.base_ref) {
             return Some(target.as_str());
         }
         let base_norm = canonical_token(&call.base_ref);
-        for (env_var, svc) in &index.env_map {
+        for (env_var, svc) in env_map {
             let env_norm = canonical_token(env_var);
             if !base_norm.is_empty()
                 && !env_norm.is_empty()
@@ -171,43 +227,48 @@ fn configured_service_for_call<'a>(call: &CallRow, index: &'a ResolverIndex<'a>)
             }
         }
     }
-    index.service_base.get(call.service.as_str()).copied()
+    service_base.get(call.service.as_str()).copied()
 }
 
 fn lookup_service_endpoints<'a>(
     by_svc_method_path: &HashMap<(&'a str, HttpMethod, &'a str), Vec<&'a EndpointRow>>,
     target_svc: &str,
-    call: &CallRow,
+    method: HttpMethod,
+    path_norm: &str,
 ) -> Option<Vec<&'a EndpointRow>> {
-    if let Some(eps) = by_svc_method_path.get(&(target_svc, call.method, call.path_norm.as_str())) {
+    if let Some(eps) = by_svc_method_path.get(&(target_svc, method, path_norm)) {
         return Some(eps.clone());
     }
-    if call.method != HttpMethod::Any
-        && let Some(eps) =
-            by_svc_method_path.get(&(target_svc, HttpMethod::Any, call.path_norm.as_str()))
+    if method != HttpMethod::Any
+        && let Some(eps) = by_svc_method_path.get(&(target_svc, HttpMethod::Any, path_norm))
     {
         return Some(eps.clone());
     }
     None
 }
 
-fn match_unique_provider<'a>(
-    call: &CallRow,
+fn match_unique_provider_min<'a>(
+    method: HttpMethod,
+    path_norm: &str,
     by_method_path: &HashMap<(HttpMethod, &'a str), Vec<&'a EndpointRow>>,
+    min_segments: usize,
 ) -> Option<Vec<&'a EndpointRow>> {
-    if path_segment_count(&call.path_norm) < MIN_UNIQUE_SEGMENTS {
+    if path_segment_count(path_norm) < min_segments {
         return None;
     }
-    let eps = by_method_path.get(&(call.method, call.path_norm.as_str()))?;
+    let eps = by_method_path
+        .get(&(method, path_norm))
+        .or_else(|| (method != HttpMethod::Any).then(|| by_method_path.get(&(HttpMethod::Any, path_norm))).flatten())?;
     let services: HashSet<&str> = eps.iter().map(|e| e.service.as_str()).collect();
     (services.len() == 1).then(|| eps.clone())
 }
 
 fn match_name_hint<'a>(
     call: &CallRow,
+    path_norm: &str,
     by_method_path: &HashMap<(HttpMethod, &'a str), Vec<&'a EndpointRow>>,
 ) -> Option<Vec<&'a EndpointRow>> {
-    let eps = by_method_path.get(&(call.method, call.path_norm.as_str()))?;
+    let eps = by_method_path.get(&(call.method, path_norm))?;
     let candidates: Vec<String> = eps
         .iter()
         .map(|e| e.service.clone())
@@ -225,7 +286,8 @@ fn match_name_hint<'a>(
 }
 
 fn match_partial_suffix<'a>(
-    call: &CallRow,
+    method: HttpMethod,
+    path_norm: &str,
     scoped_service: Option<&str>,
     partial_endpoints: &[&'a EndpointRow],
 ) -> Option<Vec<&'a EndpointRow>> {
@@ -235,10 +297,10 @@ fn match_partial_suffix<'a>(
         if scoped_service.is_some_and(|svc| ep.service != svc) {
             continue;
         }
-        if ep.method != call.method && ep.method != HttpMethod::Any {
+        if ep.method != method && ep.method != HttpMethod::Any {
             continue;
         }
-        if !path_ends_with_segment_suffix(&call.path_norm, &ep.path_norm) {
+        if !path_ends_with_segment_suffix(path_norm, &ep.path_norm) {
             continue;
         }
         if ep.path_norm.len() > best_len {
@@ -253,7 +315,7 @@ fn match_partial_suffix<'a>(
     (services.len() == 1).then_some(matches)
 }
 
-fn path_ends_with_segment_suffix(full: &str, suffix: &str) -> bool {
+pub(crate) fn path_ends_with_segment_suffix(full: &str, suffix: &str) -> bool {
     if full == suffix {
         return true;
     }
@@ -263,7 +325,7 @@ fn path_ends_with_segment_suffix(full: &str, suffix: &str) -> bool {
     full.as_bytes()[full.len() - suffix.len()] == b'/'
 }
 
-fn match_service_by_hint(haystack: &str, candidates: &[String]) -> Option<String> {
+pub(crate) fn match_service_by_hint(haystack: &str, candidates: &[String]) -> Option<String> {
     let hay = canonical_token(haystack);
     if hay.is_empty() {
         return None;
@@ -284,7 +346,7 @@ fn match_service_by_hint(haystack: &str, candidates: &[String]) -> Option<String
     (hits.len() == 1).then(|| hits.into_iter().next()).flatten()
 }
 
-fn canonical_token(raw: &str) -> String {
+pub(crate) fn canonical_token(raw: &str) -> String {
     raw.bytes()
         .filter(|b| b.is_ascii_alphanumeric())
         .map(|b| b.to_ascii_lowercase() as char)
@@ -355,6 +417,7 @@ mod tests {
             services: BTreeMap::new(),
             env: BTreeMap::new(),
             clients: BTreeMap::new(),
+            prefixes: BTreeMap::new(),
             external: Vec::new(),
         }
     }
@@ -399,5 +462,28 @@ mod tests {
         assert_eq!(by_call.get(&11), Some(&(3, Confidence::Unique)));
         assert_eq!(by_call.get(&12), Some(&(2, Confidence::Name)));
         assert_eq!(by_call.get(&13), Some(&(4, Confidence::Suffix)));
+    }
+
+    #[test]
+    fn prefixes_config_resolves_prefixed_calls_and_preserves_unprefixed_fallback() {
+        let mut cfg = empty_config();
+        cfg.prefixes
+            .insert("ez-commerce:src/catalog_client.rs".to_owned(), "/catalog".to_owned());
+        let endpoints = vec![
+            sample_endpoint(1, "ez-addon-api", HttpMethod::Get, "/catalog/v1/brands", PrefixState::Resolved),
+            sample_endpoint(2, "ez-addon-api", HttpMethod::Post, "/catalog/upload", PrefixState::Resolved),
+            sample_endpoint(3, "ez-commerce-api", HttpMethod::Get, "/api/v1/local", PrefixState::Full),
+        ];
+        let calls = vec![
+            sample_call(10, "ez-commerce-api", "ez-commerce", "src/catalog_client.rs", HttpMethod::Get, "/v1/brands", "self.base_url"),
+            sample_call(11, "ez-commerce-api", "ez-commerce", "src/catalog_client.rs", HttpMethod::Post, "/upload", "self.base_url"),
+            sample_call(12, "ez-commerce-api", "ez-commerce", "src/catalog_client.rs", HttpMethod::Get, "/api/v1/local", "self.base_url"),
+        ];
+        let edges = resolve_edges(&cfg, &BTreeMap::new(), &[], &endpoints, &calls);
+        let by_call: HashMap<i64, (i64, Confidence)> =
+            edges.into_iter().map(|e| (e.call_id, (e.endpoint_id, e.confidence))).collect();
+        assert_eq!(by_call.get(&10), Some(&(1, Confidence::Configured)));
+        assert_eq!(by_call.get(&11), Some(&(2, Confidence::Configured)));
+        assert_eq!(by_call.get(&12), Some(&(3, Confidence::Unique)));
     }
 }

@@ -1,14 +1,21 @@
+use std::collections::BTreeMap;
+use std::fs;
 use std::path::Path;
 use std::process::Command;
+use std::thread;
 
 use anyhow::{Context, Result, bail};
 
 use crate::output;
 
 const MAX_WHY_BYTES: usize = 80;
-const DYNAMIC_SEG: &str = "{}";
+pub(crate) const DYNAMIC_SEG: &str = "{}";
 const ROOT_SLASH: &str = "/";
 const CFG_TEST_NAME: &str = "test";
+const STAGE_NORMAL: &str = "0";
+const HASH_OBJECT_CHUNK: usize = 256;
+const PARALLEL_MIN_ITEMS: usize = 4;
+const REGULAR_FILE_MODES: &[&str] = &["100644", "100755"];
 const TEST_DIRS: &[&str] = &[
     "tests",
     "test",
@@ -20,6 +27,7 @@ const TEST_DIRS: &[&str] = &[
 ];
 const RUST_TEST_STEMS: &[&str] = &["tests", "test", "test_support"];
 const TS_JS_EXTS: &[&str] = &[".tsx", ".ts", ".jsx", ".js", ".mts", ".cts"];
+const TS_SCAN_EXTS: &[&str] = &[".ts", ".tsx", ".js", ".jsx"];
 
 pub struct LineIndex {
     line_starts: Vec<usize>,
@@ -80,6 +88,167 @@ pub fn git_is_dirty(repo_dir: &Path) -> bool {
         .is_ok_and(|out| out.status.success() && !out.stdout.is_empty())
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct GitWorkingTreeStatus {
+    pub dirty: bool,
+    pub modified_or_untracked: Vec<String>,
+    pub deleted: Vec<String>,
+}
+
+pub fn git_status_porcelain(repo_dir: &Path) -> Result<GitWorkingTreeStatus> {
+    let stdout = run_git_stdout(repo_dir, &["status", "--porcelain=v1", "-z", "-uall"])?;
+    if stdout.is_empty() {
+        return Ok(GitWorkingTreeStatus::default());
+    }
+    let mut status = GitWorkingTreeStatus {
+        dirty: true,
+        modified_or_untracked: Vec::new(),
+        deleted: Vec::new(),
+    };
+    let entries: Vec<&[u8]> = stdout.split(|&b| b == 0).collect();
+    let mut idx = 0usize;
+    while idx < entries.len() {
+        let entry = entries[idx];
+        idx += 1;
+        if entry.len() < 4 {
+            continue;
+        }
+        let x = entry[0];
+        let y = entry[1];
+        let Ok(path) = std::str::from_utf8(&entry[3..]) else {
+            continue;
+        };
+        if matches!(x, b'R' | b'C') {
+            idx += 1;
+        }
+        if y == b'D' {
+            status.deleted.push(path.to_owned());
+        } else if (x == b'?' && y == b'?') || matches!(y, b'M' | b'T' | b'A' | b'U') {
+            status.modified_or_untracked.push(path.to_owned());
+        }
+    }
+    Ok(status)
+}
+
+pub fn git_ls_files_hashed(repo_dir: &Path) -> Result<BTreeMap<String, String>> {
+    let stdout = run_git_stdout(repo_dir, &["ls-files", "-s", "-z"])?;
+    let mut map = BTreeMap::new();
+    for entry in stdout.split(|&b| b == 0) {
+        if entry.is_empty() {
+            continue;
+        }
+        let Some(tab) = entry.iter().position(|&b| b == b'\t') else {
+            continue;
+        };
+        let Ok(meta) = std::str::from_utf8(&entry[..tab]) else {
+            continue;
+        };
+        let Ok(rel) = std::str::from_utf8(&entry[tab + 1..]) else {
+            continue;
+        };
+        let mut parts = meta.split_whitespace();
+        let (Some(mode), Some(sha), Some(stage)) = (parts.next(), parts.next(), parts.next()) else {
+            continue;
+        };
+        if !REGULAR_FILE_MODES.contains(&mode) {
+            continue;
+        }
+        if stage == STAGE_NORMAL || !map.contains_key(rel) {
+            map.insert(rel.to_owned(), sha.to_owned());
+        }
+    }
+    Ok(map)
+}
+
+pub fn git_hash_objects(repo_dir: &Path, rel_paths: &[String]) -> Result<BTreeMap<String, String>> {
+    let existing: Vec<&String> = rel_paths
+        .iter()
+        .filter(|rel| {
+            fs::symlink_metadata(repo_dir.join(rel))
+                .is_ok_and(|m| !m.file_type().is_symlink() && m.is_file())
+        })
+        .collect();
+    let mut hashes = BTreeMap::new();
+    for chunk in existing.chunks(HASH_OBJECT_CHUNK) {
+        let mut cmd = Command::new("git");
+        cmd.arg("-C").arg(repo_dir).args(["hash-object", "--"]);
+        for rel in chunk {
+            cmd.arg(rel);
+        }
+        let out = cmd
+            .output()
+            .with_context(|| format!("cannot run git hash-object in {}", repo_dir.display()))?;
+        if !out.status.success() {
+            bail!(
+                "git hash-object failed in {}: {}",
+                repo_dir.display(),
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+        }
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        for (rel, line) in chunk.iter().zip(stdout.lines()) {
+            let trimmed = line.trim();
+            if !trimmed.is_empty() {
+                hashes.insert((*rel).clone(), trimmed.to_owned());
+            }
+        }
+    }
+    Ok(hashes)
+}
+
+pub fn git_file_hashes_with_status(
+    repo_dir: &Path,
+    status: &GitWorkingTreeStatus,
+) -> Result<BTreeMap<String, String>> {
+    let mut map = git_ls_files_hashed(repo_dir)?;
+    for rel in &status.deleted {
+        map.remove(rel);
+    }
+    if !status.modified_or_untracked.is_empty() {
+        let wt_hashes = git_hash_objects(repo_dir, &status.modified_or_untracked)?;
+        for rel in &status.modified_or_untracked {
+            if let Some(sha) = wt_hashes.get(rel) {
+                map.insert(rel.clone(), sha.clone());
+            } else {
+                map.remove(rel);
+            }
+        }
+    }
+    Ok(map)
+}
+
+pub fn strip_comments(source: &str, nested_blocks: bool) -> String {
+    let bytes = source.as_bytes();
+    let mut out = bytes.to_vec();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes.get(i..i + 2) == Some(b"//") {
+            let end = skip_to_newline(bytes, i + 2);
+            blank_preserving_newlines(&mut out, i, end);
+            i = end;
+        } else if bytes.get(i..i + 2) == Some(b"/*") {
+            let end = if nested_blocks {
+                skip_nested_block_comment(bytes, i + 2)
+            } else {
+                skip_flat_block_comment(bytes, i + 2)
+            };
+            blank_preserving_newlines(&mut out, i, end);
+            i = end;
+        } else if nested_blocks && let Some(end) = skip_rust_raw_string(bytes, i) {
+            i = end;
+        } else if bytes[i] == b'"' {
+            i = skip_quoted_string(bytes, i, b'"');
+        } else if !nested_blocks && bytes[i] == b'\'' {
+            i = skip_quoted_string(bytes, i, b'\'');
+        } else if !nested_blocks && bytes[i] == b'`' {
+            i = skip_ts_template(bytes, i);
+        } else {
+            i += 1;
+        }
+    }
+    String::from_utf8(out).unwrap_or_else(|_| source.to_owned())
+}
+
 pub fn git_ls_files(repo_dir: &Path) -> Result<Vec<String>> {
     let stdout = run_git_stdout(repo_dir, &["ls-files", "-z"])?;
     let mut files: Vec<String> = stdout
@@ -91,20 +260,70 @@ pub fn git_ls_files(repo_dir: &Path) -> Result<Vec<String>> {
     Ok(files)
 }
 
+pub fn parallel_map<T, R, F>(items: &[T], work: F) -> Vec<R>
+where
+    T: Sync,
+    R: Send,
+    F: Fn(&T) -> R + Sync,
+{
+    if items.is_empty() {
+        return Vec::new();
+    }
+    let threads = thread::available_parallelism()
+        .map(usize::from)
+        .unwrap_or(1)
+        .min(items.len())
+        .max(1);
+    if threads <= 1 || items.len() < PARALLEL_MIN_ITEMS {
+        return items.iter().map(work).collect();
+    }
+    let chunk_size = items.len().div_ceil(threads);
+    let mut out = Vec::with_capacity(items.len());
+    thread::scope(|scope| {
+        let mut handles = Vec::with_capacity(threads);
+        for chunk in items.chunks(chunk_size) {
+            let work_ref = &work;
+            handles.push(scope.spawn(move || {
+                chunk.iter().map(work_ref).collect::<Vec<R>>()
+            }));
+        }
+        for handle in handles {
+            out.extend(handle.join().expect("worker thread panicked"));
+        }
+    });
+    out
+}
+
+pub fn is_ts_source(rel: &str) -> bool {
+    TS_SCAN_EXTS.iter().any(|ext| rel.ends_with(ext))
+}
+
+pub fn is_rust_source(rel: &str) -> bool {
+    rel.ends_with(".rs")
+}
+
+pub fn is_compose_file(rel: &str) -> bool {
+    let lower = rel.to_ascii_lowercase();
+    lower.contains("compose") && (lower.ends_with(".yml") || lower.ends_with(".yaml"))
+}
+
 pub fn read_rust_service_files(
     repo_dir: &Path,
     service_root: &str,
     tracked_files: &[String],
 ) -> Vec<(String, String)> {
-    tracked_files
+    let candidates: Vec<&String> = tracked_files
         .iter()
-        .filter(|rel| rel.ends_with(".rs") && under_root(rel, service_root) && !is_test_file(rel))
-        .filter_map(|rel| {
-            std::fs::read_to_string(repo_dir.join(rel))
-                .ok()
-                .map(|raw| (rel.clone(), strip_cfg_test(&raw)))
-        })
-        .collect()
+        .filter(|rel| is_rust_source(rel) && under_root(rel, service_root) && !is_test_file(rel))
+        .collect();
+    parallel_map(&candidates, |rel| {
+        fs::read_to_string(repo_dir.join(rel))
+            .ok()
+            .map(|raw| ((*rel).clone(), strip_cfg_test(&raw)))
+    })
+    .into_iter()
+    .flatten()
+    .collect()
 }
 
 pub fn under_root(rel: &str, root: &str) -> bool {
@@ -569,11 +788,11 @@ pub fn unquote_double_string(expr: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
-pub fn sort_extracted_calls(calls: &mut [super::ExtractedCall]) {
+pub fn sort_extracted_calls(calls: &mut [super::types::ExtractedCall]) {
     calls.sort_by_key(|c| (c.file.clone(), c.line, c.method, c.path_norm.clone()));
 }
 
-pub fn sort_extracted_endpoints(endpoints: &mut [super::ExtractedEndpoint]) {
+pub fn sort_extracted_endpoints(endpoints: &mut [super::types::ExtractedEndpoint]) {
     endpoints.sort_by_key(|e| (e.file.clone(), e.line, e.method, e.path_norm.clone()));
 }
 

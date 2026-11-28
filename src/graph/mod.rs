@@ -4,264 +4,36 @@ pub mod resolve;
 pub mod rust_client;
 pub mod scan;
 pub mod store;
+pub mod suggest;
+pub mod sync;
 pub mod ts_client;
+pub mod types;
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
-use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-use crate::aliases::ensure_private_dir as crate_ensure_private_dir;
-use crate::aliases::read_private_file;
-use crate::aliases::sibling_path;
+use crate::aliases::{read_private_file, sibling_path, write_private_file_atomic};
 use crate::intelligence::now_ms;
 
-use self::store::{GraphStore, RepoRow};
+use self::store::{CallRow, EdgeUpdateBatch, EndpointRow, GraphStore};
+use self::sync::META_CONFIG_HASH;
 
-pub const EXTRACTOR_VERSION: i64 = 1;
-pub const DEFAULT_MAX_BYTES: usize = 1200;
+pub use self::sync::TouchReport;
+pub use self::types::{
+    Confidence, DEFAULT_MAX_BYTES, Direction, EXTRACTOR_VERSION, ExtractedCall, ExtractedEndpoint,
+    GraphConfig, HttpMethod, McpGraphRequest, PrefixState, RefreshStatus, ServiceConfig, Stack,
+    TOUCH_MAX_BYTES,
+};
+
 const MAX_CONFIG_BYTES: u64 = 256 * 1024;
 const MAX_MCP_QUERY_BYTES: usize = 512;
 const MAX_MCP_LIMIT: usize = 50;
-const META_CONFIG_HASH: &str = "config_hash";
 const MISSING_GRAPH_MESSAGE: &str =
     "System graph not built yet. Add system-graph.json beside memory.db and run `iron memory graph refresh`.\n";
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
-pub enum HttpMethod {
-    Get,
-    Post,
-    Put,
-    Patch,
-    Delete,
-    Head,
-    Options,
-    Any,
-}
-
-impl HttpMethod {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Get => "GET",
-            Self::Post => "POST",
-            Self::Put => "PUT",
-            Self::Patch => "PATCH",
-            Self::Delete => "DELETE",
-            Self::Head => "HEAD",
-            Self::Options => "OPTIONS",
-            Self::Any => "ANY",
-        }
-    }
-
-    pub fn parse(raw: &str) -> Option<Self> {
-        match raw.trim().to_ascii_uppercase().as_str() {
-            "GET" => Some(Self::Get),
-            "POST" => Some(Self::Post),
-            "PUT" => Some(Self::Put),
-            "PATCH" => Some(Self::Patch),
-            "DELETE" => Some(Self::Delete),
-            "HEAD" => Some(Self::Head),
-            "OPTIONS" => Some(Self::Options),
-            "ANY" => Some(Self::Any),
-            _ => None,
-        }
-    }
-
-    pub fn parse_crud(raw: &str) -> Option<Self> {
-        match raw {
-            "get" => Some(Self::Get),
-            "post" => Some(Self::Post),
-            "put" => Some(Self::Put),
-            "patch" => Some(Self::Patch),
-            "delete" => Some(Self::Delete),
-            _ => None,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Stack {
-    Axum,
-    Spa,
-}
-
-impl Stack {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Axum => "axum",
-            Self::Spa => "spa",
-        }
-    }
-
-    pub fn parse(raw: &str) -> Option<Self> {
-        match raw.trim().to_ascii_lowercase().as_str() {
-            "axum" => Some(Self::Axum),
-            "spa" => Some(Self::Spa),
-            _ => None,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum PrefixState {
-    Full,
-    Resolved,
-    Partial,
-}
-
-impl PrefixState {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Full => "full",
-            Self::Resolved => "resolved",
-            Self::Partial => "partial",
-        }
-    }
-
-    pub fn parse(raw: &str) -> Option<Self> {
-        match raw.trim().to_ascii_lowercase().as_str() {
-            "full" => Some(Self::Full),
-            "resolved" => Some(Self::Resolved),
-            "partial" => Some(Self::Partial),
-            _ => None,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Confidence {
-    Configured,
-    Unique,
-    Name,
-    Suffix,
-}
-
-impl Confidence {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Configured => "configured",
-            Self::Unique => "unique",
-            Self::Name => "name",
-            Self::Suffix => "suffix",
-        }
-    }
-
-    pub fn parse(raw: &str) -> Option<Self> {
-        match raw.trim().to_ascii_lowercase().as_str() {
-            "configured" => Some(Self::Configured),
-            "unique" => Some(Self::Unique),
-            "name" => Some(Self::Name),
-            "suffix" => Some(Self::Suffix),
-            _ => None,
-        }
-    }
-
-    pub fn rank(self) -> u8 {
-        match self {
-            Self::Configured => 0,
-            Self::Unique => 1,
-            Self::Name => 2,
-            Self::Suffix => 3,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Direction {
-    Callers,
-    Callees,
-    Impact,
-}
-
-impl Direction {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Callers => "callers",
-            Self::Callees => "callees",
-            Self::Impact => "impact",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct GraphConfig {
-    pub repos_root: PathBuf,
-    pub services: BTreeMap<String, ServiceConfig>,
-    #[serde(default)]
-    pub env: BTreeMap<String, String>,
-    #[serde(default)]
-    pub clients: BTreeMap<String, String>,
-    #[serde(default)]
-    pub external: Vec<String>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ServiceConfig {
-    pub repo: String,
-    #[serde(default)]
-    pub root: String,
-    pub stack: Stack,
-    #[serde(default)]
-    pub entry: Option<String>,
-    #[serde(default)]
-    pub client: Option<String>,
-    #[serde(default)]
-    pub base: Option<String>,
-    #[serde(default)]
-    pub base_prefix: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ExtractedEndpoint {
-    pub method: HttpMethod,
-    pub path_raw: String,
-    pub path_norm: String,
-    pub file: String,
-    pub line: usize,
-    pub handler: String,
-    pub prefix_state: PrefixState,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ExtractedCall {
-    pub method: HttpMethod,
-    pub path_raw: String,
-    pub path_norm: String,
-    pub file: String,
-    pub line: usize,
-    pub base_ref: String,
-    pub symbol: String,
-    pub area: String,
-    pub why: String,
-    pub external: bool,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct McpGraphRequest {
-    pub query: String,
-    pub direction: Direction,
-    #[serde(default)]
-    pub repo: Option<String>,
-    #[serde(default)]
-    pub limit: Option<usize>,
-    #[serde(default)]
-    pub max_bytes: Option<usize>,
-}
-
-pub(crate) fn ensure_private_dir(dir: &Path) -> Result<()> {
-    crate_ensure_private_dir(dir)
-}
 
 pub fn config_path(db: &Path) -> Option<PathBuf> {
     sibling_path(db, "system-graph.json")
@@ -280,144 +52,107 @@ pub fn load_config(db: &Path) -> Result<(GraphConfig, String)> {
     Ok((parsed, digest))
 }
 
-pub fn refresh(db: &Path) -> Result<Value> {
-    let started = Instant::now();
-    let (config, config_hash) = load_config(db)?;
-    let graph_db = graph_db_path(db).context("system-graph requires a durable index path")?;
-    let _lock = store::lock_graph_file(&graph_db)?;
-    let mut store = GraphStore::open_writable(&graph_db)?;
-
-    let mut repos_services: BTreeMap<String, Vec<(String, ServiceConfig)>> = BTreeMap::new();
-    for (svc_name, svc_cfg) in &config.services {
-        repos_services
-            .entry(svc_cfg.repo.clone())
-            .or_default()
-            .push((svc_name.clone(), svc_cfg.clone()));
-    }
-    let active_repos: HashSet<String> = repos_services.keys().cloned().collect();
-    let pruned = store.prune_removed_repos(&active_repos)?;
-    store.sync_services(&config.services)?;
-    let config_changed = store.get_meta(META_CONFIG_HASH)?.as_deref() != Some(config_hash.as_str());
-
-    let mut scanned = 0usize;
-    let mut skipped = 0usize;
-    let mut repo_status = BTreeMap::new();
-    let refreshed_at = now_ms();
-
-    for (repo_name, svcs) in &repos_services {
-        let was_scanned = refresh_single_repo(
-            &mut store,
-            &config,
-            repo_name,
-            svcs,
-            refreshed_at,
-            &mut repo_status,
-        )?;
-        if was_scanned {
-            scanned += 1;
-        } else {
-            skipped += 1;
-        }
-    }
-
-    if scanned > 0 || pruned || config_changed {
-        let auto_env = store.load_all_compose_env(&active_repos)?;
-        let services = store.load_all_services()?;
-        let endpoints = store.load_all_endpoints()?;
-        let calls = store.load_all_calls()?;
-        let edges = resolve::resolve_edges(&config, &auto_env, &services, &endpoints, &calls);
-        store.replace_edges(&edges)?;
-        store.set_meta(META_CONFIG_HASH, &config_hash)?;
-    }
-
-    let counts = store.counts()?;
-    Ok(json!({
-        "scanned": scanned,
-        "skipped": skipped,
-        "endpoints": counts.endpoints,
-        "calls": counts.calls,
-        "edges": counts.edges,
-        "fog": counts.fog,
-        "fog_by_repo": counts.fog_by_repo,
-        "repos": repo_status,
-        "elapsed_ms": started.elapsed().as_millis(),
-    }))
+pub fn save_config(db: &Path, config: &GraphConfig) -> Result<String> {
+    let path = config_path(db).context("system-graph requires a durable index path")?;
+    let payload = serde_json::to_string_pretty(config)? + "\n";
+    write_private_file_atomic(&path, "system-graph config", &payload)?;
+    Ok(format!("{:x}", Sha256::digest(payload.as_bytes())))
 }
 
-fn refresh_single_repo(
+pub fn refresh(db: &Path) -> Result<Value> {
+    let (config, config_hash) = load_config(db)?;
+    let graph_db = graph_db_path(db).context("system-graph requires a durable index path")?;
+    sync::refresh_graph(&config, &config_hash, &graph_db)
+}
+
+pub fn touch(db: &Path, paths: &[PathBuf]) -> Result<TouchReport> {
+    let (config, config_hash) = load_config(db)?;
+    let graph_db = graph_db_path(db).context("system-graph requires a durable index path")?;
+    sync::touch_paths(&config, &config_hash, &graph_db, paths)
+}
+
+pub fn run_suggest(db: &Path, apply: bool) -> Result<Value> {
+    let graph_db = graph_db_path(db).context("system-graph requires a durable index path")?;
+    if !apply {
+        let (config, _) = load_config(db)?;
+        let active_repos = active_repo_set(&config);
+        let Some(store) = GraphStore::open_readonly(&graph_db)? else {
+            bail!("{}", MISSING_GRAPH_MESSAGE.trim());
+        };
+        let auto_env = store.load_all_compose_env(&active_repos)?;
+        let fog_before = store.counts()?.fog;
+        let suggestions = suggest::compute_suggestions(&store, &config, &auto_env)?;
+        return Ok(format_suggest_json(false, fog_before, fog_before, &suggestions));
+    }
+
+    if !graph_db.exists() {
+        bail!("{}", MISSING_GRAPH_MESSAGE.trim());
+    }
+    let _lock = store::lock_graph_file(&graph_db)?;
+    let (mut config, _) = load_config(db)?;
+    let active_repos = active_repo_set(&config);
+    let mut store = GraphStore::open_writable(&graph_db)?;
+    let auto_env = store.load_all_compose_env(&active_repos)?;
+    let fog_before = store.counts()?.fog;
+    let suggestions = suggest::compute_suggestions(&store, &config, &auto_env)?;
+    let merged = suggest::merge_suggestions(&mut config, &suggestions);
+    if merged {
+        let new_hash = save_config(db, &config)?;
+        apply_config_re_resolve(&mut store, &config, &auto_env, &new_hash)?;
+    }
+    let fog_after = store.counts()?.fog;
+    Ok(format_suggest_json(merged, fog_before, fog_after, &suggestions))
+}
+
+fn active_repo_set(config: &GraphConfig) -> HashSet<String> {
+    config.services.values().map(|s| s.repo.clone()).collect()
+}
+
+fn format_suggest_json(
+    applied: bool,
+    fog_before: usize,
+    fog_after: usize,
+    suggestions: &suggest::GraphSuggestions,
+) -> Value {
+    json!({
+        "applied": applied,
+        "fog_before": fog_before,
+        "fog_after": fog_after,
+        "prefixes": suggestions.prefixes,
+        "env": suggestions.env,
+        "external": suggestions.external,
+    })
+}
+
+fn apply_config_re_resolve(
     store: &mut GraphStore,
     config: &GraphConfig,
-    repo_name: &str,
-    svcs: &[(String, ServiceConfig)],
-    refreshed_at: i64,
-    repo_status: &mut BTreeMap<String, Value>,
-) -> Result<bool> {
-    let repo_dir = config.repos_root.join(repo_name);
-    let canon_dir = repo_dir
-        .canonicalize()
-        .with_context(|| format!("repo directory missing: {}", repo_dir.display()))?;
-    let head_sha = scan::git_head(&canon_dir)?;
-    let dirty = scan::git_is_dirty(&canon_dir);
-    let unchanged = store.get_repo(repo_name)?.is_some_and(|existing| {
-        existing.head_sha == head_sha && existing.extractor_ver == EXTRACTOR_VERSION
-    });
-    if unchanged {
-        repo_status.insert(
-            repo_name.to_owned(),
-            json!({"status": "skipped", "head_sha": head_sha, "dirty": dirty}),
-        );
-        return Ok(false);
-    }
-    let tracked = scan::git_ls_files(&canon_dir)?;
-    let repo_compose_env = resolve::collect_compose_env(&canon_dir, &tracked, &config.services);
-    store.set_meta(
-        &format!("compose_env:{repo_name}"),
-        &serde_json::to_string(&repo_compose_env)?,
-    )?;
-    let mut service_endpoints = Vec::new();
-    let mut service_calls = Vec::new();
-    for (svc_name, svc_cfg) in svcs {
-        match svc_cfg.stack {
-            Stack::Axum => {
-                service_endpoints.push((
-                    svc_name.clone(),
-                    axum::extract_service(&canon_dir, &svc_cfg.root, svc_cfg.entry.as_deref(), &tracked)?,
-                ));
-                service_calls.push((
-                    svc_name.clone(),
-                    rust_client::extract_service(repo_name, &canon_dir, &svc_cfg.root, &config.external, &tracked)?,
-                ));
-            }
-            Stack::Spa => {
-                service_calls.push((
-                    svc_name.clone(),
-                    ts_client::extract_service(
-                        repo_name,
-                        &canon_dir,
-                        &svc_cfg.root,
-                        svc_cfg.client.as_deref(),
-                        svc_cfg.base.as_deref(),
-                        svc_cfg.base_prefix.as_deref(),
-                        &config.external,
-                        &tracked,
-                    )?,
-                ));
-            }
-        }
-    }
-    let repo_row = RepoRow {
-        repo: repo_name.to_owned(),
-        repo_path: canon_dir.to_string_lossy().into_owned(),
-        head_sha: head_sha.clone(),
-        extractor_ver: EXTRACTOR_VERSION,
-        dirty,
-    };
-    store.replace_repo_scan(&repo_row, refreshed_at, &service_endpoints, &service_calls)?;
-    repo_status.insert(
-        repo_name.to_owned(),
-        json!({"status": "scanned", "head_sha": head_sha, "dirty": dirty}),
-    );
-    Ok(true)
+    auto_env: &std::collections::BTreeMap<String, String>,
+    new_hash: &str,
+) -> Result<()> {
+    let now = now_ms();
+    let tx = store.begin_write()?;
+    tx.update_calls_external_flags(&config.external)?;
+    let old_snaps = tx.snapshot_all_edges()?;
+    let services = tx.load_all_services()?;
+    let endpoints = tx.load_all_endpoints()?;
+    let calls = tx.load_all_calls()?;
+    let new_edges = resolve::resolve_edges(config, auto_env, &services, &endpoints, &calls);
+    let calls_map: HashMap<i64, &CallRow> = calls.iter().map(|c| (c.id, c)).collect();
+    let eps_map: HashMap<i64, &EndpointRow> = endpoints.iter().map(|e| (e.id, e)).collect();
+    let empty_repos = HashSet::new();
+    tx.apply_edge_updates(&EdgeUpdateBatch {
+        full_replace: true,
+        replace_call_ids: &[],
+        old_snapshots: &old_snaps,
+        new_edges: &new_edges,
+        calls_by_id: &calls_map,
+        eps_by_id: &eps_map,
+        changed_repos: &empty_repos,
+        now_ms: now,
+    })?;
+    tx.set_meta(META_CONFIG_HASH, new_hash)?;
+    tx.commit()
 }
 
 fn with_readonly_graph(db: &Path, run: impl FnOnce(&GraphStore) -> Result<String>) -> Result<String> {
@@ -454,6 +189,18 @@ pub fn query_fog(
     max_bytes: usize,
 ) -> Result<String> {
     with_readonly_graph(db, |store| query::fog(store, repo, limit, max_bytes))
+}
+
+pub fn query_changes(
+    db: &Path,
+    since_days: u64,
+    repo: Option<&str>,
+    limit: Option<usize>,
+    max_bytes: usize,
+) -> Result<String> {
+    with_readonly_graph(db, |store| {
+        query::changes(store, since_days, repo, limit, max_bytes, now_ms())
+    })
 }
 
 pub fn query_mcp(db: &Path, req: McpGraphRequest) -> Result<Value> {

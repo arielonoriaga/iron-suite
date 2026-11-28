@@ -6,14 +6,18 @@ use anyhow::Result;
 use crate::output;
 
 use super::scan::normalize_path;
-use super::store::{CallRow, CallerEdge, EndpointRow, GraphStore};
-use super::{Confidence, HttpMethod, Stack};
+use super::store::{
+    CallRow, CallerEdge, CrossRepoEdgeInfo, EdgeChangeKind, EndpointRow, GraphStore,
+};
+use super::types::{Confidence, HttpMethod, Stack};
 
 const DEFAULT_LIMIT: usize = 50;
 const IMPACT_CALLER_PREVIEW: usize = 3;
 const SPA_AREA_PREVIEW: usize = 5;
 const SPA_FILE_PREVIEW: usize = 3;
 const SHORT_SHA_LEN: usize = 7;
+const MS_PER_DAY: i64 = 86_400_000;
+const TOUCH_ROUTE_PREVIEW: usize = 3;
 
 enum QueryOutput {
     Empty(String),
@@ -190,6 +194,109 @@ pub fn fog(
         ));
     }
     Ok(render_lines_within_budget_extra(&lines, hidden_by_limit, max_bytes))
+}
+
+pub fn changes(
+    store: &GraphStore,
+    since_days: u64,
+    repo_filter: Option<&str>,
+    limit: Option<usize>,
+    max_bytes: usize,
+    now_ms: i64,
+) -> Result<String> {
+    run_budgeted_query(limit, max_bytes, |max_items| {
+        let cutoff = if since_days == 0 {
+            0
+        } else {
+            let days_i64 = i64::try_from(since_days).unwrap_or(i64::MAX);
+            now_ms.saturating_sub(days_i64.saturating_mul(MS_PER_DAY))
+        };
+        let rows = store.load_cross_repo_changes(cutoff, repo_filter)?;
+        if rows.is_empty() {
+            return Ok(QueryOutput::Empty(format!(
+                "no cross-repo edge changes in last {since_days}d\n"
+            )));
+        }
+        let added = rows
+            .iter()
+            .filter(|r| r.kind == EdgeChangeKind::Added)
+            .count();
+        let removed = rows.len() - added;
+        let mut lines = vec![format!(
+            "changes (last {since_days}d): +{added} -{removed} cross-repo edges"
+        )];
+        let formatted: Vec<String> = rows
+            .iter()
+            .map(|r| {
+                let sign = match r.kind {
+                    EdgeChangeKind::Added => "+",
+                    EdgeChangeKind::Removed => "-",
+                };
+                format!(
+                    "  {sign} {} {}:{} -> {} {} {} @{}",
+                    r.source.service,
+                    r.source.file,
+                    r.source.line,
+                    r.target.service,
+                    r.method.as_str(),
+                    r.path_norm,
+                    short_sha(&r.sha)
+                )
+            })
+            .collect();
+        push_capped_lines(&mut lines, formatted, max_items, "  ");
+        Ok(QueryOutput::Lines(lines))
+    })
+}
+
+pub fn format_touch_impact(
+    items: &[(String, String, Vec<CrossRepoEdgeInfo>, Vec<CrossRepoEdgeInfo>)],
+    max_bytes: usize,
+) -> String {
+    let mut lines = Vec::new();
+    for (repo, file, served, called) in items {
+        if served.is_empty() && called.is_empty() {
+            continue;
+        }
+        let mut parts = Vec::new();
+        if !served.is_empty() {
+            parts.push(format_cross_repo_group("served<-", served));
+        }
+        if !called.is_empty() {
+            parts.push(format_cross_repo_group("calls->", called));
+        }
+        lines.push(format!("{repo}:{file} {}", parts.join("; ")));
+    }
+    if lines.is_empty() {
+        return String::new();
+    }
+    render_lines_within_budget(&lines, max_bytes)
+}
+
+fn format_cross_repo_group(label: &str, edges: &[CrossRepoEdgeInfo]) -> String {
+    let mut peers = BTreeSet::new();
+    let mut routes = Vec::new();
+    let mut seen_routes = BTreeSet::new();
+    for e in edges {
+        peers.insert(e.peer_service.as_str());
+        let route = format!("{} {}", e.method.as_str(), e.path_norm);
+        if seen_routes.insert(route.clone()) && routes.len() < TOUCH_ROUTE_PREVIEW {
+            routes.push(route);
+        }
+    }
+    let extra = seen_routes.len().saturating_sub(routes.len());
+    let peer_list: Vec<&str> = peers.into_iter().collect();
+    let suffix = if extra > 0 {
+        format!(", +{extra}")
+    } else {
+        String::new()
+    };
+    format!(
+        "{label}{} ({}{})",
+        peer_list.join(","),
+        routes.join(", "),
+        suffix
+    )
 }
 
 fn push_capped_lines(out: &mut Vec<String>, items: Vec<String>, max_items: usize, indent: &str) {
@@ -426,6 +533,16 @@ fn render_lines_within_budget_extra(
         if out.len() + line.len() + 1 + footer_reserve <= max_bytes {
             out.push_str(line);
             out.push('\n');
+        } else if out.is_empty() {
+            let avail = max_bytes.saturating_sub(footer_reserve + 1);
+            if avail > 0 {
+                out.push_str(output::prefix(line, avail));
+                out.push('\n');
+            }
+            if remaining_after > 0 {
+                append_more_footer(&mut out, remaining_after, max_bytes);
+            }
+            return truncate_to_budget(&out, max_bytes);
         } else {
             append_more_footer(&mut out, total - idx + extra_omitted, max_bytes);
             return truncate_to_budget(&out, max_bytes);
@@ -463,5 +580,43 @@ mod tests {
         let rendered = render_lines_within_budget(&lines, 256);
         assert!(rendered.len() <= 256, "len={}", rendered.len());
         assert!(rendered.contains("more\n"), "rendered={rendered}");
+    }
+
+    #[test]
+    fn touch_impact_enforces_300_byte_cap_and_omits_empty_files() {
+        assert_eq!(format_touch_impact(&[], 300), "");
+        let edges: Vec<CrossRepoEdgeInfo> = (0..10)
+            .map(|i| CrossRepoEdgeInfo {
+                peer_repo: format!("repo-{i}"),
+                peer_service: format!("service-{i}"),
+                method: HttpMethod::Post,
+                path_norm: format!("/api/v1/very/long/resource/path/segment/{i}"),
+            })
+            .collect();
+        let text = format_touch_impact(
+            &[("ez-addon".to_owned(), "src/client.rs".to_owned(), vec![], edges)],
+            300,
+        );
+        assert!(!text.is_empty());
+        assert!(text.len() <= 300, "len={}", text.len());
+        assert!(text.contains("ez-addon:src/client.rs"), "text={text}");
+
+        let long_path = format!("src/{}/client.rs", "deep_nested_module/".repeat(12));
+        let long_text = format_touch_impact(
+            &[(
+                "ez-addon".to_owned(),
+                long_path,
+                vec![],
+                vec![CrossRepoEdgeInfo {
+                    peer_repo: "ez-commerce".to_owned(),
+                    peer_service: "ez-commerce-api".to_owned(),
+                    method: HttpMethod::Post,
+                    path_norm: "/api/internal/invoices".to_owned(),
+                }],
+            )],
+            300,
+        );
+        assert!(long_text.len() <= 300, "len={}", long_text.len());
+        assert!(long_text.starts_with("ez-addon:src/"), "long_text={long_text}");
     }
 }

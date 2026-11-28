@@ -120,14 +120,11 @@ pub(crate) fn ensure_private_dir(dir: &Path) -> Result<()> {
     Ok(())
 }
 
-pub fn save_atomic(db: &Path, aliases: &AliasMap) -> Result<()> {
-    let Some(path) = aliases_path(db) else {
-        bail!("project aliases require a durable index path");
-    };
-    if let Ok(meta) = fs::symlink_metadata(&path) {
+pub(crate) fn write_private_file_atomic(path: &Path, label: &str, payload: &str) -> Result<()> {
+    if let Ok(meta) = fs::symlink_metadata(path) {
         ensure!(
             !meta.file_type().is_symlink() && meta.is_file(),
-            "refusing to write through non-regular aliases path: {}",
+            "refusing to write through non-regular {label} path: {}",
             path.display()
         );
     }
@@ -138,19 +135,22 @@ pub fn save_atomic(db: &Path, aliases: &AliasMap) -> Result<()> {
     ensure_private_dir(parent)?;
     let canon_parent = fs::canonicalize(parent)
         .with_context(|| format!("cannot canonicalize {}", parent.display()))?;
-    let final_path = canon_parent.join("aliases.json");
+    let file_name = path
+        .file_name()
+        .context("target file path must include a file name")?;
+    let final_path = canon_parent.join(file_name);
+    let stem = file_name.to_string_lossy();
 
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    let payload = serde_json::to_string_pretty(aliases)? + "\n";
 
     let mut tmp_path = None;
     let mut file = None;
     for attempt in 0..16u32 {
         let candidate = canon_parent.join(format!(
-            ".aliases.{}.{}.{}.tmp",
+            ".{stem}.{}.{}.{}.tmp",
             std::process::id(),
             nanos,
             attempt
@@ -171,13 +171,13 @@ pub fn save_atomic(db: &Path, aliases: &AliasMap) -> Result<()> {
             Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(err) => {
                 return Err(err)
-                    .with_context(|| format!("cannot stage aliases file {}", candidate.display()));
+                    .with_context(|| format!("cannot stage {label} file {}", candidate.display()));
             }
         }
     }
     let (tmp_path, mut file) = match (tmp_path, file) {
         (Some(p), Some(f)) => (p, f),
-        _ => bail!("unable to allocate unique temporary aliases file"),
+        _ => bail!("unable to allocate unique temporary {label} file"),
     };
 
     let write_result = (|| -> Result<()> {
@@ -187,7 +187,7 @@ pub fn save_atomic(db: &Path, aliases: &AliasMap) -> Result<()> {
         if let Ok(meta) = fs::symlink_metadata(&final_path) {
             ensure!(
                 !meta.file_type().is_symlink() && meta.is_file(),
-                "refusing to replace non-regular aliases path: {}",
+                "refusing to replace non-regular {label} path: {}",
                 final_path.display()
             );
         }
@@ -199,6 +199,14 @@ pub fn save_atomic(db: &Path, aliases: &AliasMap) -> Result<()> {
         let _ = fs::remove_file(&tmp_path);
     }
     write_result
+}
+
+pub fn save_atomic(db: &Path, aliases: &AliasMap) -> Result<()> {
+    let Some(path) = aliases_path(db) else {
+        bail!("project aliases require a durable index path");
+    };
+    let payload = serde_json::to_string_pretty(aliases)? + "\n";
+    write_private_file_atomic(&path, "aliases", &payload)
 }
 
 pub fn validate_project_name(label: &str, value: &str) -> Result<String> {

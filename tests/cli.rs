@@ -1007,6 +1007,7 @@ export async function loadSales() {
     let (third_refresh, _) = fixture.call(&["memory", "graph", "refresh"]);
     assert_eq!(third_refresh["scanned"], 1);
     assert_eq!(third_refresh["skipped"], 2);
+    assert_eq!(third_refresh["files_scanned"], 1);
     assert_eq!(third_refresh["endpoints"], 3);
 
     let who_ping = run_iron_text(&fixture.db, &["memory", "graph", "who-calls", "/api/v1/ping"]);
@@ -1062,5 +1063,269 @@ export async function loadSales() {
             .as_str()
             .unwrap()
             .contains("makes 2 call(s) from src/client.rs")
+    );
+}
+
+#[test]
+fn system_graph_incremental_rescan_touch_changes_and_suggest_apply() {
+    let fixture = Fixture::new();
+    fixture.import();
+
+    let repos_root = fixture._temp.path().join("repos");
+    let addon_dir = repos_root.join("ez-addon");
+    let commerce_dir = repos_root.join("ez-commerce");
+
+    init_git_repo(
+        &addon_dir,
+        &[
+            (
+                "src/bin/api.rs",
+                r#"use ez_addon::modules::catalog;
+fn app() -> Router {
+    Router::new()
+        .nest("/catalog", catalog::router())
+}
+"#,
+            ),
+            (
+                "src/modules/catalog/mod.rs",
+                r#"pub fn router() -> Router {
+    Router::new()
+        .route("/v1/brands", get(list_brands))
+        .route("/v1/products", post(create_product))
+}
+"#,
+            ),
+            (
+                "src/modules/cochera/ez_commerce.rs",
+                r#"impl Client {
+    async fn issue(&self) {
+        let _ = self.http.post(format!("{}/api/internal/invoices", self.base_url)).send().await;
+    }
+
+    async fn live_hook(&self) {
+        let _ = self.http.get(format!("{}/api/v1/uncommitted-hook", self.base_url)).send().await;
+    }
+}
+"#,
+            ),
+        ],
+    );
+
+    init_git_repo(
+        &commerce_dir,
+        &[
+            (
+                "backend/src/api.rs",
+                r#"pub fn router() -> Router {
+    Router::new()
+        .route("/api/internal/invoices", post(create_invoice))
+}
+"#,
+            ),
+            (
+                "backend/src/other.rs",
+                r#"pub fn other_router() -> Router {
+    Router::new()
+        .route("/api/v1/other", get(get_other))
+}
+"#,
+            ),
+            (
+                "backend/src/http_catalog.rs",
+                r#"impl CatalogClient {
+    async fn brands(&self) {
+        let _ = self.http.get(format!("{}/v1/brands", self.base_url)).send().await;
+    }
+
+    async fn create(&self) {
+        let _ = self.http.post(format!("{}/v1/products", self.base_url)).send().await;
+    }
+}
+"#,
+            ),
+            (
+                "backend/src/external_vendor.rs",
+                r#"const BASE: &str = "https://api.stripe.com";
+impl StripeClient {
+    async fn charge(&self) {
+        let _ = self.http.post(format!("{}/v1/charges", self.base_url)).send().await;
+    }
+}
+"#,
+            ),
+            (
+                "docker-compose.yml",
+                "services:\n  app:\n    environment:\n      EZ_COMMERCE_URL: http://ez-commerce-api:8080\n",
+            ),
+        ],
+    );
+
+    let cfg = json!({
+        "repos_root": repos_root,
+        "services": {
+            "ez-addon-api": {
+                "repo": "ez-addon",
+                "root": "",
+                "stack": "axum",
+                "entry": "src/bin/api.rs"
+            },
+            "ez-commerce-api": {
+                "repo": "ez-commerce",
+                "root": "backend",
+                "stack": "axum"
+            }
+        },
+        "env": {},
+        "clients": {
+            "ez-addon:src/modules/cochera/ez_commerce.rs": "ez-commerce-api"
+        },
+        "external": []
+    });
+    let cfg_path = fixture.db.parent().unwrap().join("system-graph.json");
+    fs::write(&cfg_path, serde_json::to_string_pretty(&cfg).unwrap()).unwrap();
+
+    let (initial, _) = fixture.call(&["memory", "graph", "refresh"]);
+    assert_eq!(initial["scanned"], 2);
+    assert_eq!(initial["skipped"], 0);
+    assert_eq!(initial["files_scanned"], 8);
+    assert_eq!(initial["files_skipped"], 0);
+    assert_eq!(initial["edges"], 1);
+    assert_eq!(initial["fog"], 4);
+
+    let (noop, _) = fixture.call(&["memory", "graph", "refresh"]);
+    assert_eq!(noop["scanned"], 0);
+    assert_eq!(noop["skipped"], 2);
+    assert_eq!(noop["files_scanned"], 0);
+    assert_eq!(noop["files_skipped"], 8);
+
+    fs::write(
+        commerce_dir.join("backend/src/other.rs"),
+        r#"pub fn other_router() -> Router {
+    Router::new()
+        .route("/api/v1/other", get(get_other))
+        .route("/api/v1/other-two", get(get_other_two))
+}
+"#,
+    )
+    .unwrap();
+    git_in(&commerce_dir, &["add", "backend/src/other.rs"]);
+    git_in(&commerce_dir, &["commit", "-q", "-m", "add other-two"]);
+
+    let (one_file, _) = fixture.call(&["memory", "graph", "refresh"]);
+    assert_eq!(one_file["files_scanned"], 1);
+    assert_eq!(one_file["services_rescanned"], json!([]));
+
+    fs::write(
+        commerce_dir.join("backend/src/other.rs"),
+        r#"pub fn other_router() -> Router {
+    Router::new()
+        .nest("/api/v2", nested_router())
+}
+"#,
+    )
+    .unwrap();
+    git_in(&commerce_dir, &["add", "backend/src/other.rs"]);
+    git_in(&commerce_dir, &["commit", "-q", "-m", "add nest"]);
+
+    let (rescan, _) = fixture.call(&["memory", "graph", "refresh"]);
+    assert_eq!(rescan["services_rescanned"], json!(["ez-commerce-api"]));
+    assert!(rescan["files_scanned"].as_u64().unwrap() >= 4);
+
+    let api_rs = commerce_dir.join("backend/src/api.rs");
+    fs::write(
+        &api_rs,
+        r#"pub fn router() -> Router {
+    Router::new()
+        .route("/api/internal/invoices", post(create_invoice))
+        .route("/api/v1/uncommitted-hook", get(live_hook))
+}
+"#,
+    )
+    .unwrap();
+    let touch_impact = run_iron_text(
+        &fixture.db,
+        &["memory", "graph", "touch", api_rs.to_str().unwrap()],
+    );
+    assert!(!touch_impact.is_empty());
+    assert!(touch_impact.len() <= 300, "len={}", touch_impact.len());
+    assert!(
+        touch_impact.contains("ez-addon-api") && touch_impact.contains("/api/v1/uncommitted-hook"),
+        "impact={touch_impact}"
+    );
+
+    let other_rs = commerce_dir.join("backend/src/other.rs");
+    let no_impact = run_iron_text(
+        &fixture.db,
+        &["memory", "graph", "touch", other_rs.to_str().unwrap()],
+    );
+    assert_eq!(no_impact, "");
+
+    let (touch_json, _) = fixture.call(&[
+        "memory",
+        "graph",
+        "touch",
+        "--json",
+        api_rs.to_str().unwrap(),
+    ]);
+    assert_eq!(touch_json["files_scanned"], 1);
+    assert!(touch_json["cross_repo_edges"].as_u64().unwrap() >= 2);
+
+    let addon_client = addon_dir.join("src/modules/cochera/ez_commerce.rs");
+    fs::write(
+        &addon_client,
+        r#"impl Client {
+    async fn live_hook(&self) {
+        let _ = self.http.get(format!("{}/api/v1/uncommitted-hook", self.base_url)).send().await;
+    }
+}
+"#,
+    )
+    .unwrap();
+    let _ = run_iron_text(
+        &fixture.db,
+        &["memory", "graph", "touch", addon_client.to_str().unwrap()],
+    );
+    let changes_txt = run_iron_text(&fixture.db, &["memory", "graph", "changes", "--since", "7"]);
+    assert!(
+        changes_txt.contains("- ez-addon-api") && changes_txt.contains("/api/internal/invoices"),
+        "changes={changes_txt}"
+    );
+
+    const ENV_COMMERCE_URL: &str = "EZ_COMMERCE_URL";
+    let (suggested, _) = fixture.call(&["memory", "graph", "suggest"]);
+    assert_eq!(suggested["applied"], false);
+    assert_eq!(
+        suggested["prefixes"]["ez-commerce:backend/src/http_catalog.rs"],
+        "/catalog"
+    );
+    assert_eq!(
+        suggested["env"][ENV_COMMERCE_URL],
+        "ez-commerce-api"
+    );
+    assert_eq!(
+        suggested["external"],
+        json!(["ez-commerce:backend/src/external_vendor.rs"])
+    );
+
+    let (applied, _) = fixture.call(&["memory", "graph", "suggest", "--apply"]);
+    assert_eq!(applied["applied"], true);
+    assert_eq!(applied["fog_before"], 3);
+    assert_eq!(applied["fog_after"], 0);
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = fs::metadata(&cfg_path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+    }
+
+    let who_brands = run_iron_text(
+        &fixture.db,
+        &["memory", "graph", "who-calls", "GET /catalog/v1/brands"],
+    );
+    assert!(
+        who_brands.contains("backend/src/http_catalog.rs"),
+        "who_brands={who_brands}"
     );
 }

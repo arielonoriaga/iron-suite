@@ -4,19 +4,22 @@ use std::sync::LazyLock;
 
 use anyhow::Result;
 use regex::Regex;
+use serde::{Deserialize, Serialize};
 
 use super::scan::{
     LineIndex, enclosing_fn_name, find_matching_delim, find_rust_functions,
     find_semicolon_at_depth_zero, for_each_dot_call, for_each_masked_ident, is_ident_byte,
-    join_paths, normalize_path, qualify_under_root, read_rust_service_files, rust_code_mask,
-    skip_ascii_ws, sort_extracted_endpoints, split_top_level_args, unquote_double_string,
+    join_paths, normalize_path, parallel_map, qualify_under_root, read_rust_service_files,
+    rust_code_mask, skip_ascii_ws, sort_extracted_endpoints, split_top_level_args,
+    unquote_double_string,
 };
-use super::{ExtractedEndpoint, HttpMethod, PrefixState};
+use super::types::{ExtractedEndpoint, HttpMethod, PrefixState};
 
 const METHOD_MERGE: &str = "merge";
 const LAYER_METHODS: &[&str] = &["layer", "route_layer", "with_state"];
 const SKIP_CALLEE_FNS: &[&str] = &["Router", "new"];
 const API_PREFIX: &str = "/api/";
+const PREFIX_CONST_TOKENS: &[&str] = &["PREFIX", "ROUTE", "PATH"];
 
 static CONST_STR_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"(?m)^\s*(?:pub(?:\([^)]*\))?\s+)?const\s+([A-Z][A-Z0-9_]*)\s*:\s*&(?:'static\s+)?str\s*=\s*"([^"]+)"\s*;"#)
@@ -34,6 +37,76 @@ static LET_BINDING_RE: LazyLock<Regex> = LazyLock::new(|| {
 
 type ConstTables = (HashMap<(String, String), String>, HashMap<String, String>);
 type VarParentMap = HashMap<(String, String), Vec<(Option<String>, String)>>;
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AxumServiceContext {
+    pub scoped_consts: BTreeMap<String, BTreeMap<String, String>>,
+    pub global_consts: BTreeMap<String, String>,
+    pub entry_module_prefixes: BTreeMap<String, String>,
+    pub inter_fn_prefixes: BTreeMap<String, BTreeMap<String, (String, bool)>>,
+}
+
+impl AxumServiceContext {
+    fn from_parts(
+        consts: &ConstTables,
+        entry_module_prefixes: BTreeMap<String, String>,
+        inter_fn: &HashMap<(String, String), (String, bool)>,
+    ) -> Self {
+        let mut scoped_consts: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
+        for ((ck, name), val) in &consts.0 {
+            scoped_consts
+                .entry(ck.clone())
+                .or_default()
+                .insert(name.clone(), val.clone());
+        }
+        let global_consts: BTreeMap<String, String> = consts
+            .1
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        let mut inter_fn_prefixes: BTreeMap<String, BTreeMap<String, (String, bool)>> =
+            BTreeMap::new();
+        for ((scope, fn_name), val) in inter_fn {
+            inter_fn_prefixes
+                .entry(scope.clone())
+                .or_default()
+                .insert(fn_name.clone(), val.clone());
+        }
+        Self {
+            scoped_consts,
+            global_consts,
+            entry_module_prefixes,
+            inter_fn_prefixes,
+        }
+    }
+
+    fn to_const_tables(&self) -> ConstTables {
+        let mut scoped = HashMap::new();
+        for (ck, map) in &self.scoped_consts {
+            for (name, val) in map {
+                scoped.insert((ck.clone(), name.clone()), val.clone());
+            }
+        }
+        let global = self
+            .global_consts
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        (scoped, global)
+    }
+
+    fn lookup_fn_prefix(&self, rel_file: &str, crate_key: &str, fn_name: &str) -> Option<(&str, bool)> {
+        self.inter_fn_prefixes
+            .get(rel_file)
+            .and_then(|m| m.get(fn_name))
+            .or_else(|| {
+                self.inter_fn_prefixes
+                    .get(crate_key)
+                    .and_then(|m| m.get(fn_name))
+            })
+            .map(|(p, r)| (p.as_str(), *r))
+    }
+}
 
 #[derive(Debug, Clone)]
 struct RawRoute {
@@ -97,13 +170,73 @@ pub fn extract_from_sources(
     service_root: &str,
     entry: Option<&str>,
 ) -> Result<Vec<ExtractedEndpoint>> {
+    let (endpoints, _, _) = extract_service_with_context(sources, service_root, entry);
+    Ok(endpoints)
+}
+
+pub fn extract_service_with_context(
+    sources: &[(String, String)],
+    service_root: &str,
+    entry: Option<&str>,
+) -> (Vec<ExtractedEndpoint>, AxumServiceContext, HashSet<String>) {
     let consts = collect_const_strings(sources, service_root);
-    let parsed_files: Vec<FileParse> = sources
-        .iter()
-        .map(|(rel_file, src)| parse_file(rel_file, &crate_key_for(rel_file, service_root), src, &consts))
-        .collect();
+    let parsed_with_deps: Vec<(FileParse, bool)> = parallel_map(sources, |(rel_file, src)| {
+        let parsed = parse_file(rel_file, &crate_key_for(rel_file, service_root), src, &consts);
+        let deps = parse_has_router_deps(&parsed, src);
+        (parsed, deps)
+    });
+    let mut parsed_files = Vec::with_capacity(parsed_with_deps.len());
+    let mut router_dep_files = HashSet::new();
+    for (parsed, deps) in parsed_with_deps {
+        if deps {
+            router_dep_files.insert(parsed.rel_file.clone());
+        }
+        parsed_files.push(parsed);
+    }
     let entry_rel = entry.map(|e| qualify_under_root(service_root, e));
-    Ok(resolve_service_routes(&parsed_files, entry_rel.as_deref()))
+    let entry_module_prefixes = collect_entry_module_prefixes(&parsed_files, entry_rel.as_deref());
+    let inter_fn = collect_inter_fn_prefixes(&parsed_files, entry_rel.as_deref());
+    let ctx = AxumServiceContext::from_parts(&consts, entry_module_prefixes, &inter_fn);
+    let mut endpoints = Vec::new();
+    for file in &parsed_files {
+        append_resolved_file_routes(file, entry_rel.as_deref(), &ctx, &mut endpoints);
+    }
+    sort_extracted_endpoints(&mut endpoints);
+    (endpoints, ctx, router_dep_files)
+}
+
+pub fn extract_single_file(
+    rel_file: &str,
+    stripped_source: &str,
+    service_root: &str,
+    entry: Option<&str>,
+    ctx: &AxumServiceContext,
+) -> (Vec<ExtractedEndpoint>, bool) {
+    let consts = ctx.to_const_tables();
+    let parsed = parse_file(
+        rel_file,
+        &crate_key_for(rel_file, service_root),
+        stripped_source,
+        &consts,
+    );
+    let has_deps = parse_has_router_deps(&parsed, stripped_source);
+    let entry_rel = entry.map(|e| qualify_under_root(service_root, e));
+    let mut endpoints = Vec::new();
+    append_resolved_file_routes(&parsed, entry_rel.as_deref(), ctx, &mut endpoints);
+    sort_extracted_endpoints(&mut endpoints);
+    (endpoints, has_deps)
+}
+
+fn parse_has_router_deps(parsed: &FileParse, stripped_source: &str) -> bool {
+    !parsed.nests.is_empty() || !parsed.merges.is_empty() || has_prefix_const(stripped_source)
+}
+
+fn has_prefix_const(source: &str) -> bool {
+    CONST_STR_RE.captures_iter(source).any(|caps| {
+        let name = &caps[1];
+        let val = &caps[2];
+        val.starts_with('/') || PREFIX_CONST_TOKENS.iter().any(|tok| name.contains(tok))
+    })
 }
 
 fn crate_key_for(rel: &str, service_root: &str) -> String {
@@ -415,54 +548,51 @@ fn summarize_handler(trimmed: &str) -> String {
     }
 }
 
-fn resolve_service_routes(files: &[FileParse], entry_rel: Option<&str>) -> Vec<ExtractedEndpoint> {
-    let entry_module_prefixes = collect_entry_module_prefixes(files, entry_rel);
-    let fn_prefixes = collect_inter_fn_prefixes(files, entry_rel);
-    let mut endpoints = Vec::new();
-    for file in files {
-        let local_prefixes = compute_local_var_prefixes(file);
-        let module_prefix = module_prefix_for_file(&file.rel_file, &entry_module_prefixes);
-        let is_entry = entry_rel == Some(file.rel_file.as_str());
-        for route in &file.routes {
-            let local_p = route
-                .enclosing_fn
-                .as_ref()
-                .and_then(|f| {
-                    route
-                        .owner_var
-                        .as_ref()
-                        .and_then(|v| local_prefixes.get(&(f.clone(), v.clone())))
-                })
-                .map(String::as_str)
-                .unwrap_or("");
-            let fn_p = route.enclosing_fn.as_ref().and_then(|f| {
-                fn_prefixes
-                    .get(&(file.rel_file.clone(), f.clone()))
-                    .or_else(|| fn_prefixes.get(&(file.crate_key.clone(), f.clone())))
+fn append_resolved_file_routes(
+    file: &FileParse,
+    entry_rel: Option<&str>,
+    ctx: &AxumServiceContext,
+    endpoints: &mut Vec<ExtractedEndpoint>,
+) {
+    let local_prefixes = compute_local_var_prefixes(file);
+    let module_prefix = module_prefix_for_file(&file.rel_file, &ctx.entry_module_prefixes);
+    let is_entry = entry_rel == Some(file.rel_file.as_str());
+    for route in &file.routes {
+        let local_p = route
+            .enclosing_fn
+            .as_ref()
+            .and_then(|f| {
+                route
+                    .owner_var
+                    .as_ref()
+                    .and_then(|v| local_prefixes.get(&(f.clone(), v.clone())))
+            })
+            .map(String::as_str)
+            .unwrap_or("");
+        let fn_p = route
+            .enclosing_fn
+            .as_ref()
+            .and_then(|f| ctx.lookup_fn_prefix(&file.rel_file, &file.crate_key, f));
+        let (full_raw, prefix_state) = assemble_route_path(
+            &route.path_raw,
+            is_entry,
+            module_prefix.as_deref(),
+            fn_p,
+            local_p,
+        );
+        let path_norm = normalize_path(&full_raw);
+        if !path_norm.is_empty() {
+            endpoints.push(ExtractedEndpoint {
+                method: route.method,
+                path_raw: full_raw,
+                path_norm,
+                file: route.file.clone(),
+                line: route.line,
+                handler: route.handler.clone(),
+                prefix_state,
             });
-            let (full_raw, prefix_state) = assemble_route_path(
-                &route.path_raw,
-                is_entry,
-                module_prefix.as_deref(),
-                fn_p.map(|(p, r)| (p.as_str(), *r)),
-                local_p,
-            );
-            let path_norm = normalize_path(&full_raw);
-            if !path_norm.is_empty() {
-                endpoints.push(ExtractedEndpoint {
-                    method: route.method,
-                    path_raw: full_raw,
-                    path_norm,
-                    file: route.file.clone(),
-                    line: route.line,
-                    handler: route.handler.clone(),
-                    prefix_state,
-                });
-            }
         }
     }
-    sort_extracted_endpoints(&mut endpoints);
-    endpoints
 }
 
 fn collect_entry_module_prefixes(

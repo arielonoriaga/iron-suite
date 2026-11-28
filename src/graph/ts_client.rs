@@ -1,21 +1,18 @@
-use std::collections::HashMap;
-use std::fs;
-use std::path::Path;
-use std::sync::LazyLock;
+use std::{collections::HashMap, fs, path::Path, sync::LazyLock};
 
 use anyhow::Result;
 use regex::Regex;
+use serde::{Deserialize, Serialize};
 
 use super::scan::{
     LineIndex, extract_why_ts, find_matching_delim, for_each_masked_ident, is_ident_byte,
-    is_test_file, join_paths, matches_external_glob, normalize_path, qualify_under_root,
-    read_ident, skip_angle_generics, skip_ascii_ws, sort_extracted_calls, split_top_level_args,
-    ts_code_mask, under_root,
+    is_test_file, is_ts_source, join_paths, matches_external_glob, normalize_path, parallel_map,
+    qualify_under_root, read_ident, skip_angle_generics, skip_ascii_ws, sort_extracted_calls,
+    split_top_level_args, ts_code_mask, under_root,
 };
-use super::{ExtractedCall, HttpMethod};
+use super::types::{ExtractedCall, HttpMethod};
 
 const FETCH_CALLEES: &[&str] = &["apiFetch", "apiFetchWithOpts", "apiFetchRaw", "fetch"];
-const TS_EXTS: &[&str] = &[".ts", ".tsx", ".js", ".jsx"];
 const POST_NO_RETRY: &str = "postNoRetry";
 
 static METHOD_PROP_RE: LazyLock<Regex> = LazyLock::new(|| {
@@ -26,7 +23,7 @@ static API_OBJECT_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\b(?:export\s+)?const\s+api\s*(?::[^=]+)?=\s*\{").expect("valid api object regex")
 });
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WrapperEndpoint {
     pub method: HttpMethod,
     pub path_raw: String,
@@ -45,6 +42,64 @@ struct FileScanCtx<'a> {
     external: bool,
 }
 
+pub struct TsServiceSpec<'a> {
+    pub repo: &'a str,
+    pub repo_dir: &'a Path,
+    pub service_root: &'a str,
+    pub client_rel: Option<&'a str>,
+    pub base_service: Option<&'a str>,
+    pub base_prefix: Option<&'a str>,
+    pub external_globs: &'a [String],
+}
+
+pub fn load_service_wrappers(spec: &TsServiceSpec<'_>) -> HashMap<String, WrapperEndpoint> {
+    spec.client_rel
+        .map(|c| qualify_under_root(spec.service_root, c))
+        .and_then(|cpath| fs::read_to_string(spec.repo_dir.join(cpath)).ok())
+        .map(|src| parse_client_wrappers(&src, spec.base_prefix))
+        .unwrap_or_default()
+}
+
+pub fn extract_files_with_wrappers(
+    spec: &TsServiceSpec<'_>,
+    files: &[String],
+    wrapper_map: &HashMap<String, WrapperEndpoint>,
+) -> Vec<ExtractedCall> {
+    let client_repo_rel = spec
+        .client_rel
+        .map(|c| qualify_under_root(spec.service_root, c));
+    let candidates: Vec<&String> = files
+        .iter()
+        .filter(|rel| {
+            is_ts_source(rel)
+                && under_root(rel, spec.service_root)
+                && !is_test_file(rel)
+                && client_repo_rel.as_deref() != Some(rel.as_str())
+        })
+        .collect();
+    let mut calls: Vec<ExtractedCall> = parallel_map(&candidates, |rel| {
+        let Ok(src) = fs::read_to_string(spec.repo_dir.join(rel)) else {
+            return Vec::new();
+        };
+        let external = matches_external_glob(spec.external_globs, spec.repo, rel);
+        let area = extract_area(rel, spec.service_root);
+        extract_calls_from_file(
+            rel,
+            &src,
+            wrapper_map,
+            spec.base_service.unwrap_or(""),
+            spec.base_prefix,
+            &area,
+            external,
+        )
+    })
+    .into_iter()
+    .flatten()
+    .collect();
+    sort_extracted_calls(&mut calls);
+    calls
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn extract_service(
     repo: &str,
@@ -56,37 +111,17 @@ pub fn extract_service(
     external_globs: &[String],
     tracked_files: &[String],
 ) -> Result<Vec<ExtractedCall>> {
-    let client_repo_rel = client_rel.map(|c| qualify_under_root(service_root, c));
-    let wrapper_map = client_repo_rel
-        .as_ref()
-        .and_then(|cpath| fs::read_to_string(repo_dir.join(cpath)).ok())
-        .map(|src| parse_client_wrappers(&src, base_prefix))
-        .unwrap_or_default();
-    let mut calls = Vec::new();
-    for rel in tracked_files {
-        if !is_ts_source(rel) || !under_root(rel, service_root) || is_test_file(rel) {
-            continue;
-        }
-        if client_repo_rel.as_deref() == Some(rel.as_str()) {
-            continue;
-        }
-        let Ok(src) = fs::read_to_string(repo_dir.join(rel)) else {
-            continue;
-        };
-        let external = matches_external_glob(external_globs, repo, rel);
-        let area = extract_area(rel, service_root);
-        calls.extend(extract_calls_from_file(
-            rel,
-            &src,
-            &wrapper_map,
-            base_service.unwrap_or(""),
-            base_prefix,
-            &area,
-            external,
-        ));
-    }
-    sort_extracted_calls(&mut calls);
-    Ok(calls)
+    let spec = TsServiceSpec {
+        repo,
+        repo_dir,
+        service_root,
+        client_rel,
+        base_service,
+        base_prefix,
+        external_globs,
+    };
+    let wrapper_map = load_service_wrappers(&spec);
+    Ok(extract_files_with_wrappers(&spec, tracked_files, &wrapper_map))
 }
 
 pub fn parse_client_wrappers(
@@ -427,10 +462,6 @@ fn apply_base_prefix(raw: &str, base_prefix: Option<&str>) -> String {
         return raw.to_owned();
     }
     join_paths(prefix, raw)
-}
-
-fn is_ts_source(rel: &str) -> bool {
-    TS_EXTS.iter().any(|ext| rel.ends_with(ext))
 }
 
 fn extract_area(rel_file: &str, service_root: &str) -> String {

@@ -174,6 +174,22 @@ struct GraphQueryArgs {
 #[derive(Subcommand)]
 enum GraphCommand {
     Refresh,
+    Touch {
+        #[arg(required = true)]
+        paths: Vec<PathBuf>,
+        #[arg(long)]
+        json: bool,
+    },
+    Suggest {
+        #[arg(long)]
+        apply: bool,
+    },
+    Changes {
+        #[arg(long, default_value_t = 7)]
+        since: u64,
+        #[command(flatten)]
+        opts: GraphQueryArgs,
+    },
     WhoCalls {
         query: String,
         #[command(flatten)]
@@ -242,6 +258,22 @@ fn default_db() -> Result<PathBuf> {
 fn run_graph(db: &std::path::Path, command: GraphCommand) -> Result<()> {
     let text = match command {
         GraphCommand::Refresh => output::encode(&graph::refresh(db)?)?,
+        GraphCommand::Touch { paths, json } => {
+            let report = graph::touch(db, &paths)?;
+            if json {
+                output::encode(&report.json_value)?
+            } else {
+                report.impact_text
+            }
+        }
+        GraphCommand::Suggest { apply } => output::encode(&graph::run_suggest(db, apply)?)?,
+        GraphCommand::Changes { since, opts } => graph::query_changes(
+            db,
+            since,
+            opts.repo.as_deref(),
+            opts.limit,
+            opts.max_bytes,
+        )?,
         GraphCommand::WhoCalls { query, opts } => {
             graph::query_who_calls(db, &query, opts.repo.as_deref(), opts.limit, opts.max_bytes)?
         }
