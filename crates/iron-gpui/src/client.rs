@@ -995,6 +995,7 @@ mod tests {
             db_path: db,
             host_id: "desktop".into(),
             hostname: "desktop-exo".into(),
+            peer_hosts: Vec::new(),
         })
         .await
         .expect("start daemon");

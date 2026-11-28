@@ -79,18 +79,8 @@ flowchart LR
 git clone https://github.com/arielonoriaga/iron-term.git
 cd iron-term
 
-# 1. Build optimized release binaries (iron-term, iron-agentd, iron-termctl)
-cargo build --release --workspace
-
-# 2. Install binaries to ~/.local/bin
-mkdir -p ~/.local/bin
-cp target/release/iron-term target/release/iron-agentd target/release/iron-termctl ~/.local/bin/
-
-# 3. Install Linux desktop launcher entry
-mkdir -p ~/.local/share/applications
-sed "s|^TryExec=.*|TryExec=$HOME/.local/bin/iron-term|; s|^Exec=iron-term|Exec=$HOME/.local/bin/iron-term|" \
-  packaging/iron-term.desktop > ~/.local/share/applications/iron-term.desktop
-update-desktop-database ~/.local/share/applications 2>/dev/null || true
+# Build & install binaries, hicolor icons, and XDG desktop entry (~/.local/bin & ~/.local/share)
+./packaging/install-desktop.sh
 ```
 
 ### Launch
@@ -188,7 +178,7 @@ IronTerm is part of **[The Iron Stack](https://iron.huggian.com)** — zero-clou
 1. **[`iron-suite`](https://github.com/arielonoriaga/iron-suite):**
    Zero-cloud SQLite FTS5 + Hybrid Semantic RRF `stdio` MCP memory hub (`iron`), local **Second Brain & Trust Desk Web UI** (`iron ui`), SSH multi-machine memory sharing, and **9 adversarial `iron-*` engineering & UX skills**.
 2. **[`iron-browser`](https://github.com/arielonoriaga/iron-browser):**
-   Dual-viewport (`390×844` Portrait + `1280×720` Landscape) Chromium developer browser with 3-tier mirrored input, single-flight HTTP/WS/SSE/SFS2X dedup, WebGL draw-call/render-order inspector, off-thread V8 CPU & Heap profilers, embedded multi-CLI Agent Chat Dock, causal Rust `TabEventBus`, and 20-tool Rust MCP server.
+   Dual-viewport (`390×844` Portrait + `1280×720` Landscape) Chromium developer browser with 3-tier mirrored input, single-flight HTTP/WS/SSE/SFS2X dedup, WebGL draw-call/render-order inspector, off-thread V8 CPU & Heap profilers, embedded multi-CLI Agent Chat Dock, causal Rust `TabEventBus`, and 26-tool Rust MCP server.
 3. **`iron-term` (*This Repo*):**
    Native **Rust + GPUI** multi-agent terminal (`iron-gpui`), headless PTY daemon with `0 MB` session hibernation (`iron-agentd`), and control CLI (`iron-termctl`).
 

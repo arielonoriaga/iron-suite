@@ -41,6 +41,7 @@ pub struct IronTermView {
     bridge: DaemonBridge,
     default_spawn: SpawnMetadata,
     palette: ThemePalette,
+    mono_font_family: SharedString,
     connected: bool,
     connection_status: String,
 
@@ -104,11 +105,17 @@ impl IronTermView {
         })
         .detach();
 
+        let available_fonts = cx.text_system().all_font_names();
+        let font_override = std::env::var("IRON_TERM_FONT").ok();
+        let mono_font_family =
+            resolve_monospace_font(font_override.as_deref(), &available_fonts);
+
         Self {
             focus_handle,
             bridge,
             default_spawn,
             palette: ThemePalette::for_mode(!start_light),
+            mono_font_family,
             connected: false,
             connection_status: "Connecting to iron-agentd...".to_string(),
             hosts: Vec::new(),
@@ -2388,7 +2395,7 @@ impl Render for IronTermView {
             .size_full()
             .bg(p.void_canvas)
             .text_color(p.primary_text)
-            .font_family("JetBrains Mono")
+            .font_family(self.mono_font_family.clone())
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(Self::on_key_down))
             .flex()
@@ -2522,11 +2529,85 @@ fn session_has_ghost_bar(s: &SessionSummary) -> bool {
     s.prompt.is_some() || s.state == AgentState::Hibernated
 }
 
-fn short_host(host_id: &str) -> &str {
-    match host_id {
-        "desktop" => "desk",
-        "laptop" => "lap",
-        other => other,
+const PORTABLE_MONO_FONTS: &[&str] = &[
+    "JetBrains Mono",
+    "JetBrainsMono Nerd Font",
+    "JetBrainsMonoNL Nerd Font",
+    "JetBrainsMono Nerd Font Mono",
+    "Fira Code",
+    "FiraCode Nerd Font",
+    "Cascadia Code",
+    "Hack",
+    "IBM Plex Mono",
+    "Source Code Pro",
+    "Ubuntu Mono",
+    "Ubuntu Sans Mono",
+    "Noto Sans Mono",
+    "Liberation Mono",
+    "DejaVu Sans Mono",
+    "Adwaita Mono",
+    "FreeMono",
+    "Courier New",
+];
+
+fn find_font_match(available_fonts: &[String], candidate: &str) -> Option<String> {
+    if let Some(exact) = available_fonts.iter().find(|f| f.as_str() == candidate) {
+        return Some(exact.clone());
+    }
+    available_fonts
+        .iter()
+        .find(|f| f.eq_ignore_ascii_case(candidate))
+        .cloned()
+}
+
+/// Resolves a monospace font family from `IRON_TERM_FONT` and available system fonts.
+pub fn resolve_monospace_font(
+    env_override: Option<&str>,
+    available_fonts: &[String],
+) -> SharedString {
+    if let Some(requested) = env_override.map(str::trim).filter(|s| !s.is_empty()) {
+        if available_fonts.is_empty() {
+            return SharedString::from(requested.to_string());
+        }
+        if let Some(matched) = find_font_match(available_fonts, requested) {
+            return SharedString::from(matched);
+        }
+    }
+
+    for candidate in PORTABLE_MONO_FONTS {
+        if let Some(matched) = find_font_match(available_fonts, candidate) {
+            return SharedString::from(matched);
+        }
+    }
+
+    if let Some(any_mono) = available_fonts.iter().find(|name| {
+        let lower = name.to_ascii_lowercase();
+        !name.starts_with('.') && lower.contains("mono") && !lower.contains("emoji")
+    }) {
+        return SharedString::from(any_mono.clone());
+    }
+
+    SharedString::from("DejaVu Sans Mono")
+}
+
+fn short_host(host_id: &str) -> String {
+    let trimmed = host_id.trim();
+    match trimmed {
+        "desktop" => "desk".to_string(),
+        "laptop" => "lap".to_string(),
+        other => {
+            let base = other
+                .split('.')
+                .next()
+                .filter(|s| !s.is_empty())
+                .unwrap_or(other);
+            if base.chars().count() <= 10 {
+                base.to_string()
+            } else {
+                let prefix: String = base.chars().take(9).collect();
+                format!("{prefix}…")
+            }
+        }
     }
 }
 
@@ -2647,6 +2728,64 @@ mod tests {
         assert_eq!(
             classify_key_action("d", true, false, true, false, false, false, false, false, false),
             KeyAction::ForwardEof
+        );
+    }
+
+    #[test]
+    fn short_host_abbreviates_and_truncates_utf8_safely() {
+        assert_eq!(short_host("desktop"), "desk");
+        assert_eq!(short_host("laptop"), "lap");
+        assert_eq!(short_host("fedora"), "fedora");
+        assert_eq!(short_host("devbox.internal.corp"), "devbox");
+        assert_eq!(short_host("workstat10"), "workstat10");
+        assert_eq!(short_host("very-long-workstation-name"), "very-long…");
+        assert_eq!(short_host("café-bistro-node"), "café-bist…");
+        assert_eq!(short_host("very-long-workstation-name").chars().count(), 10);
+    }
+
+    #[test]
+    fn resolves_monospace_font_with_override_and_portable_fallbacks() {
+        let gnome_fonts = vec![
+            ".ZedMono".to_string(),
+            "Cantarell".to_string(),
+            "Adwaita Mono".to_string(),
+        ];
+        assert_eq!(
+            resolve_monospace_font(None, &gnome_fonts).as_ref(),
+            "Adwaita Mono"
+        );
+        assert_eq!(
+            resolve_monospace_font(Some("adwaita mono"), &gnome_fonts).as_ref(),
+            "Adwaita Mono"
+        );
+        assert_eq!(
+            resolve_monospace_font(Some("NonExistent Font"), &gnome_fonts).as_ref(),
+            "Adwaita Mono"
+        );
+
+        let minimal_fonts = vec!["DejaVu Sans".to_string(), "Liberation Mono".to_string()];
+        assert_eq!(
+            resolve_monospace_font(None, &minimal_fonts).as_ref(),
+            "Liberation Mono"
+        );
+
+        let custom_mono_only = vec![
+            ".ZedMono".to_string(),
+            "Noto Color Emoji".to_string(),
+            "Custom Mono Display".to_string(),
+        ];
+        assert_eq!(
+            resolve_monospace_font(None, &custom_mono_only).as_ref(),
+            "Custom Mono Display"
+        );
+
+        assert_eq!(
+            resolve_monospace_font(Some("My Custom Mono"), &[]).as_ref(),
+            "My Custom Mono"
+        );
+        assert_eq!(
+            resolve_monospace_font(Some("  "), &[]).as_ref(),
+            "DejaVu Sans Mono"
         );
     }
 }

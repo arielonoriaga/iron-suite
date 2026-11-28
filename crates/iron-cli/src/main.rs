@@ -5,15 +5,16 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use iron_proto::{
     AgentState, ClientMsg, HostMode, PromptAction, PromptKind, RpcRequest, RpcResponse,
-    ServerFrame, StructuredPrompt, TodoItem, TodoStatus, read_frame_sync, write_frame_sync,
+    ServerFrame, StructuredPrompt, TodoItem, TodoStatus, read_frame_sync, resolve_socket_path,
+    write_frame_sync,
 };
 
 #[derive(Debug, Parser)]
 #[command(name = "iron-termctl", about = "Control plane & hook CLI for iron-agentd")]
 struct Cli {
-    /// Path to iron-agentd Unix socket
+    /// Path to the iron-agentd Unix socket
     #[arg(long, env = "IRON_TERM_SOCKET")]
-    socket: Option<PathBuf>,
+    socket: Option<String>,
 
     /// Emit raw JSON responses
     #[arg(long, global = true)]
@@ -130,13 +131,6 @@ enum Commands {
     },
 }
 
-fn default_socket_path() -> PathBuf {
-    std::env::var("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("/tmp"))
-        .join("iron-term/agentd.sock")
-}
-
 fn send_rpc(socket: &Path, msg: ClientMsg) -> Result<RpcResponse> {
     let mut stream = UnixStream::connect(socket)
         .with_context(|| format!("connect to iron-agentd at {}", socket.display()))?;
@@ -158,9 +152,17 @@ fn send_rpc(socket: &Path, msg: ClientMsg) -> Result<RpcResponse> {
     }
 }
 
+fn resolve_cli_socket(socket_arg: Option<String>) -> PathBuf {
+    socket_arg
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(resolve_socket_path)
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let socket = cli.socket.unwrap_or_else(default_socket_path);
+    let socket = resolve_cli_socket(cli.socket);
 
     let msg = match cli.command {
         Commands::Ping => ClientMsg::Ping,
@@ -388,4 +390,20 @@ fn main() -> Result<()> {
         bail!("daemon error [{code}]: {message}");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_and_whitespace_socket_args_parse_and_fall_back_to_default() {
+        let default_sock = resolve_socket_path();
+
+        for raw in ["", "   "] {
+            let cli = Cli::try_parse_from(["iron-termctl", "--socket", raw, "ping"])
+                .expect("empty --socket must parse cleanly");
+            assert_eq!(resolve_cli_socket(cli.socket), default_sock);
+        }
+    }
 }

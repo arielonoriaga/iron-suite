@@ -22,31 +22,173 @@ use crate::store::{StateStore, now_ms};
 static SESSION_SEQ: AtomicU64 = AtomicU64::new(1);
 static CLIENT_SEQ: AtomicU64 = AtomicU64::new(1);
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+pub struct PeerHostConfig {
+    pub id: String,
+    #[serde(default)]
+    pub hostname: Option<String>,
+    #[serde(default)]
+    pub mode: Option<HostMode>,
+    #[serde(default)]
+    pub cap_pct: Option<u8>,
+    #[serde(default)]
+    pub max_slots: Option<u8>,
+}
+
+impl PeerHostConfig {
+    pub fn new(id: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            hostname: None,
+            mode: None,
+            cap_pct: None,
+            max_slots: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct DaemonConfig {
     pub socket_path: PathBuf,
     pub db_path: PathBuf,
     pub host_id: String,
     pub hostname: String,
+    pub peer_hosts: Vec<PeerHostConfig>,
 }
 
 impl DaemonConfig {
     pub fn default_paths() -> Self {
-        let runtime_dir = std::env::var("XDG_RUNTIME_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from("/tmp"));
-        let data_dir = std::env::var("XDG_DATA_HOME")
-            .map(PathBuf::from)
-            .or_else(|_| std::env::var("HOME").map(|h| PathBuf::from(h).join(".local/share")))
-            .unwrap_or_else(|_| PathBuf::from("/tmp"));
-        let hostname = std::env::var("HOSTNAME").unwrap_or_else(|_| "local".to_string());
+        let socket_path = iron_proto::resolve_socket_path();
+        let db_path = iron_proto::resolve_data_dir().join("state.db");
+        let hostname = iron_proto::resolve_local_hostname();
+        let host_id = std::env::var("IRON_TERM_HOST_ID")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| hostname.clone());
+        let peer_hosts = load_peer_hosts();
         Self {
-            socket_path: runtime_dir.join("iron-term/agentd.sock"),
-            db_path: data_dir.join("iron-term/state.db"),
-            host_id: "desktop".to_string(),
+            socket_path,
+            db_path,
+            host_id,
             hostname,
+            peer_hosts,
         }
     }
+}
+
+fn merge_peer_hosts(target: &mut Vec<PeerHostConfig>, incoming: Vec<PeerHostConfig>) {
+    for peer in incoming {
+        let id = peer.id.trim().to_string();
+        if id.is_empty() {
+            continue;
+        }
+        let normalized = PeerHostConfig {
+            id: id.clone(),
+            hostname: peer
+                .hostname
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty()),
+            mode: peer.mode,
+            cap_pct: peer.cap_pct,
+            max_slots: peer.max_slots,
+        };
+        if let Some(existing) = target.iter_mut().find(|p| p.id == id) {
+            *existing = normalized;
+        } else {
+            target.push(normalized);
+        }
+    }
+}
+
+/// Parses optional `$XDG_CONFIG_HOME/iron-term/hosts.json` contents.
+/// Accepts either a JSON array of [`PeerHostConfig`] or `{ "hosts": [...] }`.
+pub fn parse_peer_hosts_json(raw: &str) -> Result<Vec<PeerHostConfig>> {
+    #[derive(serde::Deserialize)]
+    struct HostsWrapper {
+        hosts: Vec<PeerHostConfig>,
+    }
+
+    let parsed = if let Ok(list) = serde_json::from_str::<Vec<PeerHostConfig>>(raw) {
+        list
+    } else {
+        serde_json::from_str::<HostsWrapper>(raw)
+            .context("parse peer hosts JSON")?
+            .hosts
+    };
+    let mut out = Vec::new();
+    merge_peer_hosts(&mut out, parsed);
+    Ok(out)
+}
+
+/// Parses `IRON_TERM_HOSTS` entries of the form `<id>[=<hostname>][:<free|shared|off>]`,
+/// comma-separated and deduplicated by `id`.
+pub fn parse_peer_hosts_env(raw: &str) -> Vec<PeerHostConfig> {
+    let mut parsed = Vec::new();
+    for entry in raw.split(',') {
+        let item = entry.trim();
+        if item.is_empty() {
+            continue;
+        }
+        let (left, mode) = match item.rsplit_once(':') {
+            Some((prefix, mode_str)) => {
+                if let Some(m) = HostMode::parse(mode_str) {
+                    (prefix.trim(), Some(m))
+                } else {
+                    (item, None)
+                }
+            }
+            None => (item, None),
+        };
+        let (id_part, hostname) = match left.split_once('=') {
+            Some((id_raw, host_raw)) => {
+                let h = host_raw.trim();
+                (
+                    id_raw.trim(),
+                    if h.is_empty() {
+                        None
+                    } else {
+                        Some(h.to_string())
+                    },
+                )
+            }
+            None => (left.trim(), None),
+        };
+        if id_part.is_empty() {
+            continue;
+        }
+        parsed.push(PeerHostConfig {
+            id: id_part.to_string(),
+            hostname,
+            mode,
+            cap_pct: None,
+            max_slots: None,
+        });
+    }
+    let mut out = Vec::new();
+    merge_peer_hosts(&mut out, parsed);
+    out
+}
+
+fn load_peer_hosts() -> Vec<PeerHostConfig> {
+    let mut peers = Vec::new();
+    if let Some(config_path) = iron_proto::resolve_config_dir().map(|d| d.join("hosts.json"))
+        && let Ok(raw) = std::fs::read_to_string(&config_path)
+    {
+        match parse_peer_hosts_json(&raw) {
+            Ok(from_file) => merge_peer_hosts(&mut peers, from_file),
+            Err(e) => {
+                eprintln!(
+                    "iron-agentd: ignoring invalid {}: {e:#}",
+                    config_path.display()
+                );
+            }
+        }
+    }
+    if let Ok(raw_env) = std::env::var("IRON_TERM_HOSTS") {
+        merge_peer_hosts(&mut peers, parse_peer_hosts_env(&raw_env));
+    }
+    peers
 }
 
 struct DaemonState {
@@ -64,7 +206,7 @@ struct DaemonState {
 
 impl DaemonState {
     fn new(
-        config: DaemonConfig,
+        mut config: DaemonConfig,
         store: StateStore,
         signal_tx: mpsc::Sender<PtySignal>,
         events_tx: broadcast::Sender<DaemonEvent>,
@@ -76,16 +218,19 @@ impl DaemonState {
             sessions.insert(s.id.clone(), s);
         }
 
+        if config.hostname.trim().is_empty() {
+            config.hostname = iron_proto::resolve_local_hostname();
+        }
+        if config.host_id.trim().is_empty() {
+            config.host_id = config.hostname.clone();
+        }
+
         let mut hosts = HashMap::new();
         hosts.insert(
-            "desktop".to_string(),
+            config.host_id.clone(),
             HostStatus {
-                id: "desktop".to_string(),
-                hostname: if config.host_id == "desktop" {
-                    config.hostname.clone()
-                } else {
-                    "desktop-exo".to_string()
-                },
+                id: config.host_id.clone(),
+                hostname: config.hostname.clone(),
                 mode: HostMode::Free,
                 cpu_pct: 12,
                 cap_pct: 95,
@@ -95,37 +240,36 @@ impl DaemonState {
                 max_slots: 2,
             },
         );
-        hosts.insert(
-            "laptop".to_string(),
-            HostStatus {
-                id: "laptop".to_string(),
-                hostname: if config.host_id == "laptop" {
-                    config.hostname.clone()
-                } else {
-                    "ariel".to_string()
-                },
-                mode: HostMode::Shared,
-                cpu_pct: 15,
-                cap_pct: 50,
-                ram_used_gb: 6.0,
-                ram_total_gb: 16.0,
-                active_slots: 0,
-                max_slots: 1,
-            },
-        );
-        if !hosts.contains_key(&config.host_id) {
+
+        for peer in &config.peer_hosts {
+            let id = peer.id.trim();
+            if id.is_empty() || id == config.host_id || hosts.contains_key(id) {
+                continue;
+            }
+            let mode = peer.mode.unwrap_or(HostMode::Shared);
+            let (default_cap, default_slots) = match mode {
+                HostMode::Off => (0, 0),
+                HostMode::Shared => (50, 1),
+                HostMode::Free => (90, 1),
+            };
             hosts.insert(
-                config.host_id.clone(),
+                id.to_string(),
                 HostStatus {
-                    id: config.host_id.clone(),
-                    hostname: config.hostname.clone(),
-                    mode: HostMode::Free,
-                    cpu_pct: 10,
-                    cap_pct: 90,
-                    ram_used_gb: 4.0,
+                    id: id.to_string(),
+                    hostname: peer
+                        .hostname
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or(id)
+                        .to_string(),
+                    mode,
+                    cpu_pct: 15,
+                    cap_pct: peer.cap_pct.unwrap_or(default_cap),
+                    ram_used_gb: 6.0,
                     ram_total_gb: 16.0,
                     active_slots: 0,
-                    max_slots: 1,
+                    max_slots: peer.max_slots.unwrap_or(default_slots),
                 },
             );
         }
@@ -886,6 +1030,7 @@ async fn dispatch_request(
         }
         ClientMsg::SetHostMode { host_id, mode } => {
             let mut guard = state.lock().unwrap_or_else(|e| e.into_inner());
+            let is_local = host_id == guard.config.host_id;
             let Some(host) = guard.hosts.get_mut(&host_id) else {
                 return RpcResponse::Error {
                     code: "HOST_NOT_FOUND".into(),
@@ -903,8 +1048,8 @@ async fn dispatch_request(
                     host.max_slots = 1;
                 }
                 HostMode::Free => {
-                    host.cap_pct = if host_id == "desktop" { 95 } else { 90 };
-                    host.max_slots = if host_id == "desktop" { 2 } else { 1 };
+                    host.cap_pct = if is_local { 95 } else { 90 };
+                    host.max_slots = if is_local { 2 } else { 1 };
                 }
             }
             let updated = host.clone();
@@ -1402,5 +1547,159 @@ fn detect_git_branch(dir: &str) -> Option<String> {
         Some(rest.to_string())
     } else {
         Some(trimmed.chars().take(10).collect())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn single_host_daemon_state_has_no_hardcoded_personal_hosts() {
+        let dir = TempDir::new().unwrap();
+        let store = StateStore::open(&dir.path().join("state.db")).unwrap();
+        let (signal_tx, _signal_rx) = mpsc::channel(8);
+        let (events_tx, _) = broadcast::channel(8);
+        let cfg = DaemonConfig {
+            socket_path: dir.path().join("agentd.sock"),
+            db_path: dir.path().join("state.db"),
+            host_id: "fedora-workstation".into(),
+            hostname: "fedora-workstation".into(),
+            peer_hosts: Vec::new(),
+        };
+        let state = DaemonState::new(cfg, store, signal_tx, events_tx).unwrap();
+        assert_eq!(state.hosts.len(), 1);
+        let host = state
+            .hosts
+            .get("fedora-workstation")
+            .expect("local host present");
+        assert_eq!(host.hostname, "fedora-workstation");
+        assert_eq!(host.mode, HostMode::Free);
+        assert_eq!(host.cap_pct, 95);
+        assert_eq!(host.max_slots, 2);
+        assert!(!state.hosts.contains_key("desktop"));
+        assert!(!state.hosts.contains_key("laptop"));
+        assert!(
+            state
+                .hosts
+                .values()
+                .all(|h| h.hostname != "desktop-exo" && h.hostname != "ariel")
+        );
+    }
+
+    #[test]
+    fn peer_hosts_env_and_json_parse_dedup_and_skip_local_host() {
+        let env_peers = parse_peer_hosts_env(
+            " node-b=build-02:free , node-c:off , node-b=override-02:shared , , =only-hostname ",
+        );
+        assert_eq!(env_peers.len(), 2);
+        assert_eq!(env_peers[0].id, "node-b");
+        assert_eq!(env_peers[0].hostname.as_deref(), Some("override-02"));
+        assert_eq!(env_peers[0].mode, Some(HostMode::Shared));
+        assert_eq!(env_peers[1].id, "node-c");
+        assert_eq!(env_peers[1].hostname, None);
+        assert_eq!(env_peers[1].mode, Some(HostMode::Off));
+
+        let json_peers = parse_peer_hosts_json(
+            r#"{
+                "hosts": [
+                    { "id": "desktop", "hostname": "desktop-exo", "mode": "free", "cap_pct": 95, "max_slots": 2 },
+                    { "id": "laptop", "hostname": "ariel", "mode": "shared" }
+                ]
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(json_peers.len(), 2);
+        assert_eq!(json_peers[0].id, "desktop");
+        assert_eq!(json_peers[1].id, "laptop");
+        assert_eq!(json_peers[1].hostname.as_deref(), Some("ariel"));
+
+        let dir = TempDir::new().unwrap();
+        let store = StateStore::open(&dir.path().join("state.db")).unwrap();
+        let (signal_tx, _signal_rx) = mpsc::channel(8);
+        let (events_tx, _) = broadcast::channel(8);
+        let cfg = DaemonConfig {
+            socket_path: dir.path().join("agentd.sock"),
+            db_path: dir.path().join("state.db"),
+            host_id: "desktop".into(),
+            hostname: "desktop-exo".into(),
+            peer_hosts: json_peers,
+        };
+        let state = DaemonState::new(cfg, store, signal_tx, events_tx).unwrap();
+        assert_eq!(state.hosts.len(), 2);
+        assert_eq!(state.hosts["desktop"].hostname, "desktop-exo");
+        assert_eq!(state.hosts["laptop"].hostname, "ariel");
+        assert_eq!(state.hosts["laptop"].mode, HostMode::Shared);
+        assert_eq!(state.hosts["laptop"].cap_pct, 50);
+    }
+
+    #[tokio::test]
+    async fn set_host_mode_free_grants_primary_capacity_to_configured_local_host() {
+        let dir = TempDir::new().unwrap();
+        let cfg = DaemonConfig {
+            socket_path: dir.path().join("agentd.sock"),
+            db_path: dir.path().join("state.db"),
+            host_id: "arch-dev".into(),
+            hostname: "arch-dev".into(),
+            peer_hosts: vec![PeerHostConfig::new("worker-02")],
+        };
+        let store = StateStore::open(&cfg.db_path).unwrap();
+        let (signal_tx, _signal_rx) = mpsc::channel(8);
+        let (events_tx, _) = broadcast::channel(8);
+        let state = Arc::new(Mutex::new(
+            DaemonState::new(cfg, store, signal_tx, events_tx).unwrap(),
+        ));
+
+        match dispatch_request(
+            &state,
+            1,
+            ClientMsg::SetHostMode {
+                host_id: "arch-dev".into(),
+                mode: HostMode::Shared,
+            },
+        )
+        .await
+        {
+            RpcResponse::Host { host } => {
+                assert_eq!(host.cap_pct, 50);
+                assert_eq!(host.max_slots, 1);
+            }
+            other => panic!("expected Host response, got {other:?}"),
+        }
+
+        match dispatch_request(
+            &state,
+            1,
+            ClientMsg::SetHostMode {
+                host_id: "arch-dev".into(),
+                mode: HostMode::Free,
+            },
+        )
+        .await
+        {
+            RpcResponse::Host { host } => {
+                assert_eq!(host.cap_pct, 95);
+                assert_eq!(host.max_slots, 2);
+            }
+            other => panic!("expected Host response, got {other:?}"),
+        }
+
+        match dispatch_request(
+            &state,
+            1,
+            ClientMsg::SetHostMode {
+                host_id: "worker-02".into(),
+                mode: HostMode::Free,
+            },
+        )
+        .await
+        {
+            RpcResponse::Host { host } => {
+                assert_eq!(host.cap_pct, 90);
+                assert_eq!(host.max_slots, 1);
+            }
+            other => panic!("expected Host response, got {other:?}"),
+        }
     }
 }

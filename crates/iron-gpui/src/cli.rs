@@ -20,7 +20,7 @@ pub struct CliArgs {
 
     /// Path to the iron-agentd Unix socket
     #[arg(long = "socket", env = "IRON_TERM_SOCKET", value_name = "PATH")]
-    pub socket: Option<PathBuf>,
+    pub socket: Option<String>,
 
     /// Always spawn and attach a fresh live shell session on launch
     #[arg(long = "new-session")]
@@ -44,7 +44,12 @@ pub struct CliArgs {
 
 impl CliArgs {
     pub fn socket_path(&self) -> PathBuf {
-        self.socket.clone().unwrap_or_else(default_socket_path)
+        self.socket
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(default_socket_path)
     }
 
     pub fn resolved_working_directory(&self) -> PathBuf {
@@ -109,18 +114,12 @@ pub fn resolve_working_directory(explicit: Option<&Path>, cwd: &Path) -> PathBuf
 }
 
 pub fn default_socket_path() -> PathBuf {
-    let xdg = std::env::var("XDG_RUNTIME_DIR").ok();
-    // SAFETY: `geteuid()` is a trivial read-only POSIX syscall with no memory invariants.
-    let uid = unsafe { libc::geteuid() };
-    default_socket_path_from(xdg.as_deref(), uid)
+    iron_proto::resolve_socket_path()
 }
 
+#[cfg(test)]
 pub fn default_socket_path_from(xdg_runtime_dir: Option<&str>, uid: u32) -> PathBuf {
-    if let Some(dir) = xdg_runtime_dir.map(str::trim).filter(|s| !s.is_empty()) {
-        PathBuf::from(dir).join("iron-term/agentd.sock")
-    } else {
-        PathBuf::from(format!("/tmp/iron-term-{uid}")).join("agentd.sock")
-    }
+    iron_proto::resolve_socket_path_from(None, xdg_runtime_dir, uid)
 }
 
 pub fn detect_cli_label(command: &[String]) -> String {
@@ -167,7 +166,8 @@ mod tests {
             Some(Path::new("/tmp/my-repo"))
         );
         assert_eq!(args.title.as_deref(), Some("Build Shell"));
-        assert_eq!(args.socket.as_deref(), Some(Path::new("/tmp/custom.sock")));
+        assert_eq!(args.socket.as_deref(), Some("/tmp/custom.sock"));
+        assert_eq!(args.socket_path(), PathBuf::from("/tmp/custom.sock"));
         assert_eq!(args.command, vec!["claude", "--resume", "abc123"]);
         assert!(args.force_spawn_new_session());
 
@@ -247,5 +247,14 @@ mod tests {
             default_socket_path_from(None, 4242),
             PathBuf::from("/tmp/iron-term-4242/agentd.sock")
         );
+    }
+
+    #[test]
+    fn empty_socket_override_falls_back_to_default_resolver() {
+        for raw in ["", "   "] {
+            let args = CliArgs::try_parse_from(["iron-term", "--socket", raw])
+                .expect("empty --socket must parse cleanly");
+            assert_eq!(args.socket_path(), default_socket_path());
+        }
     }
 }

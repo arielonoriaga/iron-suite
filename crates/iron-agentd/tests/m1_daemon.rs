@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use iron_agentd::{DaemonConfig, start_daemon};
+use iron_agentd::{DaemonConfig, PeerHostConfig, start_daemon};
 use iron_proto::{
     AgentState, ClientMsg, DaemonEvent, HostMode, MAX_FRAME_BYTES, PromptAction, PromptKind,
     RpcRequest, RpcResponse, ServerFrame, StructuredPrompt, TodoItem, TodoStatus, decode_frame,
@@ -117,6 +117,7 @@ fn temp_config(dir: &TempDir) -> DaemonConfig {
         db_path: dir.path().join("state.db"),
         host_id: "desktop".into(),
         hostname: "desktop-exo".into(),
+        peer_hosts: vec![PeerHostConfig::new("laptop")],
     }
 }
 
@@ -785,4 +786,145 @@ async fn wake_preserves_structured_argv_and_rejects_unknown_action_and_live_sock
     }
 
     daemon.shutdown().await;
+}
+
+async fn wait_for_socket(socket: &std::path::Path) {
+    timeout(Duration::from_secs(5), async {
+        loop {
+            if socket.exists() && UnixStream::connect(socket).await.is_ok() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("timed out waiting for iron-agentd socket");
+}
+
+#[tokio::test]
+async fn daemon_binary_uses_generic_local_host_in_isolated_env_and_respects_fleet_env() {
+    let dir = TempDir::new().unwrap();
+    let sock1 = dir.path().join("iso.sock");
+    let db1 = dir.path().join("iso.db");
+
+    let mut child1 = tokio::process::Command::new(env!("CARGO_BIN_EXE_iron-agentd"))
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", dir.path())
+        .arg("--socket")
+        .arg(&sock1)
+        .arg("--db")
+        .arg(&db1)
+        .spawn()
+        .expect("spawn isolated iron-agentd");
+
+    wait_for_socket(&sock1).await;
+    let mut client1 = TestClient::connect(&sock1).await;
+    match client1.call(ClientMsg::ListFleet).await {
+        RpcResponse::Fleet { hosts, .. } => {
+            assert_eq!(hosts.len(), 1);
+            let local_host = iron_proto::resolve_local_hostname();
+            assert_eq!(hosts[0].id, local_host);
+            assert_eq!(hosts[0].hostname, local_host);
+            assert_eq!(hosts[0].cap_pct, 95);
+            assert_eq!(hosts[0].max_slots, 2);
+            assert_ne!(hosts[0].id, "desktop");
+            assert_ne!(hosts[0].id, "laptop");
+            assert_ne!(hosts[0].hostname, "desktop-exo");
+        }
+        other => panic!("expected Fleet, got {other:?}"),
+    }
+    drop(client1);
+    let _ = child1.kill().await;
+    let _ = child1.wait().await;
+
+    // Now spawn binary using IRON_TERM_SOCKET + IRON_TERM_HOST_ID + IRON_TERM_HOSTS env vars.
+    let sock2 = dir.path().join("env.sock");
+    let db2 = dir.path().join("env.db");
+    let mut child2 = tokio::process::Command::new(env!("CARGO_BIN_EXE_iron-agentd"))
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", dir.path())
+        .env("IRON_TERM_SOCKET", &sock2)
+        .env("IRON_TERM_HOST_ID", "desktop")
+        .env("IRON_TERM_HOSTS", "laptop=ariel:shared")
+        .arg("--db")
+        .arg(&db2)
+        .spawn()
+        .expect("spawn env-configured iron-agentd");
+
+    wait_for_socket(&sock2).await;
+    let mut client2 = TestClient::connect(&sock2).await;
+    match client2.call(ClientMsg::ListFleet).await {
+        RpcResponse::Fleet { hosts, .. } => {
+            assert_eq!(hosts.len(), 2);
+            assert_eq!(hosts[0].id, "desktop");
+            assert_eq!(hosts[0].mode, HostMode::Free);
+            assert_eq!(hosts[0].cap_pct, 95);
+            assert_eq!(hosts[1].id, "laptop");
+            assert_eq!(hosts[1].hostname, "ariel");
+            assert_eq!(hosts[1].mode, HostMode::Shared);
+            assert_eq!(hosts[1].cap_pct, 50);
+        }
+        other => panic!("expected Fleet, got {other:?}"),
+    }
+    drop(client2);
+    let _ = child2.kill().await;
+    let _ = child2.wait().await;
+}
+
+#[tokio::test]
+async fn daemon_binary_falls_back_when_socket_env_or_flag_is_empty() {
+    let dir = TempDir::new().unwrap();
+    let xdg_runtime = dir.path().join("xdg_runtime");
+    std::fs::create_dir_all(&xdg_runtime).unwrap();
+    let expected_sock = xdg_runtime.join("iron-term").join("agentd.sock");
+
+    // 1. IRON_TERM_SOCKET="" must NOT fail with clap exit 2; falls back to XDG_RUNTIME_DIR.
+    let db1 = dir.path().join("empty_env.db");
+    let mut child_env = tokio::process::Command::new(env!("CARGO_BIN_EXE_iron-agentd"))
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", dir.path())
+        .env("XDG_RUNTIME_DIR", &xdg_runtime)
+        .env("IRON_TERM_SOCKET", "")
+        .arg("--db")
+        .arg(&db1)
+        .spawn()
+        .expect("spawn iron-agentd with empty IRON_TERM_SOCKET");
+
+    wait_for_socket(&expected_sock).await;
+    let mut client1 = TestClient::connect(&expected_sock).await;
+    match client1.call(ClientMsg::Ping).await {
+        RpcResponse::Pong { .. } => {}
+        other => panic!("expected Pong, got {other:?}"),
+    }
+    drop(client1);
+    let _ = child_env.kill().await;
+    let _ = child_env.wait().await;
+    let _ = std::fs::remove_file(&expected_sock);
+
+    // 2. --socket "" must NOT fail with clap exit 2; falls back to XDG_RUNTIME_DIR.
+    let db2 = dir.path().join("empty_flag.db");
+    let mut child_flag = tokio::process::Command::new(env!("CARGO_BIN_EXE_iron-agentd"))
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", dir.path())
+        .env("XDG_RUNTIME_DIR", &xdg_runtime)
+        .arg("--socket")
+        .arg("")
+        .arg("--db")
+        .arg(&db2)
+        .spawn()
+        .expect("spawn iron-agentd with empty --socket");
+
+    wait_for_socket(&expected_sock).await;
+    let mut client2 = TestClient::connect(&expected_sock).await;
+    match client2.call(ClientMsg::Ping).await {
+        RpcResponse::Pong { .. } => {}
+        other => panic!("expected Pong, got {other:?}"),
+    }
+    drop(client2);
+    let _ = child_flag.kill().await;
+    let _ = child_flag.wait().await;
 }
