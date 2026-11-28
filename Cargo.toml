@@ -4,7 +4,7 @@ exclude = ["packages/iron-browser", "packages/iron-term"]
 
 [package]
 name = "iron-stack"
-version = "0.4.1"
+version = "0.4.2"
 edition = "2024"
 license = "MIT"
 description = "Zero-cloud SQLite FTS5 + stdio MCP memory hub and multi-agent engineering stack (Claude Code, Codex, Antigravity)"
