@@ -149,6 +149,30 @@ pub fn for_each_dot_call(
     }
 }
 
+pub fn for_each_masked_ident(
+    source: &str,
+    mask: &[bool],
+    range_start: usize,
+    range_end: usize,
+    mut on_ident: impl FnMut(&str, usize) -> Option<usize>,
+) {
+    let bytes = source.as_bytes();
+    let limit = range_end.min(bytes.len());
+    let mut i = range_start;
+    while i < limit {
+        if mask[i]
+            && let Some((ident, next_i)) = read_ident(source, &bytes[..limit], i)
+        {
+            let Some(next) = on_ident(ident, next_i) else {
+                break;
+            };
+            i = next.max(next_i);
+        } else {
+            i += 1;
+        }
+    }
+}
+
 pub fn is_test_file(rel_path: &str) -> bool {
     let normalized = rel_path.replace('\\', "/");
     let segments: Vec<&str> = normalized.split('/').collect();

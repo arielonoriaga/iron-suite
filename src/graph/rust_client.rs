@@ -64,107 +64,84 @@ pub fn extract_service(
     Ok(calls)
 }
 
+struct FileCtx<'a> {
+    rel_file: &'a str,
+    source: &'a str,
+    mask: &'a [bool],
+    lines: &'a LineIndex,
+    fns: &'a [(String, usize, usize, usize)],
+    external: bool,
+}
+
+impl FileCtx<'_> {
+    fn build_call_from_parens(
+        &self,
+        pos: usize,
+        open_paren: usize,
+        close_paren: usize,
+        method: HttpMethod,
+        resolve: impl FnOnce(&[(usize, &str)]) -> Option<(String, String, String)>,
+    ) -> Option<ExtractedCall> {
+        let args = split_top_level_args(self.source, self.mask, 0, open_paren + 1, close_paren);
+        let (path_raw, base_ref, symbol) = resolve(&args)?;
+        let path_norm = normalize_path(&path_raw);
+        (!path_norm.is_empty()).then(|| ExtractedCall {
+            method,
+            path_raw,
+            path_norm,
+            file: self.rel_file.to_owned(),
+            line: self.lines.line_at(pos),
+            base_ref,
+            symbol,
+            area: String::new(),
+            why: extract_why_rust(self.source, self.lines, self.fns, pos),
+            external: self.external,
+        })
+    }
+}
+
 pub fn extract_file(rel_file: &str, stripped_source: &str, external: bool) -> Vec<ExtractedCall> {
     let mask = rust_code_mask(stripped_source);
     let lines = LineIndex::new(stripped_source);
     let fns = find_rust_functions(stripped_source, &mask);
     let wrappers = find_wrapper_fns(stripped_source, &mask, &fns);
     let wrapper_positions: Vec<usize> = wrappers.iter().map(|w| w.call_pos).collect();
-    let mut out = scan_direct_reqwest_calls(
+    let ctx = FileCtx {
         rel_file,
-        stripped_source,
-        &mask,
-        &lines,
-        &fns,
-        &wrapper_positions,
+        source: stripped_source,
+        mask: &mask,
+        lines: &lines,
+        fns: &fns,
         external,
-    );
+    };
+    let mut out = scan_direct_reqwest_calls(&ctx, &wrapper_positions);
     for wrapper in &wrappers {
-        out.extend(extract_wrapper_call_sites(
-            rel_file,
-            stripped_source,
-            &mask,
-            &lines,
-            &fns,
-            wrapper,
-            external,
-        ));
+        out.extend(extract_wrapper_call_sites(&ctx, wrapper));
     }
     out
 }
 
-fn scan_direct_reqwest_calls(
-    rel_file: &str,
-    source: &str,
-    mask: &[bool],
-    lines: &LineIndex,
-    fns: &[(String, usize, usize, usize)],
-    wrapper_positions: &[usize],
-    external: bool,
-) -> Vec<ExtractedCall> {
+fn scan_direct_reqwest_calls(ctx: &FileCtx<'_>, wrapper_positions: &[usize]) -> Vec<ExtractedCall> {
     let mut out = Vec::new();
-    for_each_dot_call(source, mask, 0, source.len(), |name, dot_pos, open, close| {
+    for_each_dot_call(ctx.source, ctx.mask, 0, ctx.source.len(), |name, dot_pos, open, close| {
         if let Some(method) = HttpMethod::parse_crud(name)
             && !wrapper_positions.contains(&dot_pos)
-            && let Some(call) =
-                build_direct_call(rel_file, source, mask, lines, fns, dot_pos, open, close, method, external)
+            && let Some(call) = ctx.build_call_from_parens(dot_pos, open, close, method, |args| {
+                if args.len() != 1 {
+                    return None;
+                }
+                let (path_raw, base_ref) = parse_url_expr(args[0].1).or_else(|| {
+                    resolve_local_url_var(ctx.source, ctx.mask, ctx.fns, dot_pos, args[0].1)
+                })?;
+                let symbol = enclosing_fn_name(ctx.fns, dot_pos).unwrap_or_default();
+                Some((path_raw, base_ref, symbol))
+            })
         {
             out.push(call);
         }
         Some(open + 1)
     });
     out
-}
-
-#[allow(clippy::too_many_arguments)]
-fn make_rust_call(
-    rel_file: &str,
-    source: &str,
-    lines: &LineIndex,
-    fns: &[(String, usize, usize, usize)],
-    pos: usize,
-    method: HttpMethod,
-    path_raw: String,
-    base_ref: String,
-    symbol: String,
-    external: bool,
-) -> Option<ExtractedCall> {
-    let path_norm = normalize_path(&path_raw);
-    (!path_norm.is_empty()).then(|| ExtractedCall {
-        method,
-        path_raw,
-        path_norm,
-        file: rel_file.to_owned(),
-        line: lines.line_at(pos),
-        base_ref,
-        symbol,
-        area: String::new(),
-        why: extract_why_rust(source, lines, fns, pos),
-        external,
-    })
-}
-
-#[allow(clippy::too_many_arguments)]
-fn build_direct_call(
-    rel_file: &str,
-    source: &str,
-    mask: &[bool],
-    lines: &LineIndex,
-    fns: &[(String, usize, usize, usize)],
-    dot_pos: usize,
-    open_paren: usize,
-    close_paren: usize,
-    method: HttpMethod,
-    external: bool,
-) -> Option<ExtractedCall> {
-    let args = split_top_level_args(source, mask, 0, open_paren + 1, close_paren);
-    if args.len() != 1 {
-        return None;
-    }
-    let (path_raw, base_ref) = parse_url_expr(args[0].1)
-        .or_else(|| resolve_local_url_var(source, mask, fns, dot_pos, args[0].1))?;
-    let symbol = enclosing_fn_name(fns, dot_pos).unwrap_or_default();
-    make_rust_call(rel_file, source, lines, fns, dot_pos, method, path_raw, base_ref, symbol, external)
 }
 
 fn find_wrapper_fns(
@@ -268,21 +245,13 @@ fn detect_wrapper_format_arg(
     None
 }
 
-fn extract_wrapper_call_sites(
-    rel_file: &str,
-    source: &str,
-    mask: &[bool],
-    lines: &LineIndex,
-    fns: &[(String, usize, usize, usize)],
-    wrapper: &WrapperDef,
-    external: bool,
-) -> Vec<ExtractedCall> {
-    let bytes = source.as_bytes();
+fn extract_wrapper_call_sites(ctx: &FileCtx<'_>, wrapper: &WrapperDef) -> Vec<ExtractedCall> {
+    let bytes = ctx.source.as_bytes();
     let needle = wrapper.name.as_bytes();
     let mut out = Vec::new();
     let mut i = 0usize;
     while i + needle.len() < bytes.len() {
-        if !mask[i] || !bytes[i..].starts_with(needle) {
+        if !ctx.mask[i] || !bytes[i..].starts_with(needle) {
             i += 1;
             continue;
         }
@@ -290,51 +259,26 @@ fn extract_wrapper_call_sites(
         let prev_is_ident = i > 0 && is_ident_byte(bytes[i - 1]);
         let next_is_ident = is_ident_byte(bytes.get(after_pos).copied().unwrap_or(0));
         let in_body = (wrapper.body_open..=wrapper.body_close).contains(&i);
-        if prev_is_ident || next_is_ident || in_body || is_fn_declaration_at(source, i) {
+        if prev_is_ident || next_is_ident || in_body || is_fn_declaration_at(ctx.source, i) {
             i += 1;
             continue;
         }
-        let Some(open_paren) = skip_optional_turbofish_to_paren(bytes, mask, after_pos) else {
+        let Some(open_paren) = skip_optional_turbofish_to_paren(bytes, ctx.mask, after_pos) else {
             i = after_pos;
             continue;
         };
-        if let Some(close_paren) = find_matching_delim(bytes, mask, open_paren, b'(', b')')
-            && let Some(call) = build_wrapper_call(rel_file, source, mask, lines, fns, wrapper, i, open_paren, close_paren, external)
+        if let Some(close_paren) = find_matching_delim(bytes, ctx.mask, open_paren, b'(', b')')
+            && let Some(call) =
+                ctx.build_call_from_parens(i, open_paren, close_paren, wrapper.method, |args| {
+                    let path_raw = extract_path_argument(args.get(wrapper.path_param_idx)?.1)?;
+                    Some((path_raw, wrapper.base_ref.clone(), wrapper.name.clone()))
+                })
         {
             out.push(call);
         }
         i = open_paren + 1;
     }
     out
-}
-
-#[allow(clippy::too_many_arguments)]
-fn build_wrapper_call(
-    rel_file: &str,
-    source: &str,
-    mask: &[bool],
-    lines: &LineIndex,
-    fns: &[(String, usize, usize, usize)],
-    wrapper: &WrapperDef,
-    call_pos: usize,
-    open_paren: usize,
-    close_paren: usize,
-    external: bool,
-) -> Option<ExtractedCall> {
-    let args = split_top_level_args(source, mask, 0, open_paren + 1, close_paren);
-    let path_raw = extract_path_argument(args.get(wrapper.path_param_idx)?.1)?;
-    make_rust_call(
-        rel_file,
-        source,
-        lines,
-        fns,
-        call_pos,
-        wrapper.method,
-        path_raw,
-        wrapper.base_ref.clone(),
-        wrapper.name.clone(),
-        external,
-    )
 }
 
 fn is_fn_declaration_at(source: &str, pos: usize) -> bool {

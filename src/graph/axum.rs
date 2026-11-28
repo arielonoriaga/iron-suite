@@ -7,9 +7,9 @@ use regex::Regex;
 
 use super::scan::{
     LineIndex, enclosing_fn_name, find_matching_delim, find_rust_functions,
-    find_semicolon_at_depth_zero, for_each_dot_call, is_ident_byte, join_paths, normalize_path,
-    qualify_under_root, read_ident, read_rust_service_files, rust_code_mask,
-    sort_extracted_endpoints, split_top_level_args, unquote_double_string,
+    find_semicolon_at_depth_zero, for_each_dot_call, for_each_masked_ident, is_ident_byte,
+    join_paths, normalize_path, qualify_under_root, read_rust_service_files, rust_code_mask,
+    skip_ascii_ws, sort_extracted_endpoints, split_top_level_args, unquote_double_string,
 };
 use super::{ExtractedEndpoint, HttpMethod, PrefixState};
 
@@ -370,42 +370,26 @@ fn extract_route_methods(
 ) -> Vec<(HttpMethod, String)> {
     let bytes = source.as_bytes();
     let mut out = Vec::new();
-    let mut i = start;
-    while i < end {
-        if !mask[i] {
-            i += 1;
-            continue;
-        }
-        let Some((ident, next_i)) = read_ident(source, &bytes[..end], i) else {
-            i += 1;
-            continue;
-        };
-        i = next_i;
-        let mut ws = i;
-        while ws < end && bytes[ws].is_ascii_whitespace() {
-            ws += 1;
-        }
+    for_each_masked_ident(source, mask, start, end, |ident, next_i| {
+        let ws = skip_ascii_ws(bytes, next_i, end);
         if ws >= end || bytes[ws] != b'(' || !mask[ws] {
-            continue;
+            return Some(next_i);
         }
         let Some(arg_close) = find_matching_delim(bytes, mask, ws, b'(', b')') else {
-            continue;
+            return Some(next_i);
         };
         if LAYER_METHODS.contains(&ident) {
-            i = arg_close + 1;
-            continue;
+            return Some(arg_close + 1);
         }
         if ident == METHOD_MERGE {
-            i = ws + 1;
-            continue;
+            return Some(ws + 1);
         }
         if let Some(method) = HttpMethod::parse(ident) {
             out.push((method, summarize_handler(source[ws + 1..arg_close].trim())));
-            i = arg_close + 1;
-            continue;
+            return Some(arg_close + 1);
         }
-        i = ws + 1;
-    }
+        Some(ws + 1)
+    });
     out
 }
 

@@ -6,7 +6,7 @@ use anyhow::Result;
 use crate::output;
 
 use super::scan::normalize_path;
-use super::store::{CallRow, CallerEdge, EndpointRow, GraphStore, RepoRow};
+use super::store::{CallRow, CallerEdge, EndpointRow, GraphStore};
 use super::{Confidence, HttpMethod, Stack};
 
 const DEFAULT_LIMIT: usize = 50;
@@ -15,6 +15,24 @@ const SPA_AREA_PREVIEW: usize = 5;
 const SPA_FILE_PREVIEW: usize = 3;
 const SHORT_SHA_LEN: usize = 7;
 
+enum QueryOutput {
+    Empty(String),
+    Lines(Vec<String>),
+}
+
+fn run_budgeted_query(
+    limit: Option<usize>,
+    max_bytes: usize,
+    build: impl FnOnce(usize) -> Result<QueryOutput>,
+) -> Result<String> {
+    output::validate_budget(max_bytes)?;
+    let max_items = limit.unwrap_or(DEFAULT_LIMIT).max(1);
+    match build(max_items)? {
+        QueryOutput::Empty(msg) => Ok(truncate_to_budget(&msg, max_bytes)),
+        QueryOutput::Lines(lines) => Ok(render_lines_within_budget(&lines, max_bytes)),
+    }
+}
+
 pub fn who_calls(
     store: &GraphStore,
     raw_query: &str,
@@ -22,26 +40,28 @@ pub fn who_calls(
     limit: Option<usize>,
     max_bytes: usize,
 ) -> Result<String> {
-    output::validate_budget(max_bytes)?;
-    let (method, path_norm) = parse_endpoint_query(raw_query);
-    let endpoints = store.find_endpoints(method, &path_norm, repo)?;
-    let max_items = limit.unwrap_or(DEFAULT_LIMIT).max(1);
-    if endpoints.is_empty() {
-        let msg = format!("no provider found for {}\n", format_query_label(method, &path_norm));
-        return Ok(truncate_to_budget(&msg, max_bytes));
-    }
-    let mut lines = Vec::new();
-    for ep in &endpoints {
-        lines.push(format_provider_line(ep));
-        let callers = store.callers_for_endpoint(ep.id)?;
-        if callers.is_empty() {
-            lines.push("  (no callers)".to_owned());
-            continue;
+    run_budgeted_query(limit, max_bytes, |max_items| {
+        let (method, path_norm) = parse_endpoint_query(raw_query);
+        let endpoints = store.find_endpoints(method, &path_norm, repo)?;
+        if endpoints.is_empty() {
+            return Ok(QueryOutput::Empty(format!(
+                "no provider found for {}\n",
+                format_query_label(method, &path_norm)
+            )));
         }
-        let formatted_callers = format_grouped_callers(&callers);
-        push_capped_lines(&mut lines, formatted_callers, max_items, "  ");
-    }
-    Ok(render_lines_within_budget(&lines, max_bytes))
+        let mut lines = Vec::new();
+        for ep in &endpoints {
+            lines.push(format_provider_line(ep));
+            let callers = store.callers_for_endpoint(ep.id)?;
+            if callers.is_empty() {
+                lines.push("  (no callers)".to_owned());
+                continue;
+            }
+            let formatted_callers = format_grouped_callers(&callers);
+            push_capped_lines(&mut lines, formatted_callers, max_items, "  ");
+        }
+        Ok(QueryOutput::Lines(lines))
+    })
 }
 
 pub fn impact(
@@ -51,26 +71,24 @@ pub fn impact(
     limit: Option<usize>,
     max_bytes: usize,
 ) -> Result<String> {
-    output::validate_budget(max_bytes)?;
-    let repos = store.list_repos()?;
-    let (resolved_repo, rel_file) = resolve_file_target(&repos, file_arg, repo_filter);
-    let endpoints = store.endpoints_in_file(resolved_repo.as_deref(), &rel_file)?;
-    let calls = store.calls_in_file(resolved_repo.as_deref(), &rel_file)?;
-    let max_items = limit.unwrap_or(DEFAULT_LIMIT).max(1);
-    if endpoints.is_empty() && calls.is_empty() {
-        let scope = resolved_repo.as_deref().unwrap_or("*");
-        return Ok(truncate_to_budget(
-            &format!("no endpoints or calls in {scope} {rel_file}\n"),
-            max_bytes,
-        ));
-    }
-    let mut lines = Vec::new();
-    append_defined_endpoints(store, &rel_file, &endpoints, max_items, &mut lines)?;
-    if !calls.is_empty() {
-        lines.push(format!("makes {} call(s) from {rel_file}:", calls.len()));
-        append_call_provider_lines(store, &calls, max_items, &mut lines)?;
-    }
-    Ok(render_lines_within_budget(&lines, max_bytes))
+    run_budgeted_query(limit, max_bytes, |max_items| {
+        let (resolved_repo, rel_file) = resolve_file_target(store, file_arg, repo_filter)?;
+        let endpoints = store.endpoints_in_file(resolved_repo.as_deref(), &rel_file)?;
+        let calls = store.calls_in_file(resolved_repo.as_deref(), &rel_file)?;
+        if endpoints.is_empty() && calls.is_empty() {
+            let scope = resolved_repo.as_deref().unwrap_or("*");
+            return Ok(QueryOutput::Empty(format!(
+                "no endpoints or calls in {scope} {rel_file}\n"
+            )));
+        }
+        let mut lines = Vec::new();
+        append_defined_endpoints(store, &rel_file, &endpoints, max_items, &mut lines)?;
+        if !calls.is_empty() {
+            lines.push(format!("makes {} call(s) from {rel_file}:", calls.len()));
+            append_call_provider_lines(store, &calls, max_items, &mut lines)?;
+        }
+        Ok(QueryOutput::Lines(lines))
+    })
 }
 
 fn append_defined_endpoints(
@@ -110,24 +128,22 @@ pub fn callees(
     limit: Option<usize>,
     max_bytes: usize,
 ) -> Result<String> {
-    output::validate_budget(max_bytes)?;
-    let repos = store.list_repos()?;
-    let (resolved_repo, target) =
-        resolve_file_target(&repos, Path::new(raw_query.trim()), repo_filter);
-    let mut calls = store.calls_for_service_or_repo(&target, resolved_repo.as_deref())?;
-    if calls.is_empty() && target != raw_query.trim() {
-        calls = store.calls_for_service_or_repo(raw_query.trim(), repo_filter)?;
-    }
-    let max_items = limit.unwrap_or(DEFAULT_LIMIT).max(1);
-    if calls.is_empty() {
-        return Ok(truncate_to_budget(
-            &format!("no outbound calls found for {}\n", raw_query.trim()),
-            max_bytes,
-        ));
-    }
-    let mut lines = vec![format!("outbound calls for {} ({}):", raw_query.trim(), calls.len())];
-    append_call_provider_lines(store, &calls, max_items, &mut lines)?;
-    Ok(render_lines_within_budget(&lines, max_bytes))
+    run_budgeted_query(limit, max_bytes, |max_items| {
+        let trimmed = raw_query.trim();
+        let (resolved_repo, target) = resolve_file_target(store, Path::new(trimmed), repo_filter)?;
+        let mut calls = store.calls_for_service_or_repo(&target, resolved_repo.as_deref())?;
+        if calls.is_empty() && target != trimmed {
+            calls = store.calls_for_service_or_repo(trimmed, repo_filter)?;
+        }
+        if calls.is_empty() {
+            return Ok(QueryOutput::Empty(format!(
+                "no outbound calls found for {trimmed}\n"
+            )));
+        }
+        let mut lines = vec![format!("outbound calls for {trimmed} ({}):", calls.len())];
+        append_call_provider_lines(store, &calls, max_items, &mut lines)?;
+        Ok(QueryOutput::Lines(lines))
+    })
 }
 
 pub fn fog(
@@ -357,17 +373,18 @@ fn format_query_label(method: Option<HttpMethod>, path_norm: &str) -> String {
 }
 
 fn resolve_file_target(
-    repos: &[RepoRow],
+    store: &GraphStore,
     file_arg: &Path,
     repo_filter: Option<&str>,
-) -> (Option<String>, String) {
+) -> Result<(Option<String>, String)> {
+    let repos = store.list_repos()?;
     let raw = file_arg.to_string_lossy().replace('\\', "/");
     let canonical = file_arg
         .canonicalize()
         .ok()
         .map(|p| p.to_string_lossy().replace('\\', "/"));
     let candidate = canonical.as_deref().unwrap_or(raw.as_str());
-    for repo in repos {
+    for repo in &repos {
         if repo_filter.is_some_and(|filter| repo.repo != filter) {
             continue;
         }
@@ -375,13 +392,13 @@ fn resolve_file_target(
         if !base.is_empty()
             && let Some(rel) = candidate.strip_prefix(base).and_then(|r| r.strip_prefix('/'))
         {
-            return (Some(repo.repo.clone()), rel.to_owned());
+            return Ok((Some(repo.repo.clone()), rel.to_owned()));
         }
         if let Some(rel) = raw.strip_prefix(&format!("{}/", repo.repo)) {
-            return (Some(repo.repo.clone()), rel.to_owned());
+            return Ok((Some(repo.repo.clone()), rel.to_owned()));
         }
     }
-    (repo_filter.map(str::to_owned), raw.trim_start_matches("./").to_owned())
+    Ok((repo_filter.map(str::to_owned), raw.trim_start_matches("./").to_owned()))
 }
 
 fn short_sha(sha: &str) -> &str {

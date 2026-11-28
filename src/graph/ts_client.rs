@@ -7,9 +7,10 @@ use anyhow::Result;
 use regex::Regex;
 
 use super::scan::{
-    LineIndex, extract_why_ts, find_matching_delim, is_ident_byte, is_test_file, join_paths,
-    matches_external_glob, normalize_path, qualify_under_root, read_ident, skip_angle_generics,
-    skip_ascii_ws, sort_extracted_calls, split_top_level_args, ts_code_mask, under_root,
+    LineIndex, extract_why_ts, find_matching_delim, for_each_masked_ident, is_ident_byte,
+    is_test_file, join_paths, matches_external_glob, normalize_path, qualify_under_root,
+    read_ident, skip_angle_generics, skip_ascii_ws, sort_extracted_calls, split_top_level_args,
+    ts_code_mask, under_root,
 };
 use super::{ExtractedCall, HttpMethod};
 
@@ -194,44 +195,46 @@ fn extract_fetch_in_wrapper(
     end: usize,
     base_prefix: Option<&str>,
 ) -> Option<WrapperEndpoint> {
-    let mut i = start;
-    while i < end {
-        if !mask[i] {
-            i += 1;
-            continue;
-        }
-        let Some((ident, next_i)) = read_ident(source, &bytes[..end], i) else {
-            i += 1;
-            continue;
-        };
-        i = next_i;
+    let mut found = None;
+    for_each_masked_ident(source, mask, start, end, |ident, next_i| {
         if !FETCH_CALLEES.contains(&ident) {
-            continue;
+            return Some(next_i);
         }
-        let Some(open_paren) = skip_ts_generics_to_paren(bytes, mask, i, end) else {
-            continue;
+        let Some(open_paren) = skip_ts_generics_to_paren(bytes, mask, next_i, end) else {
+            return Some(next_i);
         };
         let Some(close_paren) = find_matching_delim(bytes, mask, open_paren, b'(', b')') else {
-            continue;
+            return Some(next_i);
         };
-        let args = split_top_level_args(source, mask, 0, open_paren + 1, close_paren);
-        let raw_lit = extract_ts_path_literal(args.first()?.1)?;
-        let full_raw = apply_base_prefix(&raw_lit, base_prefix);
-        let path_norm = normalize_path(&full_raw);
-        if path_norm.is_empty() {
-            return None;
-        }
-        let method = METHOD_PROP_RE
-            .captures(&source[open_paren + 1..close_paren])
-            .and_then(|c| HttpMethod::parse(&c[1]))
-            .unwrap_or(HttpMethod::Get);
-        return Some(WrapperEndpoint {
-            method,
-            path_raw: full_raw,
-            path_norm,
-        });
+        found = build_wrapper_endpoint(source, mask, open_paren, close_paren, base_prefix);
+        None
+    });
+    found
+}
+
+fn build_wrapper_endpoint(
+    source: &str,
+    mask: &[bool],
+    open_paren: usize,
+    close_paren: usize,
+    base_prefix: Option<&str>,
+) -> Option<WrapperEndpoint> {
+    let args = split_top_level_args(source, mask, 0, open_paren + 1, close_paren);
+    let raw_lit = extract_ts_path_literal(args.first()?.1)?;
+    let full_raw = apply_base_prefix(&raw_lit, base_prefix);
+    let path_norm = normalize_path(&full_raw);
+    if path_norm.is_empty() {
+        return None;
     }
-    None
+    let method = METHOD_PROP_RE
+        .captures(&source[open_paren + 1..close_paren])
+        .and_then(|c| HttpMethod::parse(&c[1]))
+        .unwrap_or(HttpMethod::Get);
+    Some(WrapperEndpoint {
+        method,
+        path_raw: full_raw,
+        path_norm,
+    })
 }
 
 pub fn extract_calls_from_file(
