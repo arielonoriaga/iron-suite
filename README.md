@@ -43,7 +43,7 @@ flowchart TB
 
 ### One-Command Unified Installer
 ```sh
-# Default: iron CLI/MCP binary + 9 iron-* skills + 7 subagents + Claude Code MCP registration
+# Default: iron CLI/MCP binary + 10 iron-* skills + 7 subagents + Claude Code MCP registration
 curl -fsSL https://raw.githubusercontent.com/arielonoriaga/iron-stack/main/install.sh | bash
 
 # Include IronBrowser (requires bun + cargo) and/or IronTerm (requires cargo):
@@ -192,6 +192,7 @@ Read the full package documentation in [`packages/iron-term/README.md`](packages
 | **`iron-audit`** | Read-only multi-lens codebase health & pre-release sweep producing severity-ranked findings and remediation briefs. |
 | **`iron-debug`** | Production-grade systematic debugging (`repro -> hypothesis -> instrument -> root cause -> fix -> invariant backprop`). |
 | **`iron-perf`** | Measurement-first performance engineering: baseline flamegraphs, query plans, and RUM evidence before any optimization edit. |
+| **`iron-maintain`** | Instruction & memory hygiene: inventories CLAUDE.md/AGENTS.md/MEMORY.md, classifies each section (keep / route / memory / dup / stale / enforced) using `iron memory audit-drift` + `consolidate` signals, relocates knowledge, prunes, and proves no load-bearing rule was lost. |
 
 Bundled subagents (`agents/iron-*.md`): `iron-backend-dev`, `iron-backend-review`, `iron-frontend-dev`, `iron-frontend-review`, `iron-security-dev`, `iron-security-review`, and `iron-verifier`.
 
