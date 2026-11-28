@@ -1,5 +1,5 @@
 {
-  "name": "iron-suite",
+  "name": "iron-stack",
   "version": "0.3.2",
   "description": "The Iron Stack — Iron Memory (zero-cloud SQLite FTS5 + stdio MCP memory hub), IronBrowser (26-tool dual-viewport MCP browser), IronTerm (Rust+GPUI terminal), and 10 adversarial engineering, design and maintenance skills (incl. iron-maintain).",
   "author": {

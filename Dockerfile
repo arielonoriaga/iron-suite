@@ -22,9 +22,9 @@ ENV HOME=/home/iron
 # Initialize a ready-to-query SQLite FTS5 store so cold-start MCP introspection and tool calls succeed immediately.
 RUN /usr/local/bin/iron memory remember \
     --db /data/memory.db \
-    --project iron-suite \
+    --project iron-stack \
     --kind note \
-    --title "Iron Suite MCP Memory Hub Initialized" \
+    --title "Iron Stack MCP Memory Hub Initialized" \
     --content "Zero-cloud SQLite FTS5 + stdio MCP memory store ready for search, recall, graph links, and reinforcement."
 
 ENTRYPOINT ["/usr/local/bin/iron", "--db", "/data/memory.db", "mcp"]

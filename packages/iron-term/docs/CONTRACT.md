@@ -7,7 +7,7 @@ Shared source of truth between `iron-agentd` (backend daemon), `iron-cli` (hooks
 ## 1. Transport & Addressing
 
 - **Local client ↔ `iron-agentd`:** Unix domain socket `$XDG_RUNTIME_DIR/iron-term/agentd.sock` (`0600`), length-prefixed JSON (v1) or MessagePack frames (`u32 LE` + payload).
-- **Multi-PC client ↔ remote `iron-agentd`:** Multiplexed over existing authenticated `ssh -T <host> iron-termctl stdio-bridge` (zero extra open firewall ports, identical trust model to `iron mcp` in `iron-suite`).
+- **Multi-PC client ↔ remote `iron-agentd`:** Multiplexed over existing authenticated `ssh -T <host> iron-termctl stdio-bridge` (zero extra open firewall ports, identical trust model to `iron mcp` in `iron-stack`).
 - **Mobile `390px` Companion:** Loopback/Tailscale IPv4 HTTP/1.1 + WebSocket server (`--bind <tailscale-ip>:7430`), `Host`-allowlisted, CSRF/token-protected, strictly disabled unless enabled in config.
 
 ---

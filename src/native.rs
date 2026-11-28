@@ -1,6 +1,6 @@
 use crate::model::{ImportBatch, MemoryRecord};
 use crate::privacy::redact;
-use crate::store::Store;
+use crate::store::{HISTORY_SOURCE_TYPE, Store};
 use anyhow::{Context, Result, bail, ensure};
 use fs2::FileExt;
 use serde::Deserialize;
@@ -286,7 +286,7 @@ fn canonical_native_record(mut record: MemoryRecord) -> Result<MemoryRecord> {
 pub fn export_jsonl(store: &Store, output_path: &Path, scope: &str) -> Result<Value> {
     let raw_records = match scope {
         "native" => store.list_records("iron", &[])?,
-        "summaries" => store.list_records("cavemem", &["session", "summary"])?,
+        "summaries" => store.list_records(HISTORY_SOURCE_TYPE, &["session", "summary"])?,
         _ => bail!("export scope must be native or summaries"),
     };
     if let Ok(meta) = fs::symlink_metadata(output_path) {
@@ -626,7 +626,7 @@ mod tests {
         RememberRequest {
             title: "Shared capture policy".into(),
             content: "Native memories are retained with an explicit author.".into(),
-            project: "iron-suite".into(),
+            project: "iron-stack".into(),
             kind: None,
             agent: None,
             supersedes: Vec::new(),
@@ -789,13 +789,13 @@ mod tests {
             ("kind", "unsupported".into()),
         ] {
             let mut value_request =
-                json!({"title":"Valid", "content":"Valid content", "project":"iron-suite"});
+                json!({"title":"Valid", "content":"Valid content", "project":"iron-stack"});
             value_request[field] = Value::String(value);
             let request = serde_json::from_value(value_request).unwrap();
             assert!(remember(&db, request).is_err(), "invalid {field} accepted");
             assert!(!db.exists());
         }
-        assert!(serde_json::from_value::<RememberRequest>(json!({"title":"Valid","content":"Valid content","project":"iron-suite","path":"/unrequested/path"})).is_err());
+        assert!(serde_json::from_value::<RememberRequest>(json!({"title":"Valid","content":"Valid content","project":"iron-stack","path":"/unrequested/path"})).is_err());
         assert!(remember(Path::new(":memory:"), request()).is_err());
     }
 

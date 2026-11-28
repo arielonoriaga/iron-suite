@@ -65,7 +65,7 @@ iron-term/
 
 ## 3. Non-Goals (Refused Scope for v1)
 
-- No cloud relay or SaaS account (Tailscale / SSH only, matching `iron-suite`).
+- No cloud relay or SaaS account (Tailscale / SSH only, matching `iron-stack`).
 - No 20-pane simultaneous GPU terminal wall.
 - No custom editor / IDE features (stays a fast terminal emulator + agent control plane).
 - No scraping ANSI output to guess approval state when hooks/CLI events exist (structured `iron-termctl` / OSC 7770 protocol first, passive idle-prompt detection as fallback only).

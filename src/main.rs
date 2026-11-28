@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
-use iron_suite::{backup, drift, graph, import, intelligence, mcp, migrate, native, output, refresh, service, sleep, store::Store, ui};
+use iron_stack::{backup, drift, graph, import, intelligence, mcp, migrate, native, output, refresh, service, sleep, store::{self, Store}, ui};
 use serde_json::json;
 use std::{
     io::{self, Write},
@@ -11,7 +11,7 @@ use std::{
 #[command(
     name = "iron",
     version,
-    about = "Local memory retrieval, reinforcement, and cross-session linking for Iron Suite"
+    about = "Local memory retrieval, reinforcement, and cross-session linking for Iron Stack"
 )]
 struct Cli {
     #[arg(long, global = true)]
@@ -388,6 +388,13 @@ fn run_readonly_memory(db: &std::path::Path, command: MemoryCommand) -> Result<s
 
 fn run(cli: Cli) -> Result<()> {
     let db = cli.db.map(Ok).unwrap_or_else(default_db)?;
+    if matches!(cli.command, Command::Mcp { .. } | Command::Ui { .. }) {
+        for index in [db.clone(), db.with_file_name("archive.db")] {
+            if let Err(error) = store::relabel_legacy_history_in_place(&index) {
+                eprintln!("iron: history relabel skipped for {}: {error:#}", index.display());
+            }
+        }
+    }
     if let Command::Mcp {
         claude_root,
         cavemem_db,

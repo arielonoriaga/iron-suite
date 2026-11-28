@@ -7,9 +7,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use iron_suite::model::{ImportBatch, MemoryLink, MemoryRecord};
-use iron_suite::store::Store;
-use iron_suite::ui::serve_on_listener;
+use iron_stack::model::{ImportBatch, MemoryLink, MemoryRecord};
+use iron_stack::store::Store;
+use iron_stack::ui::serve_on_listener;
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
@@ -201,32 +201,32 @@ fn seed_db() -> (TempDir, std::path::PathBuf) {
         ),
         make_record(
             "rec_hist_1",
-            "cavemem",
+            "history",
             "summary",
             "commerce-core",
             "Session 1 investigating nebularsignal",
             "Debugged nebularsignal in validate_order_token handler across session 1.",
-            "cavemem://session-1",
+            "history://session-1",
             now - 86_400_000,
         ),
         make_record(
             "rec_hist_2",
-            "cavemem",
+            "history",
             "summary",
             "commerce-core",
             "Session 2 fixing validate_order_token",
             "Fixed retry loop around validate_order_token in session 2.",
-            "cavemem://session-2",
+            "history://session-2",
             now - 2 * 86_400_000,
         ),
         make_record(
             "rec_hist_3",
-            "cavemem",
+            "history",
             "summary",
             "commerce-core",
             "Session 3 auditing validate_order_token",
             "Verified validate_order_token edge case in session 3.",
-            "cavemem://session-3",
+            "history://session-3",
             now - 3 * 86_400_000,
         ),
     ];
@@ -254,12 +254,12 @@ fn seed_db() -> (TempDir, std::path::PathBuf) {
                 id: "rec_arch_1".into(),
                 source_group: "arch".into(),
                 source_key: "arch_1".into(),
-                source_type: "cavemem".into(),
+                source_type: "history".into(),
                 kind: "summary".into(),
                 project: "commerce-core".into(),
                 title: "Archived historical note".into(),
                 content: "Legacy archived details for nebularsignal.".into(),
-                source_path: "cavemem://archive-1".into(),
+                source_path: "history://archive-1".into(),
                 updated_at: now - 10 * 86_400_000,
                 metadata: json!({}),
             }],
@@ -389,7 +389,7 @@ fn ui_context_simulator_respects_role_filters_and_byte_budget() {
         .map(|h| h["source_type"].as_str().unwrap())
         .collect();
     assert!(dev_types.contains(&"markdown"));
-    assert!(dev_types.contains(&"cavemem"));
+    assert!(dev_types.contains(&"history"));
     assert!(dev["budget_used_bytes"].as_u64().unwrap() <= dev["budget_max_bytes"].as_u64().unwrap());
 
     let (s, rev) = srv.get_json("/api/context?q=nebularsignal&role=reviewer&project=commerce-core");
@@ -835,10 +835,10 @@ fn ui_v03_intelligence_sleep_semantic_rrf_graph_drift_sections_and_outcomes() {
 
     // 6. Section-targeted get returns only the requested Markdown section
     let ro_store = Store::open(&db, false).unwrap();
-    let sec_res = iron_suite::service::get_with_archive(
+    let sec_res = iron_stack::service::get_with_archive(
         &ro_store,
         Some(&db),
-        iron_suite::service::GetRequest {
+        iron_stack::service::GetRequest {
             id: "rec_sections".into(),
             offset: 0,
             max_bytes: Some(4000),
@@ -855,17 +855,17 @@ fn ui_v03_intelligence_sleep_semantic_rrf_graph_drift_sections_and_outcomes() {
     std::fs::create_dir_all(repo_dir.join("src")).unwrap();
     std::fs::write(repo_dir.join("src/live.rs"), "pub fn ok() {}\n").unwrap();
     let (entries, _) =
-        iron_suite::drift::audit_project_drift(&ro_store, "commerce-core", &repo_dir).unwrap();
+        iron_stack::drift::audit_project_drift(&ro_store, "commerce-core", &repo_dir).unwrap();
     assert!(entries.contains_key("rec_conflict_b"));
-    let mut istate = iron_suite::intelligence::load_state(&db).unwrap();
+    let mut istate = iron_stack::intelligence::load_state(&db).unwrap();
     istate.drift = entries;
-    iron_suite::intelligence::save_state(&db, &istate).unwrap();
+    iron_stack::intelligence::save_state(&db, &istate).unwrap();
     let (s_rec, rec_b) = srv.get_json("/api/records/rec_conflict_b");
     assert_eq!(s_rec, 200);
     assert_eq!(rec_b["drift"]["drifted"], true);
 
     // 8. Automatic outcome feedback: pass strengthens co_used links; correction flags & dismiss clears
-    let pass_out = iron_suite::intelligence::record_outcome(
+    let pass_out = iron_stack::intelligence::record_outcome(
         &db,
         "pass",
         Some("commerce-core"),
@@ -876,7 +876,7 @@ fn ui_v03_intelligence_sleep_semantic_rrf_graph_drift_sections_and_outcomes() {
     assert_eq!(pass_out["reinforced"], 2);
     assert_eq!(pass_out["co_used_links"], 2);
 
-    let corr_out = iron_suite::intelligence::record_outcome(
+    let corr_out = iron_stack::intelligence::record_outcome(
         &db,
         "correction",
         Some("commerce-core"),

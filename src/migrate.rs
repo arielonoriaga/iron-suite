@@ -6,7 +6,7 @@ use rusqlite::{Connection, OpenFlags};
 use serde_json::{Value, json};
 
 use crate::model::{ImportBatch, MemoryLink, MemoryRecord};
-use crate::store::Store;
+use crate::store::{HISTORY_SOURCE_TYPE, Store, canonical_source_type};
 
 const BATCH_GROUPS_CHUNK: usize = 64;
 
@@ -85,7 +85,7 @@ pub fn migrate_store(
             id: row.get(0)?,
             source_group: row.get(1)?,
             source_key: row.get(2)?,
-            source_type: row.get(3)?,
+            source_type: canonical_source_type(row.get(3)?),
             kind: row.get(4)?,
             project: row.get(5)?,
             title: row.get(6)?,
@@ -95,7 +95,7 @@ pub fn migrate_store(
             metadata,
         };
         let is_cold_obs =
-            arch_store.is_some() && rec.source_type == "cavemem" && rec.kind == "observation";
+            arch_store.is_some() && rec.source_type == HISTORY_SOURCE_TYPE && rec.kind == "observation";
         if is_cold_obs {
             arch_count += 1;
             arch_by_group

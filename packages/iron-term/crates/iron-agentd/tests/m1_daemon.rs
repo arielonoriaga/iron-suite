@@ -356,9 +356,9 @@ async fn enforces_host_invariants_guardrail_resolution_and_restart_recovery() {
     // Spawn an unpinned session, switch laptop OFF -> move must be blocked; switch Shared -> allowed.
     let unpinned_id = match client
         .call(ClientMsg::SpawnSession {
-            title: "iron-suite · alias-fix".into(),
+            title: "iron-stack · alias-fix".into(),
             host_id: Some("desktop".into()),
-            project: "iron-suite".into(),
+            project: "iron-stack".into(),
             worktree_path: dir.path().to_string_lossy().into_owned(),
             cli: "claude".into(),
             command: vec!["/bin/sh".into(), "-c".into(), "echo ALIAS_TAIL; sleep 30".into()],

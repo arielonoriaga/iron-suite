@@ -31,7 +31,7 @@
 
 ## 3. Domain Invariants & Failure Modes (Non-Negotiable)
 
-Grounded in the build-queue coordinator, host policy config, and `iron-suite`:
+Grounded in the build-queue coordinator, host policy config, and `iron-stack`:
 
 | Invariant / Failure Mode | How IronTerm Enforces It Structurally |
 | :--- | :--- |
@@ -50,7 +50,7 @@ Grounded in the build-queue coordinator, host policy config, and `iron-suite`:
 - **NO 20-tile miniature ANSI wall** burning GPU frames on unreadable 4px terminal text.
 - **NO raw-terminal-first mindset** where you must scroll 300 lines of ANSI to find a Y/N prompt.
 - **NO stacked modals** or floating popups over popups.
-- **NO neon/glassmorphism AI slop** — every surface follows Iron Suite's crisp Celestial contrast hierarchy.
+- **NO neon/glassmorphism AI slop** — every surface follows Iron Stack's crisp Celestial contrast hierarchy.
 
 ---
 

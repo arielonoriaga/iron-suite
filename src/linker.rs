@@ -343,7 +343,7 @@ pub fn consolidate_patterns(
          JOIN bodies b ON b.id = r.body_id
          LEFT JOIN record_stats s ON s.record_id = r.id
          WHERE COALESCE(s.status, 'active') = 'active'
-           AND (r.source_type IN ('markdown', 'iron') OR (r.source_type = 'cavemem' AND r.kind = 'summary'))",
+           AND (r.source_type IN ('markdown', 'iron') OR (r.source_type = 'history' AND r.kind = 'summary'))",
     );
     let mut stmt;
     let rows = if let Some(proj) = project {
@@ -468,7 +468,7 @@ fn load_eligible_docs(transaction: &Transaction<'_>) -> Result<Vec<DocMeta>> {
          JOIN bodies b ON b.id = r.body_id
          LEFT JOIN record_stats s ON s.record_id = r.id
          WHERE COALESCE(s.status, 'active') = 'active'
-           AND (r.source_type IN ('markdown', 'iron') OR (r.source_type = 'cavemem' AND r.kind = 'summary'))
+           AND (r.source_type IN ('markdown', 'iron') OR (r.source_type = 'history' AND r.kind = 'summary'))
          ORDER BY r.rowid ASC",
     )?;
     let rows = stmt.query_map([], |row| {

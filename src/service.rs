@@ -5,7 +5,7 @@ use crate::{
     intelligence::{self, now_ms},
     model::{SearchHit, SearchOptions},
     output, semantic,
-    store::{Store, extract_best_section, extract_named_section},
+    store::{HISTORY_SOURCE_TYPE, Store, extract_best_section, extract_named_section},
 };
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
@@ -139,7 +139,7 @@ pub fn search_with_archive(
     let source_types = match source {
         "all" => Vec::new(),
         "curated" => vec!["markdown".to_owned(), "iron".to_owned()],
-        "history" => vec!["cavemem".to_owned()],
+        "history" => vec![HISTORY_SOURCE_TYPE.to_owned()],
         "native" => vec!["iron".to_owned()],
         _ => bail!("source must be all, curated, history, native, or archive"),
     };

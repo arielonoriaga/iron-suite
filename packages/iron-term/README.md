@@ -30,7 +30,7 @@ IronTerm decouples **execution (`iron-agentd`)** from **rendering (`iron-gpui`)*
 | **Urgency Triage Across 20+ Agents** | Manual pane hunting | Heavy card grids | **Collapsible `236px` Whisper Rail (`NEEDS YOU` · `ACTIVE` · `DORMANT`)** |
 | **1-Keystroke Guardrail & Approval Prompts** | Switch pane + type reply | Mouse clicks | **`28px` Ghost Action Bar (`Ctrl+1`/`2`/`3` or `Alt+1`/`2`/`3`)** |
 | **Scriptable Agent Hook Control Plane** | Ad-hoc `tmux send-keys` | Custom HTTP webhooks | **Native `iron-termctl` over `0600` Unix socket (`u32 LE` RPC)** |
-| **Part of The Iron Stack** | Standalone | Standalone | **Native sibling to `iron-suite` & `iron-browser`** |
+| **Part of The Iron Stack** | Standalone | Standalone | **Native sibling to `iron-stack` & `iron-browser`** |
 
 ---
 
@@ -55,7 +55,7 @@ flowchart LR
   end
 
   DAEMON --> AGENTS["Live Agents & Shells<br/>claude · codex · agy · opencode · $SHELL"]
-  DAEMON -.-> STACK["The Iron Stack<br/>iron-suite (MCP Memory) · iron-browser (Dual-Viewport MCP)"]
+  DAEMON -.-> STACK["The Iron Stack<br/>iron-stack (MCP Memory) · iron-browser (Dual-Viewport MCP)"]
 ```
 
 ### Workspace Architecture
@@ -175,7 +175,7 @@ cargo build --release --workspace
 
 IronTerm is part of **[The Iron Stack](https://iron.huggian.com)** — zero-cloud, local-first Rust & TypeScript developer tools built for high-trust multi-agent engineering:
 
-1. **[`iron-suite`](https://github.com/arielonoriaga/iron-suite):**
+1. **[`iron-stack`](https://github.com/arielonoriaga/iron-stack):**
    Zero-cloud SQLite FTS5 + Hybrid Semantic RRF `stdio` MCP memory hub (`iron`), local **Second Brain & Trust Desk Web UI** (`iron ui`), SSH multi-machine memory sharing, and **9 adversarial `iron-*` engineering & UX skills**.
 2. **[`iron-browser`](https://github.com/arielonoriaga/iron-browser):**
    Dual-viewport (`390×844` Portrait + `1280×720` Landscape) Chromium developer browser with 3-tier mirrored input, single-flight HTTP/WS/SSE/SFS2X dedup, WebGL draw-call/render-order inspector, off-thread V8 CPU & Heap profilers, embedded multi-CLI Agent Chat Dock, causal Rust `TabEventBus`, and 26-tool Rust MCP server.

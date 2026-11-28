@@ -1,5 +1,6 @@
 use crate::model::{ImportBatch, MemoryLink, MemoryRecord};
 use crate::privacy::{is_secret_field, redact, redact_credential};
+use crate::store::HISTORY_SOURCE_TYPE;
 use anyhow::{Context, Result, bail, ensure};
 use regex::Regex;
 use rusqlite::{Connection, OpenFlags, Row, Transaction, limits::Limit, types::ValueRef};
@@ -723,7 +724,7 @@ fn collect_sessions(
             id: record_id.clone(),
             source_group: group.to_owned(),
             source_key: safe_source_key(&key),
-            source_type: "cavemem".into(),
+            source_type: HISTORY_SOURCE_TYPE.into(),
             kind: "session".into(),
             project: project.clone(),
             title: "Session".into(),
@@ -818,7 +819,7 @@ fn collect_events(
                 id: stable_id(group, &key),
                 source_group: group.to_owned(),
                 source_key: key.clone(),
-                source_type: "cavemem".into(),
+                source_type: HISTORY_SOURCE_TYPE.into(),
                 kind: if table == "summaries" {
                     "summary"
                 } else {
@@ -966,7 +967,7 @@ mod tests {
     fn markdown_keeps_content_identity_and_human_project_scope() {
         let temporary = TempDir::new().unwrap();
         let root = temporary.path();
-        let path = root.join("memory/projects/iron-suite/history.md");
+        let path = root.join("memory/projects/iron-stack/history.md");
         let content = "# 日本語 🧠\nFull historical evidence.\n\nCafé <private>hidden token</private> safe.\n";
         write(&path, content);
         write(
@@ -983,7 +984,7 @@ mod tests {
         let history = first
             .records
             .iter()
-            .find(|record| record.project == "iron-suite")
+            .find(|record| record.project == "iron-stack")
             .unwrap();
         assert_eq!(history.title, "日本語 🧠");
         assert!(history.content.ends_with(" safe.\n"));
@@ -1375,8 +1376,8 @@ mod tests {
             "studio%252Frealtime-api"
         );
         assert_eq!(
-            scope_for_path(Path::new("/home/dev/Projects/Personal/iron-suite")).unwrap(),
-            "iron-suite"
+            scope_for_path(Path::new("/home/dev/Projects/Personal/iron-stack")).unwrap(),
+            "iron-stack"
         );
         assert_eq!(
             project_name(Path::new("service.git")).unwrap(),

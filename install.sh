@@ -91,7 +91,7 @@ resolve_source_tree() {
   log "Downloading ${REPO} snapshot..." >&2
   curl -fsSL "https://github.com/${REPO}/archive/refs/heads/main.tar.gz" -o "$TMP_WORK/src.tar.gz"
   tar -xzf "$TMP_WORK/src.tar.gz" -C "$TMP_WORK"
-  find "$TMP_WORK" -maxdepth 1 -type d \( -name 'iron-stack-*' -o -name 'iron-suite-*' \) | head -n 1
+  find "$TMP_WORK" -maxdepth 1 -type d -name 'iron-stack-*' | head -n 1
 }
 
 install_binary() {

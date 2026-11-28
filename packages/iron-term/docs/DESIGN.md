@@ -1,6 +1,6 @@
 # IronTerm — Design System (`DESIGN.md`)
 
-> **Brand Continuity:** Extends Iron Suite's verified **Celestial Dual-Theme System** from `iron-suite`, tuned for long-duration native GPUI terminal work and `390px` mobile triage.
+> **Brand Continuity:** Extends Iron Stack's verified **Celestial Dual-Theme System** from `iron-stack`, tuned for long-duration native GPUI terminal work and `390px` mobile triage.
 
 ---
 
@@ -10,7 +10,7 @@
 - **Reference Board:**
   - **Zed (GPUI)** → Borrow: zero-chrome pane headers, instant keyboard-driven command palette, crisp GPU typography.
   - **Linear** → Borrow: urgency-first inbox triage, single-line scannable rows, fast `J/K` + `Enter` navigation, quiet muted metadata.
-  - **Iron Suite (`iron ui`)** → Borrow: Celestial dark/light token harmony, honest Trust/Evidence badges, Time-Travel / history calmness.
+  - **Iron Stack (`iron ui`)** → Borrow: Celestial dark/light token harmony, honest Trust/Evidence badges, Time-Travel / history calmness.
 
 ---
 

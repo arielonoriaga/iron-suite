@@ -107,6 +107,126 @@ fn import_preserves_source_and_exposes_summary_only_cavemem() {
 }
 
 #[test]
+fn imported_session_history_is_labelled_history() {
+    let fixture = Fixture::new();
+    fixture.import();
+    let conn = Connection::open(&fixture.db).unwrap();
+    let labels: Vec<String> = conn
+        .prepare("SELECT DISTINCT source_type FROM records WHERE kind IN ('session', 'summary') ORDER BY 1")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(labels, vec!["history".to_owned()]);
+}
+
+#[test]
+fn writable_open_relabels_legacy_session_history_and_keeps_identity() {
+    let fixture = Fixture::new();
+    fixture.import();
+    let conn = Connection::open(&fixture.db).unwrap();
+    let ids_before: Vec<String> = conn
+        .prepare("SELECT id FROM records WHERE source_type = 'history' ORDER BY id")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert!(!ids_before.is_empty());
+    conn.execute(
+        "UPDATE records SET source_type = 'cavemem' WHERE source_type = 'history'",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+
+    let replay = fixture.import();
+    assert_eq!(replay["inserted"], 0);
+    assert_eq!(replay["removed"], 0);
+
+    let conn = Connection::open(&fixture.db).unwrap();
+    let legacy: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM records WHERE source_type = 'cavemem'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(legacy, 0);
+    let ids_after: Vec<String> = conn
+        .prepare("SELECT id FROM records WHERE source_type = 'history' ORDER BY id")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(ids_after, ids_before);
+    drop(conn);
+
+    let history = fixture
+        .call(&["memory", "search", "zephyr", "--source", "history"])
+        .0;
+    assert_eq!(history["results"][0]["source_type"], "history");
+}
+
+#[test]
+fn mcp_startup_relabels_legacy_history_in_store_and_archive_without_changing_archive_journal() {
+    let fixture = Fixture::new();
+    fixture.import();
+    let archive = fixture.db.with_file_name("archive.db");
+    {
+        let conn = Connection::open(&fixture.db).unwrap();
+        conn.execute_batch(&format!(
+            "VACUUM INTO '{}'",
+            archive.to_str().unwrap()
+        ))
+        .unwrap();
+    }
+    for path in [&fixture.db, &archive] {
+        let conn = Connection::open(path).unwrap();
+        conn.execute(
+            "UPDATE records SET source_type = 'cavemem' WHERE source_type = 'history'",
+            [],
+        )
+        .unwrap();
+    }
+    let journal_before: String = Connection::open(&archive)
+        .unwrap()
+        .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(journal_before, "delete");
+
+    let status = Command::new(env!("CARGO_BIN_EXE_iron"))
+        .arg("--db")
+        .arg(&fixture.db)
+        .arg("mcp")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .status()
+        .unwrap();
+    assert!(status.success());
+
+    for path in [&fixture.db, &archive] {
+        let conn = Connection::open(path).unwrap();
+        let (legacy, history): (i64, i64) = conn
+            .query_row(
+                "SELECT SUM(source_type = 'cavemem'), SUM(source_type = 'history') FROM records",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(legacy, 0, "{}", path.display());
+        assert!(history > 0, "{}", path.display());
+    }
+    let journal_after: String = Connection::open(&archive)
+        .unwrap()
+        .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(journal_after, "delete");
+}
+
+#[test]
 fn scope_privacy_and_explicit_links_are_visible_through_cli() {
     let fixture = Fixture::new();
     fixture.import();
@@ -569,6 +689,7 @@ fn migrate_v1_store_splits_hot_and_cold_archive_with_zero_loss_and_archive_fallb
     )
     .unwrap();
     assert_eq!(fallback_get["found"], true);
+    assert_eq!(fallback_get["source_type"], "history");
     assert!(
         fallback_get["content"]
             .as_str()

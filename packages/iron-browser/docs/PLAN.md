@@ -1,6 +1,6 @@
 # IronBrowser — Architectural & Implementation Plan
 
-> **Goal:** A **site-agnostic**, Zen-inspired Chromium developer browser aligned with **The Iron Stack** (`iron-suite`, `iron-term`) that launches any URL you want with simultaneous **Portrait + Landscape viewports**, **mirrored interaction**, **live CPU/GPU/FPS/Memory telemetry + real docked Chrome DevTools**, and a **native MCP server** for Claude Code, Codex, OpenCode, and Antigravity.
+> **Goal:** A **site-agnostic**, Zen-inspired Chromium developer browser aligned with **The Iron Stack** (`iron-stack`, `iron-term`) that launches any URL you want with simultaneous **Portrait + Landscape viewports**, **mirrored interaction**, **live CPU/GPU/FPS/Memory telemetry + real docked Chrome DevTools**, and a **native MCP server** for Claude Code, Codex, OpenCode, and Antigravity.
 
 ---
 
@@ -12,7 +12,7 @@
 | **Side-by-side 60–120fps WebGL/Canvas viewports** | Weaker WebGL2/WebGPU parity | Yes | **Yes — native multi-`WebContentsView` Chromium compositor** |
 | **Per-process OS CPU / GPU / RAM metrics** | Manual `/proc` only | Manual | **Yes — built-in `app.getAppMetrics()` (GPU + Portrait + Landscape PIDs) + CDP `Performance.getMetrics`** |
 | **Trusted mirrored input (`isTrusted: true`)** | Limited | Possible | **Yes — native `webContents.sendInputEvent` + CDP `Input.dispatch*`** |
-| **Zen-style multi-tab UI iteration speed** | Fast | Very slow | **Fast (SolidJS/TS shell, Celestial Dual-Theme matching Iron Suite)** |
+| **Zen-style multi-tab UI iteration speed** | Fast | Very slow | **Fast (SolidJS/TS shell, Celestial Dual-Theme matching Iron Stack)** |
 | **Native Iron Stack MCP (`stdio` + `0600` socket)** | Separate binary | Same binary | **Clean tiny Rust `iron-browser-mcp` binary (zero-cloud, identical pattern to `iron mcp` & `iron-term`)** |
 
 **Chosen Stack:**
@@ -45,7 +45,7 @@
   - Collapsible vertical tab rail (`⌘\`), pinned "Essentials" strip, workspace groups, compact `⌘L` floating/inline URL bar.
   - Every tab supports **1-click Dual Mode (`⌘⇧D`)**: browse normally in Single View, or split *any* URL instantly into **Portrait + Landscape** side-by-side.
   - Device preset pickers per viewport (`375×667`, `390×844`, `430×932`, `768×1024`, `1280×720`, `1440×900`, custom `W×H`, DPR `1x/2x/3x`).
-  - Celestial Dark/Light tokens inherited from [iron-suite](https://github.com/arielonoriaga/iron-suite) and `iron-term`.
+  - Celestial Dark/Light tokens inherited from [iron-stack](https://github.com/arielonoriaga/iron-stack) and `iron-term`.
 
 ---
 

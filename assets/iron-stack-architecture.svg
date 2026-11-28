@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1440" height="860" viewBox="0 0 1440 860" role="img" aria-labelledby="title desc">
-  <title id="title">Iron Suite Architecture — Zero-Cloud Second Brain and Adversarial Engineering Harness</title>
+  <title id="title">Iron Stack Architecture — Zero-Cloud Second Brain and Adversarial Engineering Harness</title>
   <desc id="desc">System graph showing how curated Markdown, session history, and native rules flow through privacy scrubbing and project aliases into a local SQLite FTS5 store, serving native coding agents via stdio MCP and humans via the Second Brain Web UI in a closed verification loop.</desc>
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="0.8">
@@ -46,7 +46,7 @@
   <g id="header">
     <rect x="44" y="34" width="494" height="28" rx="3" fill="#162233" stroke="#3F5269"/>
     <rect x="44" y="34" width="4" height="28" fill="#E8622C"/>
-    <text x="60" y="53" font-family="GeistMono Nerd Font Mono, monospace" font-size="12.5" font-weight="600" fill="#EDF2F8">IRON SUITE ARCHITECTURE · ZERO-CLOUD · RUST · SQLITE FTS5</text>
+    <text x="60" y="53" font-family="GeistMono Nerd Font Mono, monospace" font-size="12.5" font-weight="600" fill="#EDF2F8">IRON STACK ARCHITECTURE · ZERO-CLOUD · RUST · SQLITE FTS5</text>
 
     <text x="44" y="96" font-family="Adwaita Sans, sans-serif" font-size="32" font-weight="800" letter-spacing="-0.8" fill="#F4F5EF">From Raw Agent Work to a Verified Second Brain</text>
     <text x="44" y="120" font-family="Adwaita Sans, sans-serif" font-size="15.5" fill="#9CB0C9">Deterministic local indexing, byte-bounded stdio MCP, interactive verification UI, and fresh-context adversarial skills.</text>
@@ -89,7 +89,7 @@
     <rect x="62" y="308" width="272" height="82" rx="7" fill="#162336" stroke="#2D4461"/>
     <circle cx="80" cy="330" r="5" fill="#8B5CF6"/>
     <text x="94" y="335" font-family="Adwaita Sans, sans-serif" font-size="15.5" font-weight="700" fill="#F4F5EF">Session History</text>
-    <text x="76" y="357" font-family="Adwaita Sans, sans-serif" font-size="12.5" fill="#B6C7DC">Read-only Cavemem &amp; session logs</text>
+    <text x="76" y="357" font-family="Adwaita Sans, sans-serif" font-size="12.5" fill="#B6C7DC">Read-only session archives &amp; logs</text>
     <text x="76" y="376" font-family="GeistMono Nerd Font Mono, monospace" font-size="11" fill="#7D96B5">1.0× rank · excluded from reviewers</text>
 
     <!-- Source Card 3 -->
@@ -253,6 +253,6 @@
   <g id="footer">
     <path d="M44 794H1396" stroke="#32465D"/>
     <text x="44" y="824" font-family="GeistMono Nerd Font Mono, monospace" font-size="13" fill="#9CB0C9">NATIVE HARNESS ARCHITECTURE · ZERO VECTOR DB · ZERO CLOUD LOCK-IN · MIT LICENSE</text>
-    <text x="1396" y="824" text-anchor="end" font-family="GeistMono Nerd Font Mono, monospace" font-size="15" font-weight="600" fill="#EDF2F8">github.com/arielonoriaga/iron-suite</text>
+    <text x="1396" y="824" text-anchor="end" font-family="GeistMono Nerd Font Mono, monospace" font-size="15" font-weight="600" fill="#EDF2F8">github.com/arielonoriaga/iron-stack</text>
   </g>
 </svg>

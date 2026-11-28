@@ -152,6 +152,16 @@ const SCHEMA: &[(&str, &str, &str)] = &[
 ];
 
 const CURATED_SOURCE_TYPES: [&str; 2] = ["markdown", "iron"];
+pub const HISTORY_SOURCE_TYPE: &str = "history";
+const LEGACY_HISTORY_SOURCE_TYPE: &str = "cavemem";
+
+pub fn canonical_source_type(source_type: String) -> String {
+    if source_type == LEGACY_HISTORY_SOURCE_TYPE {
+        HISTORY_SOURCE_TYPE.to_owned()
+    } else {
+        source_type
+    }
+}
 
 const RECORD_COLUMNS: &str = "r.id, r.source_group, r.source_key, r.source_type, r.kind, r.project,
      r.title, b.content, r.source_path, r.updated_at, r.metadata";
@@ -198,6 +208,9 @@ impl Store {
             initialize_empty_schema(&transaction)?;
         }
         validate_schema(&transaction)?;
+        if write {
+            relabel_legacy_history(&transaction)?;
+        }
         transaction.commit()?;
         if write {
             let _: String =
@@ -254,7 +267,7 @@ impl Store {
         let touched = report.inserted + report.updated + report.removed;
         if rebuild_auto && touched > 0 {
             let has_curated_or_summary = batch.records.iter().any(|r| {
-                r.source_type != "cavemem" || r.kind == "summary"
+                r.source_type != HISTORY_SOURCE_TYPE || r.kind == "summary"
             }) || report.removed > 0;
             if has_curated_or_summary {
                 report.auto_links = linker::rebuild_auto_links(&transaction)?;
@@ -1072,11 +1085,10 @@ impl Store {
             match source {
                 "all" => {}
                 "curated" => where_clauses.push("r.source_type IN ('markdown', 'iron')".to_owned()),
-                "markdown" | "iron" | "cavemem" => {
+                "markdown" | "iron" | "history" => {
                     where_clauses.push("r.source_type = ?".to_owned());
                     args.push(SqlValue::Text(source.to_owned()));
                 }
-                "history" => where_clauses.push("r.source_type = 'cavemem'".to_owned()),
                 "native" => where_clauses.push("r.source_type = 'iron'".to_owned()),
                 _ => bail!("invalid source filter: {source}"),
             }
@@ -1692,7 +1704,7 @@ impl Store {
         match src {
             "curated" => clauses.push("r.source_type IN ('markdown', 'iron')".to_owned()),
             "all" => clauses.push("(r.source_type IN ('markdown', 'iron') OR r.kind = 'summary')".to_owned()),
-            "markdown" | "iron" | "cavemem" => {
+            "markdown" | "iron" | "history" => {
                 clauses.push("r.source_type = ?".to_owned());
                 args.push(SqlValue::Text(src.to_owned()));
             }
@@ -1985,7 +1997,7 @@ impl Store {
                 SELECT date(CASE WHEN updated_at > 1000000000000 THEN updated_at / 1000 ELSE updated_at END, 'unixepoch', 'localtime') AS day,
                        SUM(CASE WHEN source_type = 'markdown' THEN 1 ELSE 0 END) AS md,
                        SUM(CASE WHEN source_type = 'iron' THEN 1 ELSE 0 END) AS iron,
-                       SUM(CASE WHEN source_type = 'cavemem' THEN 1 ELSE 0 END) AS cavemem,
+                       SUM(CASE WHEN source_type = 'history' THEN 1 ELSE 0 END) AS history,
                        SUM(CASE WHEN kind = 'correction' THEN 1 ELSE 0 END) AS corrections
                 FROM records
                 GROUP BY day
@@ -2004,7 +2016,7 @@ impl Store {
              SELECT dates.d,
                     COALESCE(r.md, 0),
                     COALESCE(r.iron, 0),
-                    COALESCE(r.cavemem, 0),
+                    COALESCE(r.history, 0),
                     COALESCE(r.corrections, 0),
                     COALESCE(s.touched, 0),
                     COALESCE(s.uses, 0),
@@ -2021,7 +2033,7 @@ impl Store {
             day: String,
             md: i64,
             iron: i64,
-            cavemem: i64,
+            history: i64,
             corrections: i64,
             touched: i64,
             uses: i64,
@@ -2035,7 +2047,7 @@ impl Store {
                     day: row.get(0)?,
                     md: row.get(1)?,
                     iron: row.get(2)?,
-                    cavemem: row.get(3)?,
+                    history: row.get(3)?,
                     corrections: row.get(4)?,
                     touched: row.get(5)?,
                     uses: row.get(6)?,
@@ -2071,8 +2083,8 @@ impl Store {
 
         let last7_cur: i64 = last7.iter().map(|d| d.md + d.iron).sum();
         let prev7_cur: i64 = prev7.iter().map(|d| d.md + d.iron).sum();
-        let last7_raw: i64 = last7.iter().map(|d| d.cavemem).sum();
-        let prev7_raw: i64 = prev7.iter().map(|d| d.cavemem).sum();
+        let last7_raw: i64 = last7.iter().map(|d| d.history).sum();
+        let prev7_raw: i64 = prev7.iter().map(|d| d.history).sum();
         let last7_iron: i64 = last7.iter().map(|d| d.iron).sum();
         let prev7_iron: i64 = prev7.iter().map(|d| d.iron).sum();
         let last7_confirms: i64 = last7.iter().map(|d| d.confirms).sum();
@@ -2101,7 +2113,7 @@ impl Store {
                 "markdown": d.md,
                 "iron": d.iron,
                 "curated": d.md + d.iron,
-                "cavemem": d.cavemem,
+                "history": d.history,
                 "corrections": d.corrections,
                 "touched": d.touched,
                 "uses": d.uses,
@@ -2119,7 +2131,7 @@ impl Store {
                     "markdown": d.md,
                     "iron": d.iron,
                     "curated": d.md + d.iron,
-                    "cavemem": d.cavemem,
+                    "history": d.history,
                     "corrections": d.corrections,
                     "touched": d.touched,
                     "uses": d.uses,
@@ -2276,6 +2288,40 @@ fn initialize_empty_schema(connection: &Connection) -> Result<()> {
     connection.pragma_update(None, "application_id", APPLICATION_ID)?;
     connection.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
+}
+
+pub fn relabel_legacy_history_in_place(path: &Path) -> Result<usize> {
+    if !path.is_file() {
+        return Ok(0);
+    }
+    let mut connection = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_WRITE
+            | OpenFlags::SQLITE_OPEN_NOFOLLOW
+            | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .with_context(|| format!("cannot open memory index {}", path.display()))?;
+    connection.busy_timeout(Duration::from_secs(5))?;
+    validate_schema(&connection)?;
+    let pending: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM records WHERE source_type = ?1)",
+        [LEGACY_HISTORY_SOURCE_TYPE],
+        |row| row.get(0),
+    )?;
+    if !pending {
+        return Ok(0);
+    }
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let relabelled = relabel_legacy_history(&transaction)?;
+    transaction.commit()?;
+    Ok(relabelled)
+}
+
+fn relabel_legacy_history(connection: &Connection) -> Result<usize> {
+    Ok(connection.execute(
+        "UPDATE records SET source_type = ?1 WHERE source_type = ?2",
+        [HISTORY_SOURCE_TYPE, LEGACY_HISTORY_SOURCE_TYPE],
+    )?)
 }
 
 fn validate_schema(connection: &Connection) -> Result<()> {
@@ -2798,7 +2844,7 @@ mod tests {
             "nebularsignal shared evidence",
         );
         history.title = "Same title".into();
-        history.source_type = "cavemem".into();
+        history.source_type = "history".into();
         history.updated_at = 100;
         let mut curated = record(
             "curated",
@@ -2822,7 +2868,7 @@ mod tests {
         assert_eq!(hits[0].id, "curated");
         assert!((hits[0].score - hits[1].score * 2.0).abs() < 1e-9);
         let mut request = options(Some("alpha"));
-        request.source_types = vec!["cavemem".into()];
+        request.source_types = vec!["history".into()];
         let history = store.search("nebularsignal", &request).unwrap();
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].id, "history");
@@ -2945,10 +2991,10 @@ mod tests {
     #[test]
     fn replay_deduplicates_content_without_losing_provenance() {
         let (_directory, mut store) = fixture();
-        let mut second = record("two", "cavemem", "beta", "shared café evidence");
-        second.source_type = "cavemem".to_owned();
+        let mut second = record("two", "history", "beta", "shared café evidence");
+        second.source_type = "history".to_owned();
         let input = batch(
-            &["markdown", "cavemem"],
+            &["markdown", "history"],
             vec![
                 record("one", "markdown", "alpha", "shared café evidence"),
                 second.clone(),
@@ -2972,7 +3018,7 @@ mod tests {
         assert_eq!(stats["content_bytes"], "shared café evidence".len() * 2);
         assert_eq!(stats["unique_content_bytes"], "shared café evidence".len());
         assert_eq!(stats["by_project"]["alpha"], 1);
-        assert_eq!(stats["by_source_type"]["cavemem"], 1);
+        assert_eq!(stats["by_source_type"]["history"], 1);
         let loaded = store.get("two").unwrap().unwrap();
         assert_eq!(
             serde_json::to_value(loaded).unwrap(),
@@ -3121,7 +3167,7 @@ mod tests {
         ]);
         let mut summary = record("summary", "a", "alpha", "scopetoken");
         summary.kind = "summary".to_owned();
-        summary.source_type = "cavemem".to_owned();
+        summary.source_type = "history".to_owned();
         records.push(summary);
         store.apply(&batch(&["a"], records)).unwrap();
         let mut opts = options(Some("alpha"));
@@ -3146,7 +3192,7 @@ mod tests {
                 .is_empty()
         );
         opts = options(None);
-        opts.source_types.push("cavemem".to_owned());
+        opts.source_types.push("history".to_owned());
         assert_eq!(
             hit_ids(store.search("scopetoken", &opts).unwrap()),
             ["summary"]
@@ -3426,7 +3472,7 @@ mod tests {
         r2.kind = "decision".into();
         r2.updated_at = 300;
         let mut r3 = record("rec_history", "src", "other-app", "session log details beta");
-        r3.source_type = "cavemem".into();
+        r3.source_type = "history".into();
         r3.kind = "summary".into();
         r3.updated_at = 400;
         store

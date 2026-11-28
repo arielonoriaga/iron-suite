@@ -3,7 +3,7 @@ members = ["."]
 exclude = ["packages/iron-browser", "packages/iron-term"]
 
 [package]
-name = "iron-suite"
+name = "iron-stack"
 version = "0.3.2"
 edition = "2024"
 license = "MIT"

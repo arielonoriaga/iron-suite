@@ -1,12 +1,12 @@
 {
-  "name": "iron-suite-marketplace",
+  "name": "iron-stack-marketplace",
   "owner": {
     "name": "Ariel Onoriaga",
     "url": "https://github.com/arielonoriaga"
   },
   "plugins": [
     {
-      "name": "iron-suite",
+      "name": "iron-stack",
       "source": "./",
       "description": "Zero-cloud SQLite FTS5 MCP memory hub, cross-repo system graph, 10 engineering, browser, design & maintenance skills and 7 specialized subagents."
     }

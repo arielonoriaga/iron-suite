@@ -193,7 +193,7 @@ Speaks newline-delimited `stdio` MCP (`2025-06-18` / `2025-03-26` / `2024-11-05`
 
 IronBrowser is part of **The Iron Stack** — zero-cloud, local-first Rust & TypeScript tools built for high-trust multi-agent engineering:
 
-1. **[`iron-suite`](https://github.com/arielonoriaga/iron-suite) (`Available Now` — `crates.io` + MCP Registry):**
+1. **[`iron-stack`](https://github.com/arielonoriaga/iron-stack) (`Available Now` — `crates.io` + MCP Registry):**
    Zero-cloud SQLite FTS5 + Hybrid Semantic RRF `stdio` MCP memory hub (`iron`), local **Second Brain & Trust Desk Web UI** (`iron ui`), SSH multi-machine memory sharing, and **9 adversarial `iron-*` engineering & UX skills** (`iron-design`, `irondev`, `irondev-review`, `iron-hunt`, `iron-audit`, `iron-debug`, `iron-perf`, `iron-browser`).
 2. **`iron-browser` (`Public Beta — This Repo`):**
    Dual-viewport Chromium verification browser, causal Rust `TabEventBus`, single-flight HTTP/WS/SSE/SFS2X deduplication, POS/slow-device lab, and 26-tool Rust MCP server.
@@ -205,7 +205,7 @@ IronBrowser is part of **The Iron Stack** — zero-cloud, local-first Rust & Typ
 </p>
    - **Headless `iron-agentd` Daemon (`portable-pty` + `alacritty_terminal` + SQLite):** Decouples PTY execution from GPU rendering so 20+ concurrent agents (`claude`, `agy`, `codex`, `opencode`, shells) run with **0 off-screen GPU frames**, while idle multi-day sessions hibernate to **`0 MB` live RAM** with 1-line *"where I left off"* checkpoints, `--resume` tokens, and git worktree freshness checks (`dirty` / `behind origin/main`).
    - **90–98% Raw Terminal Pixels (`iron-gpui`):** Zero dashboard card bloat — native `⌘D` split panes, collapsible `236px` monospace **Urgency Whisper Rail** (`NEEDS YOU` · `ACTIVE` · `DORMANT`), and a 1-keystroke **Ghost Action Bar** with *Fix-Before-Destroy* prompt actions (`[1] Run via runq instead`, `[2] Allow`, `[3] Deny`).
-   - **Multi-Host SSH + `runq` Thermal & Build-Queue Control + `390px` Tailscale Companion:** Coordinates CPU/RAM slots across workstation and laptop over plain SSH (zero extra open ports), integrates natively with `iron` memory (`iron-suite`) and `iron-browser` (`IRON_BROWSER_SOCKET` + live `browser_events` causal stream), and embeds a zero-dependency `390px` mobile companion for remote approvals on Tailscale.
+   - **Multi-Host SSH + `runq` Thermal & Build-Queue Control + `390px` Tailscale Companion:** Coordinates CPU/RAM slots across workstation and laptop over plain SSH (zero extra open ports), integrates natively with `iron` memory (`iron-stack`) and `iron-browser` (`IRON_BROWSER_SOCKET` + live `browser_events` causal stream), and embeds a zero-dependency `390px` mobile companion for remote approvals on Tailscale.
 
 Companion utilities: **[entropy-hunter](https://github.com/arielonoriaga/entropy-hunter)** · **[lazyfetch](https://github.com/arielonoriaga/lazyfetch)** · **[claude-statusline-bar](https://github.com/arielonoriaga/claude-statusline-bar)**.
 

@@ -577,7 +577,7 @@ button, input, select, textarea { font-family: inherit; font-size: inherit; colo
             <button class="chip" data-source="markdown">Markdown</button>
             <button class="chip" data-source="iron">Iron Native</button>
             <button class="chip" data-source="all">All (+26k archive)</button>
-            <button class="chip" data-source="cavemem">Cavemem</button>
+            <button class="chip" data-source="history">Session History</button>
           </div>
           <div class="chip-bar" id="statusChips">
             <button class="chip active" data-status="all">Any</button>
@@ -628,7 +628,7 @@ button, input, select, textarea { font-family: inherit; font-size: inherit; colo
       <div class="choice-grid" id="simModeCards">
         <button class="choice-card active" data-sim-mode="developer">
           <strong>Developer Context</strong>
-          <div style="font-size:12px;color:var(--text-mid);margin-top:2px;">Exact <code class="mono">developer</code> role · curated Markdown + Iron native + Cavemem</div>
+          <div style="font-size:12px;color:var(--text-mid);margin-top:2px;">Exact <code class="mono">developer</code> role · curated Markdown + Iron native + session history</div>
         </button>
         <button class="choice-card" data-sim-mode="reviewer">
           <strong>Reviewer Context</strong>
@@ -650,7 +650,7 @@ button, input, select, textarea { font-family: inherit; font-size: inherit; colo
           <select id="simSource" class="input" style="min-height:36px;">
             <option value="all">all</option>
             <option value="curated">curated (markdown + iron)</option>
-            <option value="history">history (cavemem)</option>
+            <option value="history">history (sessions)</option>
             <option value="native">native (iron)</option>
             <option value="archive">archive (archive.db)</option>
           </select>
@@ -954,7 +954,7 @@ button, input, select, textarea { font-family: inherit; font-size: inherit; colo
                 const irH = barScale(item.iron);
                 const veH = item.confirms > 0 ? Math.min(24, Math.max(4, item.confirms * 5)) : 0;
                 return `
-                  <div class="evo-col ${i === idx ? 'active' : ''}" data-day-jump="${i}" title="${esc(item.day)}: ${item.markdown} markdown, ${item.iron} iron native, ${item.confirms} verified, ${item.superseded} superseded, ${item.cavemem} raw cavemem">
+                  <div class="evo-col ${i === idx ? 'active' : ''}" data-day-jump="${i}" title="${esc(item.day)}: ${item.markdown} markdown, ${item.iron} iron native, ${item.confirms} verified, ${item.superseded} superseded, ${item.history} session history">
                     <div class="evo-stack">
                       ${mdH ? `<div class="b-md" style="height:${mdH}px;"></div>` : ''}
                       ${irH ? `<div class="b-iron" style="height:${irH}px;"></div>` : ''}
@@ -1000,14 +1000,14 @@ button, input, select, textarea { font-family: inherit; font-size: inherit; colo
     if (!state.audit) return;
     const s = state.audit.summary;
     const pf = state.audit.project_fragmentation;
-    const rawArchive = Number(s.by_source_type?.cavemem || 0);
+    const rawArchive = Number(s.by_source_type?.history || 0);
     $('#deskStory').innerHTML = `
       <p class="story-text">
         Your agents currently trust <strong>${fmtNum(s.curated_total)} curated rules</strong> across <strong>${fmtNum(pf.canonical_roots)} canonical projects</strong> —
         <strong style="color:${s.curated_verified > 0 ? 'var(--ok)' : 'var(--warn)'};">${fmtNum(s.curated_verified)} verified</strong> by you,
         ${s.contested > 0 ? `<strong style="color:var(--bad);">${fmtNum(s.contested)} contested</strong>, ` : ''}
         <strong>${fmtNum(s.superseded)} superseded</strong>.
-        <span style="color:var(--text-muted);font-size:12.5px;">(${fmtNum(rawArchive)} raw cavemem session records stay out of your way unless selected.)</span>
+        <span style="color:var(--text-muted);font-size:12.5px;">(${fmtNum(rawArchive)} session-history records stay out of your way unless selected.)</span>
       </p>
       <div class="radar-row">
         ${(() => {
@@ -1065,7 +1065,7 @@ button, input, select, textarea { font-family: inherit; font-size: inherit; colo
       if (n.contradict_count > 0) return 'Contested';
       if (n.confirm_count > 0) return 'Verified Truth';
       if (n.source_type === 'iron') return 'Iron Native (Unverified)';
-      if (n.source_type === 'cavemem') return 'Session Archive';
+      if (n.source_type === 'history') return 'Session Archive';
       return 'Markdown (Unverified)';
     }
     return n.canonical_root || n.project;

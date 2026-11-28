@@ -255,7 +255,7 @@ mod tests {
             RememberRequest {
                 title: "Shared evidence".into(),
                 content: content.into(),
-                project: "iron-suite".into(),
+                project: "iron-stack".into(),
                 kind: Some("decision".into()),
                 agent: Some("backup-test".into()),
                 ..Default::default()
@@ -315,7 +315,7 @@ mod tests {
             .search(
                 "WALonlytoken",
                 &SearchOptions {
-                    project: Some("iron-suite".into()),
+                    project: Some("iron-stack".into()),
                     limit: 5,
                     ..SearchOptions::default()
                 },
