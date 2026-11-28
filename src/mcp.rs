@@ -1,4 +1,4 @@
-use crate::{intelligence, native, output, service, store::Store};
+use crate::{graph, intelligence, native, output, service, store::Store};
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
 use std::{
@@ -47,7 +47,15 @@ fn definitions() -> Value {
          "inputSchema":{"type":"object","additionalProperties":false,"required":["id","outcome"],"properties":{
              "id":id,
              "outcome":{"type":"string","enum":["helpful","outdated","contradicted"]},
-             "superseded_by":id}}}
+             "superseded_by":id}}},
+        {"name":"system_graph","description":"Query the cross-repo HTTP service graph (providers, callers, callees, and file impact) from graph.db with compact byte-capped output.",
+         "annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false},
+         "inputSchema":{"type":"object","additionalProperties":false,"required":["query","direction"],"properties":{
+             "query":{"type":"string","minLength":1,"maxLength":512},
+             "direction":{"type":"string","enum":["callers","callees","impact"]},
+             "repo":{"type":"string","minLength":1,"maxLength":128},
+             "limit":limit,
+             "max_bytes":{"type":"integer","minimum":256,"maximum":65536,"default":1200}}}}
     ]})
 }
 
@@ -71,7 +79,48 @@ impl Default for Session {
     }
 }
 
+fn format_tool_outcome(result: Result<Value>) -> Value {
+    match result {
+        Ok(value) => {
+            let text = match value {
+                Value::String(s) => s,
+                other => serde_json::to_string(&other).unwrap(),
+            };
+            json!({"content":[{"type":"text","text":text}],"isError":false})
+        }
+        Err(err) => {
+            json!({"content":[{"type":"text","text":output::prefix(&format!("{err:#}"), 512).to_string()}],"isError":true})
+        }
+    }
+}
+
 impl Session {
+    fn handle_memory_get(&mut self, db: &Path, store: &Store, req: service::GetRequest) -> Result<Value> {
+        let target_id = req.id.clone();
+        let is_first_page = req.offset == 0;
+        let res = service::get_with_archive(store, Some(db), req);
+        if is_first_page
+            && let Ok(val) = &res
+            && val.get("found").and_then(Value::as_bool) == Some(true)
+            && self.reinforced_ids.len() < 512
+            && self.reinforced_ids.insert(target_id.clone())
+        {
+            let _ = native::reinforce_once(db, &target_id);
+            let project = val
+                .get("project")
+                .and_then(Value::as_str)
+                .unwrap_or("*");
+            let _ = intelligence::record_session_recall(db, &self.session_id, project, &target_id);
+            if self.fetched_order.len() < 16 {
+                if !self.fetched_order.is_empty() {
+                    let _ = intelligence::link_session_co_used(db, &target_id, &self.fetched_order);
+                }
+                self.fetched_order.push(target_id);
+            }
+        }
+        res
+    }
+
     fn tool(
         &mut self,
         db: &Path,
@@ -101,55 +150,20 @@ impl Session {
                 serde_json::from_value(arguments).map_err(|e| (-32602, e.to_string()))?,
             ),
             "memory_get" => {
-                let req: service::GetRequest =
-                    serde_json::from_value(arguments).map_err(|e| (-32602, e.to_string()))?;
-                let target_id = req.id.clone();
-                let is_first_page = req.offset == 0;
-                let res = service::get_with_archive(store, Some(db), req);
-                if is_first_page
-                    && let Ok(val) = &res
-                    && val.get("found").and_then(Value::as_bool) == Some(true)
-                    && self.reinforced_ids.len() < 512
-                    && self.reinforced_ids.insert(target_id.clone())
-                {
-                    let _ = native::reinforce_once(db, &target_id);
-                    let project = val
-                        .get("project")
-                        .and_then(Value::as_str)
-                        .unwrap_or("*");
-                    let _ = intelligence::record_session_recall(
-                        db,
-                        &self.session_id,
-                        project,
-                        &target_id,
-                    );
-                    if self.fetched_order.len() < 16 {
-                        if !self.fetched_order.is_empty() {
-                            let _ = intelligence::link_session_co_used(
-                                db,
-                                &target_id,
-                                &self.fetched_order,
-                            );
-                        }
-                        self.fetched_order.push(target_id.clone());
-                    }
-                }
-                res
+                let req = serde_json::from_value(arguments).map_err(|e| (-32602, e.to_string()))?;
+                self.handle_memory_get(db, store, req)
             }
             "memory_related" => service::related(
                 store,
                 serde_json::from_value(arguments).map_err(|e| (-32602, e.to_string()))?,
             ),
+            "system_graph" => graph::query_mcp(
+                db,
+                serde_json::from_value(arguments).map_err(|e| (-32602, e.to_string()))?,
+            ),
             _ => return Err((-32602, "unknown tool".into())),
         };
-        Ok(match result {
-            Ok(value) => {
-                json!({"content":[{"type":"text","text":serde_json::to_string(&value).unwrap()}],"isError":false})
-            }
-            Err(err) => {
-                json!({"content":[{"type":"text","text":output::prefix(&format!("{err:#}"), 512).to_string()}],"isError":true})
-            }
-        })
+        Ok(format_tool_outcome(result))
     }
 
     fn respond(&mut self, db: &Path, store: &Store, request: Value) -> Option<Value> {
@@ -271,7 +285,7 @@ mod tests {
     fn all_mcp_tools_declare_all_four_boolean_annotation_hints() {
         let defs = definitions();
         let tools = defs["tools"].as_array().expect("tools array");
-        assert_eq!(tools.len(), 5);
+        assert_eq!(tools.len(), 6);
         for tool in tools {
             let ann = tool["annotations"].as_object().expect("annotations object");
             for key in ["readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint"] {

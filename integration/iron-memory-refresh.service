@@ -5,4 +5,4 @@ Description=Refresh imported Iron memory sources
 Type=oneshot
 UMask=0077
 Nice=10
-ExecStart=/bin/sh -c 'args="--db %h/.local/share/iron/memory.db memory import"; [ -d "%h/.claude" ] && args="$args --claude-root %h/.claude"; [ -f "%h/.cavemem/data.db" ] && args="$args --cavemem-db %h/.cavemem/data.db"; exec "%h/.local/bin/iron" $args'
+ExecStart=/bin/sh -c 'set -e; args="--db %h/.local/share/iron/memory.db memory import"; [ -d "%h/.claude" ] && args="$args --claude-root %h/.claude"; [ -f "%h/.cavemem/data.db" ] && args="$args --cavemem-db %h/.cavemem/data.db"; "%h/.local/bin/iron" $args; if [ -f "%h/.local/share/iron/system-graph.json" ]; then "%h/.local/bin/iron" --db "%h/.local/share/iron/memory.db" memory graph refresh || true; fi'

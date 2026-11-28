@@ -15,7 +15,7 @@ const MAX_PROJECT_BYTES: usize = 256;
 const MAX_ALIASES_BYTES: u64 = 256 * 1024;
 const MAX_ALIAS_HOPS: usize = 8;
 
-pub fn aliases_path(db: &Path) -> Option<PathBuf> {
+pub(crate) fn sibling_path(db: &Path, filename: &str) -> Option<PathBuf> {
     if db == Path::new(":memory:") {
         return None;
     }
@@ -23,36 +23,35 @@ pub fn aliases_path(db: &Path) -> Option<PathBuf> {
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
-    Some(parent.join("aliases.json"))
+    Some(parent.join(filename))
 }
 
-pub fn load(db: &Path) -> Result<AliasMap> {
-    let Some(path) = aliases_path(db) else {
-        return Ok(AliasMap::new());
-    };
-    let pre = match fs::symlink_metadata(&path) {
-        Ok(m) => m,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(AliasMap::new()),
-        Err(err) => return Err(err).with_context(|| format!("cannot inspect {}", path.display())),
-    };
+pub fn aliases_path(db: &Path) -> Option<PathBuf> {
+    sibling_path(db, "aliases.json")
+}
+
+pub(crate) fn read_private_file(path: &Path, label: &str, max_bytes: u64) -> Result<String> {
+    let pre = fs::symlink_metadata(path)
+        .with_context(|| format!("cannot inspect {label} at {}", path.display()))?;
     ensure!(
         !pre.file_type().is_symlink() && pre.is_file(),
-        "project aliases file must be a regular non-symlink file: {}",
+        "{label} must be a regular non-symlink file: {}",
         path.display()
     );
     ensure!(
-        pre.len() <= MAX_ALIASES_BYTES,
-        "project aliases file exceeds 256 KiB limit: {}",
+        pre.len() <= max_bytes,
+        "{label} exceeds {} KiB limit: {}",
+        max_bytes / 1024,
         path.display()
     );
-    let file = File::open(&path)
-        .with_context(|| format!("cannot open project aliases {}", path.display()))?;
+    let file = File::open(path)
+        .with_context(|| format!("cannot open {label} {}", path.display()))?;
     let post = file
         .metadata()
-        .with_context(|| format!("cannot stat opened project aliases {}", path.display()))?;
+        .with_context(|| format!("cannot stat opened {label} {}", path.display()))?;
     ensure!(
         post.file_type().is_file(),
-        "project aliases path changed to non-regular file: {}",
+        "{label} path changed to non-regular file: {}",
         path.display()
     );
     #[cfg(unix)]
@@ -60,19 +59,38 @@ pub fn load(db: &Path) -> Result<AliasMap> {
         use std::os::unix::fs::MetadataExt;
         ensure!(
             pre.dev() == post.dev() && pre.ino() == post.ino(),
-            "project aliases file changed while opening: {}",
+            "{label} file changed while opening: {}",
             path.display()
         );
     }
     let mut raw = String::new();
-    file.take(MAX_ALIASES_BYTES + 1)
+    file.take(max_bytes + 1)
         .read_to_string(&mut raw)
-        .with_context(|| format!("cannot read project aliases {}", path.display()))?;
+        .with_context(|| format!("cannot read {label} {}", path.display()))?;
     ensure!(
-        raw.len() as u64 <= MAX_ALIASES_BYTES,
-        "project aliases file exceeds 256 KiB limit: {}",
+        raw.len() as u64 <= max_bytes,
+        "{label} exceeds {} KiB limit: {}",
+        max_bytes / 1024,
         path.display()
     );
+    Ok(raw)
+}
+
+pub fn load(db: &Path) -> Result<AliasMap> {
+    let Some(path) = aliases_path(db) else {
+        return Ok(AliasMap::new());
+    };
+    let raw = match read_private_file(&path, "project aliases file", MAX_ALIASES_BYTES) {
+        Ok(raw) => raw,
+        Err(err)
+            if err
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound) =>
+        {
+            return Ok(AliasMap::new());
+        }
+        Err(err) => return Err(err),
+    };
     let parsed: AliasMap = serde_json::from_str(&raw)
         .with_context(|| format!("invalid JSON in project aliases {}", path.display()))?;
     let mut cleaned = AliasMap::new();
@@ -85,7 +103,7 @@ pub fn load(db: &Path) -> Result<AliasMap> {
     Ok(cleaned)
 }
 
-fn ensure_private_dir(dir: &Path) -> Result<()> {
+pub(crate) fn ensure_private_dir(dir: &Path) -> Result<()> {
     if dir.exists() {
         return Ok(());
     }

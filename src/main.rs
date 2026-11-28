@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
-use iron_suite::{backup, drift, import, intelligence, mcp, migrate, native, output, refresh, service, sleep, store::Store, ui};
+use iron_suite::{backup, drift, graph, import, intelligence, mcp, migrate, native, output, refresh, service, sleep, store::Store, ui};
 use serde_json::json;
 use std::{
     io::{self, Write},
@@ -154,7 +154,41 @@ enum MemoryCommand {
         #[arg(long, default_value_t = 4000)]
         max_bytes: usize,
     },
+    Graph {
+        #[command(subcommand)]
+        command: GraphCommand,
+    },
     Stats,
+}
+
+#[derive(Args)]
+struct GraphQueryArgs {
+    #[arg(long)]
+    repo: Option<String>,
+    #[arg(long)]
+    limit: Option<usize>,
+    #[arg(long, default_value_t = graph::DEFAULT_MAX_BYTES)]
+    max_bytes: usize,
+}
+
+#[derive(Subcommand)]
+enum GraphCommand {
+    Refresh,
+    WhoCalls {
+        query: String,
+        #[command(flatten)]
+        opts: GraphQueryArgs,
+    },
+    Impact {
+        #[arg(long)]
+        file: PathBuf,
+        #[command(flatten)]
+        opts: GraphQueryArgs,
+    },
+    Fog {
+        #[command(flatten)]
+        opts: GraphQueryArgs,
+    },
 }
 
 #[derive(Args)]
@@ -205,6 +239,81 @@ fn default_db() -> Result<PathBuf> {
     Ok(PathBuf::from(home).join(".local/share/iron/memory.db"))
 }
 
+fn run_graph(db: &std::path::Path, command: GraphCommand) -> Result<()> {
+    let text = match command {
+        GraphCommand::Refresh => output::encode(&graph::refresh(db)?)?,
+        GraphCommand::WhoCalls { query, opts } => {
+            graph::query_who_calls(db, &query, opts.repo.as_deref(), opts.limit, opts.max_bytes)?
+        }
+        GraphCommand::Impact { file, opts } => {
+            graph::query_impact(db, &file, opts.repo.as_deref(), opts.limit, opts.max_bytes)?
+        }
+        GraphCommand::Fog { opts } => {
+            graph::query_fog(db, opts.repo.as_deref(), opts.limit, opts.max_bytes)?
+        }
+    };
+    io::stdout().lock().write_all(text.as_bytes())?;
+    Ok(())
+}
+
+fn run_readonly_memory(db: &std::path::Path, command: MemoryCommand) -> Result<serde_json::Value> {
+    let store =
+        Store::open(db, false).context("cannot open Iron index; run memory import first")?;
+    match command {
+        MemoryCommand::Search(args) => {
+            service::search_with_archive(&store, Some(db), args.request(None)?)
+        }
+        MemoryCommand::Get {
+            id,
+            offset,
+            max_bytes,
+            section,
+        } => service::get_with_archive(
+            &store,
+            Some(db),
+            service::GetRequest {
+                id,
+                offset,
+                max_bytes: Some(max_bytes),
+                section,
+            },
+        ),
+        MemoryCommand::Related {
+            id,
+            relation,
+            limit,
+            max_bytes,
+        } => service::related(
+            &store,
+            service::RelatedRequest {
+                id,
+                relation,
+                limit: Some(limit),
+                max_bytes: Some(max_bytes),
+            },
+        ),
+        MemoryCommand::Consolidate {
+            project,
+            min_occurrences,
+            limit,
+        } => store.consolidate(project.as_deref(), min_occurrences, limit),
+        MemoryCommand::Export { output, scope } => native::export_jsonl(&store, &output, &scope),
+        MemoryCommand::Stats => store.stats(),
+        MemoryCommand::Import { .. }
+        | MemoryCommand::Remember { .. }
+        | MemoryCommand::Feedback { .. }
+        | MemoryCommand::Link
+        | MemoryCommand::MergeProject { .. }
+        | MemoryCommand::Migrate { .. }
+        | MemoryCommand::Backup { .. }
+        | MemoryCommand::Sleep { .. }
+        | MemoryCommand::AuditDrift { .. }
+        | MemoryCommand::Recall { .. }
+        | MemoryCommand::Graph { .. }
+        | MemoryCommand::Outcome { .. } => unreachable!(),
+    }
+}
+
 fn run(cli: Cli) -> Result<()> {
     let db = cli.db.map(Ok).unwrap_or_else(default_db)?;
     if let Command::Mcp {
@@ -219,6 +328,12 @@ fn run(cli: Cli) -> Result<()> {
     }
     if let Command::Ui { host, port } = &cli.command {
         return ui::serve(&db, host, *port);
+    }
+    if let Command::Memory {
+        command: MemoryCommand::Graph { command },
+    } = cli.command
+    {
+        return run_graph(&db, command);
     }
     let result = match cli.command {
         Command::Memory {
@@ -323,64 +438,7 @@ fn run(cli: Cli) -> Result<()> {
             cavemem_db.as_deref(),
             native_jsonl.as_deref(),
         )?,
-        Command::Memory { command } => {
-            let store = Store::open(&db, false)
-                .context("cannot open Iron index; run memory import first")?;
-            match command {
-                MemoryCommand::Search(args) => {
-                    service::search_with_archive(&store, Some(&db), args.request(None)?)?
-                }
-                MemoryCommand::Get {
-                    id,
-                    offset,
-                    max_bytes,
-                    section,
-                } => service::get_with_archive(
-                    &store,
-                    Some(&db),
-                    service::GetRequest {
-                        id,
-                        offset,
-                        max_bytes: Some(max_bytes),
-                        section,
-                    },
-                )?,
-                MemoryCommand::Related {
-                    id,
-                    relation,
-                    limit,
-                    max_bytes,
-                } => service::related(
-                    &store,
-                    service::RelatedRequest {
-                        id,
-                        relation,
-                        limit: Some(limit),
-                        max_bytes: Some(max_bytes),
-                    },
-                )?,
-                MemoryCommand::Consolidate {
-                    project,
-                    min_occurrences,
-                    limit,
-                } => store.consolidate(project.as_deref(), min_occurrences, limit)?,
-                MemoryCommand::Export { output, scope } => {
-                    native::export_jsonl(&store, &output, &scope)?
-                }
-                MemoryCommand::Stats => store.stats()?,
-                MemoryCommand::Import { .. }
-                | MemoryCommand::Remember { .. }
-                | MemoryCommand::Feedback { .. }
-                | MemoryCommand::Link
-                | MemoryCommand::MergeProject { .. }
-                | MemoryCommand::Migrate { .. }
-                | MemoryCommand::Backup { .. }
-                | MemoryCommand::Sleep { .. }
-                | MemoryCommand::AuditDrift { .. }
-                | MemoryCommand::Recall { .. }
-                | MemoryCommand::Outcome { .. } => unreachable!(),
-            }
-        }
+        Command::Memory { command } => run_readonly_memory(&db, command)?,
         Command::Context(args) => {
             let store = Store::open(&db, false)
                 .context("cannot open Iron index; run memory import first")?;

@@ -1,6 +1,7 @@
 pub mod aliases;
 pub mod backup;
 pub mod drift;
+pub mod graph;
 pub mod import;
 pub mod intelligence;
 pub mod linker;

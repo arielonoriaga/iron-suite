@@ -282,7 +282,7 @@ fn mcp_stdio_initializes_calls_tools_and_keeps_notifications_silent() {
         .collect();
     assert_eq!(replies.len(), 5);
     assert_eq!(replies[0]["result"]["protocolVersion"], "2025-06-18");
-    assert_eq!(replies[1]["result"]["tools"].as_array().unwrap().len(), 5);
+    assert_eq!(replies[1]["result"]["tools"].as_array().unwrap().len(), 6);
     let content = replies[2]["result"]["content"][0]["text"].as_str().unwrap();
     assert!(content.len() <= 1000);
     assert_eq!(
@@ -749,4 +749,318 @@ fn file_recall_credits_markdown_memory_once_per_session_and_feeds_outcomes() {
         .map(|v| v.as_str().unwrap())
         .collect();
     assert_eq!(targets, vec![id.as_str()]);
+}
+
+fn git_in(dir: &std::path::Path, args: &[&str]) -> String {
+    let out = Command::new("git").arg("-C").arg(dir).args(args).output().unwrap();
+    assert!(out.status.success(), "git {:?} failed: {}", args, String::from_utf8_lossy(&out.stderr));
+    String::from_utf8_lossy(&out.stdout).trim().to_owned()
+}
+
+fn init_git_repo(dir: &std::path::Path, files: &[(&str, &str)]) -> String {
+    fs::create_dir_all(dir).unwrap();
+    git_in(dir, &["init", "-q"]);
+    git_in(dir, &["config", "user.email", "test@iron.local"]);
+    git_in(dir, &["config", "user.name", "Iron Test"]);
+    for (rel, body) in files {
+        let target = dir.join(rel);
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(&target, body).unwrap();
+    }
+    git_in(dir, &["add", "."]);
+    git_in(dir, &["commit", "-q", "-m", "init"]);
+    git_in(dir, &["rev-parse", "HEAD"])
+}
+
+fn run_iron_text(db: &std::path::Path, args: &[&str]) -> String {
+    let out = Command::new(env!("CARGO_BIN_EXE_iron"))
+        .arg("--db")
+        .arg(db)
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "iron {:?} failed: {}",
+        args,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8(out.stdout).unwrap()
+}
+
+fn call_mcp_sequence(db: &std::path::Path, requests: &[Value]) -> Vec<Value> {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_iron"))
+        .args(["--db", db.to_str().unwrap(), "mcp"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    writeln!(stdin, "{}", json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1"}}})).unwrap();
+    writeln!(stdin, "{}", json!({"jsonrpc":"2.0","method":"notifications/initialized"})).unwrap();
+    for req in requests {
+        writeln!(stdin, "{req}").unwrap();
+    }
+    drop(stdin);
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    String::from_utf8(output.stdout)
+        .unwrap()
+        .lines()
+        .skip(1)
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect()
+}
+
+#[test]
+fn system_graph_refresh_skips_unchanged_rescans_on_commit_and_serves_queries_and_mcp() {
+    let fixture = Fixture::new();
+    fixture.import();
+
+    let repos_root = fixture._temp.path().join("repos");
+    let api_sha = init_git_repo(
+        &repos_root.join("shop-api"),
+        &[(
+            "backend/src/api.rs",
+            r#"pub fn router() -> Router {
+    Router::new()
+        .route(
+            "/api/internal/invoices",
+            post(create_invoice),
+        )
+        .route("/api/v1/sales", get(list_sales))
+}
+"#,
+        )],
+    );
+    init_git_repo(
+        &repos_root.join("billing-svc"),
+        &[
+            (
+                "src/client.rs",
+                r#"impl ShopClient {
+    /// Emit invoice in shop-api.
+    async fn issue(&self) {
+        let _ = self.http.post(format!("{}/api/internal/invoices", self.base_url)).send().await;
+    }
+
+    async fn unknown_call(&self) {
+        let _ = self.http.get(format!("{}/api/v1/does-not-exist", self.other_url)).send().await;
+    }
+}
+"#,
+            ),
+            (
+                "src/scrapers/vendor.rs",
+                r#"async fn scrape(c: &reqwest::Client) {
+    let _ = c.get("https://vendor.example/items").send().await;
+}
+"#,
+            ),
+        ],
+    );
+    init_git_repo(
+        &repos_root.join("shop-web"),
+        &[
+            (
+                "frontend/src/lib/api.ts",
+                r#"export const api = {
+  get: <T>(path: string) => apiFetch<T>(path),
+  sales: {
+    list: () => apiFetch("/sales"),
+  },
+};
+"#,
+            ),
+            (
+                "frontend/src/pages/sales/SalesView.tsx",
+                r#"// Render active sales list.
+export async function loadSales() {
+  return api.sales.list();
+}
+"#,
+            ),
+        ],
+    );
+
+    let cfg = json!({
+        "repos_root": repos_root,
+        "services": {
+            "shop-api": {"repo": "shop-api", "root": "backend", "stack": "axum"},
+            "billing-svc": {"repo": "billing-svc", "root": "", "stack": "axum"},
+            "shop-web": {
+                "repo": "shop-web",
+                "root": "frontend",
+                "stack": "spa",
+                "client": "src/lib/api.ts",
+                "base": "shop-api",
+                "base_prefix": "/api/v1"
+            }
+        },
+        "env": {},
+        "clients": {
+            "billing-svc:src/client.rs": "shop-api"
+        },
+        "external": [
+            "billing-svc:src/scrapers/**"
+        ]
+    });
+    fs::write(
+        fixture.db.parent().unwrap().join("system-graph.json"),
+        serde_json::to_string_pretty(&cfg).unwrap(),
+    )
+    .unwrap();
+
+    let missing_replies = call_mcp_sequence(
+        &fixture.db,
+        &[json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {
+                "name": "system_graph",
+                "arguments": {"query": "POST /api/internal/invoices", "direction": "callers"}
+            }
+        })],
+    );
+    assert_eq!(missing_replies[0]["result"]["isError"], false);
+    assert!(
+        missing_replies[0]["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("iron memory graph refresh")
+    );
+
+    let (first_refresh, _) = fixture.call(&["memory", "graph", "refresh"]);
+    assert_eq!(first_refresh["scanned"], 3);
+    assert_eq!(first_refresh["skipped"], 0);
+    assert_eq!(first_refresh["endpoints"], 2);
+    assert_eq!(first_refresh["edges"], 2);
+    assert_eq!(first_refresh["fog"], 1);
+
+    let short_sha = &api_sha[..7];
+    let who_inv = run_iron_text(
+        &fixture.db,
+        &[
+            "memory",
+            "graph",
+            "who-calls",
+            "POST /api/internal/invoices",
+            "--max-bytes",
+            "1200",
+        ],
+    );
+    assert!(who_inv.len() <= 1200);
+    let expected_inv = format!(
+        "POST /api/internal/invoices <- shop-api backend/src/api.rs:4@{short_sha} (create_invoice, full)\n  <- billing-svc src/client.rs:4 [configured] — issue: Emit invoice in shop-api.\n"
+    );
+    assert_eq!(who_inv, expected_inv);
+
+    let who_sales = run_iron_text(
+        &fixture.db,
+        &[
+            "memory",
+            "graph",
+            "who-calls",
+            "GET /api/v1/sales",
+            "--max-bytes",
+            "1200",
+        ],
+    );
+    assert!(who_sales.len() <= 1200);
+    assert!(who_sales.contains("1 files in pages: sales"), "{who_sales}");
+    assert!(who_sales.contains("[configured]"), "{who_sales}");
+
+    let abs_client = repos_root.join("billing-svc/src/client.rs");
+    let impact_txt = run_iron_text(
+        &fixture.db,
+        &[
+            "memory",
+            "graph",
+            "impact",
+            "--file",
+            abs_client.to_str().unwrap(),
+        ],
+    );
+    assert!(impact_txt.contains("POST /api/internal/invoices -> shop-api"), "{impact_txt}");
+    assert!(impact_txt.contains("GET /api/v1/does-not-exist -> [fog]"), "{impact_txt}");
+
+    let fog_txt = run_iron_text(&fixture.db, &["memory", "graph", "fog"]);
+    assert!(fog_txt.contains("fog: 1 unresolved"), "{fog_txt}");
+    assert!(fog_txt.contains("/api/v1/does-not-exist"), "{fog_txt}");
+    assert!(!fog_txt.contains("vendor.rs"), "{fog_txt}");
+
+    let (second_refresh, _) = fixture.call(&["memory", "graph", "refresh"]);
+    assert_eq!(second_refresh["scanned"], 0);
+    assert_eq!(second_refresh["skipped"], 3);
+
+    fs::write(
+        repos_root.join("shop-api/backend/src/extra.rs"),
+        "pub fn extra() -> Router { Router::new().route(\"/api/v1/ping\", get(ping)) }\n",
+    )
+    .unwrap();
+    git_in(&repos_root.join("shop-api"), &["add", "."]);
+    git_in(&repos_root.join("shop-api"), &["commit", "-q", "-m", "add ping"]);
+
+    let (third_refresh, _) = fixture.call(&["memory", "graph", "refresh"]);
+    assert_eq!(third_refresh["scanned"], 1);
+    assert_eq!(third_refresh["skipped"], 2);
+    assert_eq!(third_refresh["endpoints"], 3);
+
+    let who_ping = run_iron_text(&fixture.db, &["memory", "graph", "who-calls", "/api/v1/ping"]);
+    assert!(who_ping.contains("GET /api/v1/ping <- shop-api backend/src/extra.rs:1@"), "{who_ping}");
+
+    let mcp_replies = call_mcp_sequence(
+        &fixture.db,
+        &[
+            json!({
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": {
+                    "name": "system_graph",
+                    "arguments": {"query": "POST /api/internal/invoices", "direction": "callers"}
+                }
+            }),
+            json!({
+                "jsonrpc": "2.0",
+                "id": 4,
+                "method": "tools/call",
+                "params": {
+                    "name": "system_graph",
+                    "arguments": {"query": "billing-svc", "direction": "callees"}
+                }
+            }),
+            json!({
+                "jsonrpc": "2.0",
+                "id": 5,
+                "method": "tools/call",
+                "params": {
+                    "name": "system_graph",
+                    "arguments": {"query": "src/client.rs", "direction": "impact", "repo": "billing-svc"}
+                }
+            }),
+        ],
+    );
+    assert_eq!(mcp_replies[0]["result"]["isError"], false);
+    assert!(
+        mcp_replies[0]["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("billing-svc src/client.rs:4")
+    );
+    assert!(
+        mcp_replies[1]["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("POST /api/internal/invoices -> shop-api")
+    );
+    assert!(
+        mcp_replies[2]["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("makes 2 call(s) from src/client.rs")
+    );
 }
