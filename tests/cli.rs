@@ -2172,7 +2172,7 @@ fn file_recall_resolves_a_memory_path_written_under_another_machines_home() {
     fixture.import();
     let foreign_path = "/home/other-user/.claude/memory/projects/alpha/decision.md";
     let out = Command::new(env!("CARGO_BIN_EXE_iron"))
-        .env(iron_suite::intelligence::CLAUDE_CONFIG_DIR_ENV, &fixture.root)
+        .env(iron_stack::intelligence::CLAUDE_CONFIG_DIR_ENV, &fixture.root)
         .arg("--db")
         .arg(&fixture.db)
         .args(["memory", "recall", "--path", foreign_path, "--session", "claude-remote"])
