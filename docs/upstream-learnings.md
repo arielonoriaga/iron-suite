@@ -60,7 +60,7 @@ The pinned source contains import tests for byte-preserving round trips, replay,
 
 The upstream compression benchmark measures four small text fixtures using a local heuristic that takes the greater of a word count and rounded characters divided by four. It does not measure provider token usage, retrieval usefulness, or billed tokens. The pinned commit revises its advertised reduction floor; neither that floor nor a byte reduction should be reused as an Iron savings claim. See [benchmark](https://github.com/JuliusBrussee/cavemem/blob/cd470f2386b10bbc8d6fafd7a94832593d5e036e/evals/src/bench.ts) and [estimator](https://github.com/JuliusBrussee/cavemem/blob/cd470f2386b10bbc8d6fafd7a94832593d5e036e/packages/compress/src/count.ts).
 
-Iron's independent fixtures in `eval/` instead measure expected-source coverage within actual byte budgets, process latency, and a labelled full-file baseline. They contain no historical source bodies. Answer correctness, current authority, peak RSS, and real model-token savings require separate evidence. The 40 historical queries were fixed before consulting any Iron search output; the ten fictional edge cases remain a separate diagnostic suite.
+Iron's independent fixtures in `eval/` instead measure expected-source coverage within actual byte budgets, process latency, and a labelled full-file baseline. They contain no historical source bodies. Answer correctness, current authority, peak RSS, and real model-token savings require separate evidence. A private 40-question historical set, fixed before consulting any Iron search output, is kept with its source corpus; the ten fictional edge cases ship as the public diagnostic suite.
 
 ## Attribution and scope
 

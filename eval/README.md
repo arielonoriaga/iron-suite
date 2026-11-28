@@ -1,8 +1,6 @@
 # Independent Iron Memory evaluation
 
-The suite has 40 historical source-retrieval questions and ten separate fictional edge cases. The historical set was prepared by reading the supplied copied Markdown corpus before running or inspecting Iron search results. It contains 20 calibration cases and 20 held-out cases with distinct expected source files. Questions include exact technical identifiers, natural paraphrases, English, and Spanish. Queries, generic rationales, relative paths, byte lengths, and hashes are retained; historical source bodies and personal details are not copied into the fixtures.
-
-Use the calibration cases to guide implementation. Freeze the implementation before the first held-out run, keep every result, and do not rewrite held-out questions to match its behavior. If a judged source is genuinely wrong, record that adjudication independently and version the fixture rather than silently replacing a failed case. The current manifest is the preparation freeze, not an assertion that every future memory snapshot remains identical.
+The public suite has ten fictional edge cases (`synthetic.jsonl`, the runner default). A 40-question historical source-retrieval set was prepared against the author's private Markdown corpus; it lives with that corpus and is not shipped, because its queries and paths describe a personal setup. To build your own, write questions against a frozen copy of your corpus before looking at Iron's results, split them into calibration and held-out cases, and keep the held-out set frozen.
 
 The synthetic suite tests same-marker cross-project isolation, global inclusion versus strict scope, explicit no-answer cases, privacy exclusion, obsolete notes, and two conflicting reports. It has no real source content. Its calibration/held-out labels organize diagnostic runs; paired fictional topics mean it is not an independent statistical hold-out set. Stale and contradiction cases measure whether relevant source evidence is found, not whether the tool correctly decides authority or freshness. File-update/deletion refresh invariants belong in the implementation's integration tests.
 
@@ -29,7 +27,7 @@ Repeat with `--split heldout` and a different fresh index/report after freezing 
 
 The explicit root must contain the original relative layout (`memory/`, `agent-memory/`, and/or `projects/*/memory/`). Project keys in the cases are exact directory names, including case. All source reads are through the caller-supplied root. Index and report paths must be separate from the corpus, binary, fixture files, and supplied Cavemem database. A supplied source database must exist. Prefer an offline copy so unrelated live capture does not invalidate source-stability checks.
 
-The runner automatically loads `<case-stem>-sources.json` beside the JSONL fixture. It refuses modified fixture bytes and source-hash drift. `--allow-source-drift` allows a deliberate comparison against a changed source snapshot and labels that drift; it never allows modified fixture bytes to bypass the manifest. The historical manifest pins the 40 judged source files and their eight available ancestor indexes, not every distractor in the complete corpus.
+The runner automatically loads `<case-stem>-sources.json` beside the JSONL fixture. It refuses modified fixture bytes and source-hash drift. `--allow-source-drift` allows a deliberate comparison against a changed source snapshot and labels that drift; it never allows modified fixture bytes to bypass the manifest. A source manifest pins the judged source files and their available ancestor indexes, not every distractor in the corpus.
 
 ```sh
 python3 eval/runner.py run \
@@ -57,7 +55,7 @@ iron --db INDEX memory search QUERY [--project KEY] [--strict-project] --max-byt
 Import must return JSON with integer `inserted`, `updated`, `unchanged`, and `removed` counters. Two consecutive imports are measured. The second import's inserted, updated, and removed counts must be zero; complete stats equality is also reported. Search must return a JSON object containing `results` and a boolean `truncated`; each hit must provide string `id`, `source_path`, `project`, `snippet`, and `source_type` fields.
 
 - **Payload bytes:** actual stdout length, including UTF-8 encoding and the final newline. Invalid UTF-8/JSON, oversized output, malformed hits, missing envelope fields, limit overflow, or project-scope leakage make that measurement invalid and give it zero answerable-source recall.
-- **Source recall at budget:** unique expected source paths found with nonempty snippets divided by all expected source paths. Canonical file aliases count once. A source hit is not proof that its snippet answers the question. The historical set is source-level relevance evaluation; source recall is not semantic answer accuracy.
+- **Source recall at budget:** unique expected source paths found with nonempty snippets divided by all expected source paths. Canonical file aliases count once. A source hit is not proof that its snippet answers the question. This is source-level relevance evaluation; source recall is not semantic answer accuracy.
 - **No-match accuracy:** a valid, untruncated response with an empty result array for a no-answer case. An empty truncated payload cannot establish absence. Retrieval misses and false positive no-answer results remain visible without being hidden behind process exit success.
 - **Latency:** wall time around each fresh CLI subprocess, including process launch and JSON output. Jobs are deterministically shuffled across budgets and repetitions. Filesystem caches are uncontrolled; no cold-cache claim is made. P50 and P95 are nearest-rank percentiles. Baseline reads occur in Python, so their latency is descriptive rather than an equal-process comparison.
 - **Import and identity:** first/replay wall times, raw count reports, stats, binary SHA-256 and size, and fixture SHA-256. Selected source hashes are checked again after the run. The supplied Cavemem main database and WAL, if present, are fingerprinted before and after; a change can also mean an external writer was active.
@@ -74,13 +72,12 @@ Each file is represented in a labelled JSON payload with its relative path, role
 
 This is a **known-source full-file read baseline**, not a model-token baseline, not a search-engine benchmark, and not evidence of billing savings. It intentionally gives file reading the correct destination; it does not include wrong turns, repeated reading, or an LLM deciding relevance. Iron's brief snippets and the baseline's complete files carry different amounts of context. Compare byte cost alongside source coverage and inspect answer usefulness separately before claiming a benefit.
 
-The historical labels target Markdown only. Importing Cavemem supplies realistic additional records and count evidence, but these labels do not measure summary/observation relevance. Peak RSS, sustained MCP costs, cold startup, source-refresh correctness, and live answer quality require the root verifier's separate measurements.
+Labels target Markdown only. Importing Cavemem supplies realistic additional records and count evidence, but these labels do not measure summary/observation relevance. Peak RSS, sustained MCP costs, cold startup, source-refresh correctness, and live answer quality require the root verifier's separate measurements.
 
 ## Frozen identifiers
 
 | Suite | Cases | SHA-256 |
 | --- | --- | --- |
-| `historical.jsonl` | 40 | `43912f40109eb61c9f83190cc24ab0b3f8173106d0c4388e78bcf072235704e6` |
 | `synthetic.jsonl` | 10 | `e1b8f4fa2950f2f66b7ad612ffeb24ad16cee51f5e5745982fbe7e40c2fb9554` |
 
 No Iron search result was used to select or reword these questions. Preparation-time validation confirms source existence and hashes; actual retrieval measurements are intentionally left to the root verifier.

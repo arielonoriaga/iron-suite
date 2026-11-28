@@ -368,7 +368,7 @@ def run(args, cases, initial_manifest):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("mode", choices=["validate", "run"])
-    parser.add_argument("--cases", type=Path, default=Path(__file__).with_name("historical.jsonl"))
+    parser.add_argument("--cases", type=Path, default=Path(__file__).with_name("synthetic.jsonl"))
     parser.add_argument("--manifest", type=Path)
     parser.add_argument("--claude-root", type=Path, required=True)
     parser.add_argument("--cavemem-db", type=Path)

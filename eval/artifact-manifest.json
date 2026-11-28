@@ -7,24 +7,16 @@
       "bytes": 22
     },
     "eval/README.md": {
-      "sha256": "47c6f3fdd51f6beff511fb3221ca53da892e9c0686c8ecd69b45bd4157947c80",
-      "bytes": 9566
-    },
-    "eval/historical-sources.json": {
-      "sha256": "cd3640615021f72f729ea4c9d09811fe29ba5c9b274c18dd3885981b363c7078",
-      "bytes": 8978
-    },
-    "eval/historical.jsonl": {
-      "sha256": "ccbb2cd2fc9d61e827a8663fe353e83df0c1b33f448076619a27540403cefcac",
-      "bytes": 14612
+      "sha256": "e68a00e2a46af6a978ab2184ab0f3b109c3655491dcd56396daf43bd873858bb",
+      "bytes": 8875
     },
     "eval/preparation-evidence.json": {
-      "sha256": "7076ac456d68bd0f897bbd499ff727e93b7c87a841385e903fdc941516205b2b",
-      "bytes": 1377
+      "sha256": "17f20576113035dc4bd6155c688fe44088bf0d36b0f2a0a9a486c3644e9c9d65",
+      "bytes": 1042
     },
     "eval/runner.py": {
-      "sha256": "dbbf972f43fba572f818f0dab7c9f73657175bff6c4a77418447d1dc7c494c47",
-      "bytes": 19135
+      "sha256": "6665ac7a8f352de4941153fb6bbb982cb1287bcd5fa23d9ad492a984e9e3e918",
+      "bytes": 19134
     },
     "eval/synthetic-corpus/memory/MEMORY.md": {
       "sha256": "7bbf948333e2f2026e28435675ca9d3014d9e934487bce429f9074acc9ad1487",
@@ -83,8 +75,8 @@
       "bytes": 11136
     },
     "docs/upstream-learnings.md": {
-      "sha256": "d2e778888fc7877697250a7cf50797c8b577072301913877b1776ed557e27816",
-      "bytes": 14284
+      "sha256": "a39e43858a09a52db51737e58f48f5ed6fbabedf12122219b32e69c979e08b3a",
+      "bytes": 14324
     }
   }
 }
