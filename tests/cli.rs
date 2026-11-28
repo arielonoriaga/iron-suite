@@ -1329,3 +1329,195 @@ impl StripeClient {
         "who_brands={who_brands}"
     );
 }
+
+#[test]
+fn system_graph_phase2_hono_nginx_web_memory_and_safe_suggest() {
+    let fixture = Fixture::new();
+    let repos_root = fixture.root.join("repos");
+
+    let mgmt_dir = repos_root.join("huggian-management");
+    let landings_dir = repos_root.join("huggian-landings");
+    let vps_dir = repos_root.join("host-vps");
+
+    init_git_repo(
+        &mgmt_dir,
+        &[
+            (
+                "services/core/src/server.ts",
+                r#"
+import { Hono } from 'hono';
+import { createPublicRoutes } from './routes/public.routes';
+export function buildApp() {
+  const app = new Hono();
+  const pub = createPublicRoutes();
+  app.route('/v1', pub);
+  app.route('/api/v1', pub);
+  return app;
+}
+"#,
+            ),
+            (
+                "services/core/src/routes/public.routes.ts",
+                r#"
+import { Hono } from 'hono';
+export function createPublicRoutes() {
+  const router = new Hono();
+  router.post('/public/signup', (c) => c.json({ ok: true }));
+  router.get('/catalog/v1/brands', (c) => c.json([]));
+  return router;
+}
+"#,
+            ),
+        ],
+    );
+    init_git_repo(
+        &landings_dir,
+        &[
+            (
+                "apps/huggian/src/pages/signup.astro",
+                r#"---
+const API_URL = import.meta.env.PUBLIC_API_URL ?? 'https://api.huggian.com';
+---
+<script>
+async function submit() {
+  await fetch(`${API_URL}/v1/public/signup`, { method: 'POST' });
+  await fetch('https://api.external-vendor.test/v1/ping');
+}
+</script>
+"#,
+            ),
+            (
+                "apps/huggian/src/pages/contact.astro",
+                r#"---
+---
+<script>
+async function send() {
+  await fetch('https://formsubmit.co/ajax/test', { method: 'POST' });
+}
+</script>
+"#,
+            ),
+        ],
+    );
+    init_git_repo(
+        &vps_dir,
+        &[(
+            "nginx/conf.d/huggian.conf",
+            r#"
+server {
+    listen 443 ssl;
+    server_name api.huggian.com;
+    location ~ ^/regex-only {
+        set $upstream huggian-core:3010;
+        proxy_pass http://$upstream;
+    }
+    location / {
+        set $upstream huggian-core:3010;
+        proxy_pass http://$upstream;
+    }
+}
+"#,
+        )],
+    );
+
+    fixture.call(&[
+        "memory",
+        "remember",
+        "--title",
+        "Public signup rate limit rule",
+        "--content",
+        "Enforced in `services/core/src/routes/public.routes.ts` for POST /v1/public/signup.",
+        "--project",
+        "huggian-management",
+        "--kind",
+        "decision",
+    ]);
+
+    let cfg_path = fixture.db.parent().unwrap().join("system-graph.json");
+    fs::write(
+        &cfg_path,
+        serde_json::to_string_pretty(&json!({
+            "repos_root": repos_root,
+            "services": {
+                "huggian-core": { "repo": "huggian-management", "root": "services/core", "stack": "hono", "entry": "src/server.ts" },
+                "landings": { "repo": "huggian-landings", "root": "apps/huggian", "stack": "web" },
+                "nginx": { "repo": "host-vps", "root": "nginx/conf.d", "stack": "nginx" }
+            },
+            "containers": {
+                "huggian-core": "huggian-core"
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    let (refreshed, _) = fixture.call(&["memory", "graph", "refresh"]);
+    assert_eq!(refreshed["endpoints"], 4);
+    assert_eq!(refreshed["edges"], 1);
+    assert_eq!(refreshed["fog"], 2);
+
+    let who = run_iron_text(
+        &fixture.db,
+        &["memory", "graph", "who-calls", "POST /v1/public/signup"],
+    );
+    assert!(who.contains("apps/huggian/src/pages/signup.astro"), "who={who}");
+    assert!(who.contains("mem: "), "who={who}");
+    assert!(who.contains("Public signup rate limit rule"), "who={who}");
+
+    let who_tight = run_iron_text(
+        &fixture.db,
+        &[
+            "memory",
+            "graph",
+            "who-calls",
+            "POST /v1/public/signup",
+            "--max-bytes",
+            "256",
+        ],
+    );
+    assert!(who_tight.len() <= 256, "len={}", who_tight.len());
+
+    let imp = run_iron_text(
+        &fixture.db,
+        &[
+            "memory",
+            "graph",
+            "impact",
+            "--file",
+            "apps/huggian/src/pages/signup.astro",
+            "--repo",
+            "huggian-landings",
+        ],
+    );
+    assert!(imp.contains("mem: "), "imp={imp}");
+    let imp_tight = run_iron_text(
+        &fixture.db,
+        &[
+            "memory",
+            "graph",
+            "impact",
+            "--file",
+            "apps/huggian/src/pages/signup.astro",
+            "--repo",
+            "huggian-landings",
+            "--max-bytes",
+            "256",
+        ],
+    );
+    assert!(imp_tight.len() <= 256, "len={}", imp_tight.len());
+
+    let (safe_res, _) = fixture.call(&["memory", "graph", "suggest", "--apply", "--safe"]);
+    assert_eq!(safe_res["safe"], true);
+    assert_eq!(safe_res["applied"], true);
+    assert_eq!(safe_res["rules_applied"], 1);
+    assert_eq!(safe_res["fog_before"], 2);
+    assert_eq!(safe_res["fog_after"], 1);
+    let log_text =
+        fs::read_to_string(fixture.db.parent().unwrap().join("graph-learning.jsonl")).unwrap();
+    assert!(log_text.contains("contact.astro"), "log={log_text}");
+    let who_after = run_iron_text(
+        &fixture.db,
+        &["memory", "graph", "who-calls", "POST /v1/public/signup"],
+    );
+    assert!(who_after.contains("apps/huggian/src/pages/signup.astro"));
+}

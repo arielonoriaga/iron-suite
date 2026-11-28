@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-pub const EXTRACTOR_VERSION: i64 = 2;
+pub const EXTRACTOR_VERSION: i64 = 3;
 pub const DEFAULT_MAX_BYTES: usize = 1200;
 pub const TOUCH_MAX_BYTES: usize = 300;
 
@@ -57,6 +57,15 @@ impl HttpMethod {
             _ => None,
         }
     }
+
+    pub fn parse_hono(raw: &str) -> Option<Self> {
+        match raw {
+            "all" => Some(Self::Any),
+            "head" => Some(Self::Head),
+            "options" => Some(Self::Options),
+            other => Self::parse_crud(other),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -64,6 +73,9 @@ impl HttpMethod {
 pub enum Stack {
     Axum,
     Spa,
+    Hono,
+    Nginx,
+    Web,
 }
 
 impl Stack {
@@ -71,6 +83,9 @@ impl Stack {
         match self {
             Self::Axum => "axum",
             Self::Spa => "spa",
+            Self::Hono => "hono",
+            Self::Nginx => "nginx",
+            Self::Web => "web",
         }
     }
 
@@ -78,6 +93,9 @@ impl Stack {
         match raw.trim().to_ascii_lowercase().as_str() {
             "axum" => Some(Self::Axum),
             "spa" => Some(Self::Spa),
+            "hono" => Some(Self::Hono),
+            "nginx" => Some(Self::Nginx),
+            "web" => Some(Self::Web),
             _ => None,
         }
     }
@@ -195,8 +213,24 @@ pub struct GraphConfig {
     pub clients: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub prefixes: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub containers: BTreeMap<String, String>,
     #[serde(default)]
     pub external: Vec<String>,
+}
+
+impl GraphConfig {
+    pub fn with_services(repos_root: PathBuf, services: BTreeMap<String, ServiceConfig>) -> Self {
+        Self {
+            repos_root,
+            services,
+            env: BTreeMap::new(),
+            clients: BTreeMap::new(),
+            prefixes: BTreeMap::new(),
+            containers: BTreeMap::new(),
+            external: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -275,9 +309,16 @@ mod tests {
         assert_eq!(HttpMethod::parse_crud("post"), Some(HttpMethod::Post));
         assert_eq!(HttpMethod::parse_crud("head"), None);
 
-        for stack in [Stack::Axum, Stack::Spa] {
+        for stack in [
+            Stack::Axum,
+            Stack::Spa,
+            Stack::Hono,
+            Stack::Nginx,
+            Stack::Web,
+        ] {
             assert_eq!(Stack::parse(stack.as_str()), Some(stack));
         }
+        assert_eq!(HttpMethod::parse_hono("all"), Some(HttpMethod::Any));
         for state in [PrefixState::Full, PrefixState::Resolved, PrefixState::Partial] {
             assert_eq!(PrefixState::parse(state.as_str()), Some(state));
         }

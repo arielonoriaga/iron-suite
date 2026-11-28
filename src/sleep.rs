@@ -6,6 +6,7 @@ use serde_json::{Value, json};
 
 use crate::aliases;
 use crate::drift;
+use crate::graph;
 use crate::intelligence::{Contradiction, build_review_queue, load_state, now_ms, save_state};
 use crate::linker;
 use crate::native::lock_native_writes;
@@ -216,7 +217,9 @@ pub fn run(db: &Path, repos_root: Option<&Path>) -> Result<Value> {
     build_review_queue(&store, &mut state)?;
     save_state(db, &state)?;
 
-    Ok(json!({
+    let graph_report = graph::nightly_maintenance(db);
+
+    let mut summary = json!({
         "sleep_ran_at": state.sleep_ran_at,
         "elapsed_ms": (now_ms() - started).max(0),
         "auto_links_built": auto_links_built,
@@ -227,7 +230,11 @@ pub fn run(db: &Path, repos_root: Option<&Path>) -> Result<Value> {
         "review_queue_len": state.review_queue.len(),
         "repos_audited": repo_audits,
         "needs_review_flags": state.needs_review.len(),
-    }))
+    });
+    if let Some(graph_val) = graph_report {
+        summary["graph"] = graph_val;
+    }
+    Ok(summary)
 }
 
 #[cfg(test)]
@@ -284,5 +291,80 @@ mod tests {
         let state = load_state(&db).unwrap();
         assert_eq!(state.contradictions.len(), 1);
         assert_eq!(state.review_queue[0].kind, "contradiction");
+        assert!(summary.get("graph").is_none());
+    }
+
+    #[test]
+    fn sleep_runs_graph_refresh_and_safe_suggest_and_survives_graph_errors() {
+        use std::fs;
+        use std::process::Command;
+
+        let tmp = TempDir::new().unwrap();
+        let db = tmp.path().join("memory.db");
+        let _store = Store::open(&db, true).unwrap();
+
+        let repos_root = tmp.path().join("repos");
+        let prov_repo = repos_root.join("core");
+        let cli_repo = repos_root.join("client");
+        fs::create_dir_all(prov_repo.join("src")).unwrap();
+        fs::create_dir_all(cli_repo.join("src")).unwrap();
+
+        fs::write(
+            prov_repo.join("src/main.rs"),
+            "fn app() -> Router { Router::new().route(\"/api/catalog/v1/brands\", get(list_brands)) }\n",
+        )
+        .unwrap();
+        fs::write(
+            cli_repo.join("src/client.rs"),
+            "async fn load(c: &reqwest::Client, base_url: &str) { let _ = c.get(format!(\"{base_url}/v1/brands\")).send().await; }\n",
+        )
+        .unwrap();
+
+        for repo in [&prov_repo, &cli_repo] {
+            let run_git = |args: &[&str]| {
+                assert!(Command::new("git").arg("-C").arg(repo).args(args).status().unwrap().success());
+            };
+            run_git(&["init", "-q"]);
+            run_git(&["config", "user.email", "t@t.local"]);
+            run_git(&["config", "user.name", "t"]);
+            run_git(&["add", "."]);
+            run_git(&["commit", "-q", "-m", "init"]);
+        }
+
+        let mut services = BTreeMap::new();
+        for (name, repo, entry) in [
+            ("core-api", "core", Some("src/main.rs")),
+            ("client-api", "client", None),
+        ] {
+            services.insert(
+                name.to_owned(),
+                graph::ServiceConfig {
+                    repo: repo.to_owned(),
+                    root: String::new(),
+                    stack: graph::Stack::Axum,
+                    entry: entry.map(str::to_owned),
+                    client: None,
+                    base: None,
+                    base_prefix: None,
+                },
+            );
+        }
+        graph::save_config(&db, &graph::GraphConfig::with_services(repos_root, services)).unwrap();
+        let cfg_path = graph::config_path(&db).unwrap();
+
+        let summary = run(&db, None).unwrap();
+        assert_eq!(summary["graph"]["ok"], true, "graph={}", summary["graph"]);
+        assert_eq!(summary["graph"]["edges"], 1, "graph={}", summary["graph"]);
+        assert_eq!(summary["graph"]["rules_applied"], 1, "graph={}", summary["graph"]);
+        assert_eq!(summary["graph"]["fog_before"], 1);
+        assert_eq!(summary["graph"]["fog_after"], 0);
+        let log = fs::read_to_string(tmp.path().join("graph-learning.jsonl")).unwrap();
+        assert!(log.contains("\"fog_before\":1"));
+        assert!(log.contains("\"fog_after\":0"));
+
+        fs::write(&cfg_path, "{ invalid json").unwrap();
+        let recovered = run(&db, None).unwrap();
+        assert_eq!(recovered["graph"]["ok"], false);
+        assert!(recovered["graph"]["error"].as_str().is_some());
     }
 }

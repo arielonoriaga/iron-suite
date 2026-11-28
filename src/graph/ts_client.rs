@@ -5,10 +5,10 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 
 use super::scan::{
-    LineIndex, extract_why_ts, find_matching_delim, for_each_masked_ident, is_ident_byte,
-    is_test_file, is_ts_source, join_paths, matches_external_glob, normalize_path, parallel_map,
-    qualify_under_root, read_ident, skip_angle_generics, skip_ascii_ws, sort_extracted_calls,
-    split_top_level_args, ts_code_mask, under_root,
+    LineIndex, extract_ts_area, extract_why_ts, find_matching_delim, for_each_masked_ident,
+    is_ident_byte, is_test_file, is_ts_source, join_paths, matches_external_glob, normalize_path,
+    parallel_map, qualify_under_root, read_ident, skip_angle_generics, skip_ascii_ws,
+    sort_extracted_calls, split_top_level_args, ts_code_mask, under_root, unquote_ts_string,
 };
 use super::types::{ExtractedCall, HttpMethod};
 
@@ -21,6 +21,11 @@ static METHOD_PROP_RE: LazyLock<Regex> = LazyLock::new(|| {
 
 static API_OBJECT_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\b(?:export\s+)?const\s+api\s*(?::[^=]+)?=\s*\{").expect("valid api object regex")
+});
+
+static LOCAL_PATH_CONST_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"\b(?:export\s+)?const\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*(?::[^=]+)?=\s*["'`](/[^"'`\s]*)["'`]"#)
+        .expect("valid local path const regex")
 });
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -82,7 +87,7 @@ pub fn extract_files_with_wrappers(
             return Vec::new();
         };
         let external = matches_external_glob(spec.external_globs, spec.repo, rel);
-        let area = extract_area(rel, spec.service_root);
+        let area = extract_ts_area(rel, spec.service_root);
         extract_calls_from_file(
             rel,
             &src,
@@ -283,6 +288,7 @@ pub fn extract_calls_from_file(
 ) -> Vec<ExtractedCall> {
     let mask = ts_code_mask(source);
     let lines = LineIndex::new(source);
+    let local_paths = collect_local_path_consts(source, &mask);
     let ctx = FileScanCtx {
         rel_file,
         source,
@@ -297,21 +303,115 @@ pub fn extract_calls_from_file(
     let bytes = source.as_bytes();
     let mut out = Vec::new();
     let mut i = 0usize;
-    while i + 4 < bytes.len() {
-        let at_api = mask[i]
-            && bytes[i..].starts_with(b"api.")
+    while i + 3 < bytes.len() {
+        let is_api_ident = mask[i]
+            && bytes[i..].starts_with(b"api")
             && (i == 0 || (!is_ident_byte(bytes[i - 1]) && bytes[i - 1] != b'.'));
-        if !at_api {
+        if !is_api_ident {
             i += 1;
             continue;
         }
-        let (next_i, maybe_call) = try_parse_api_call(&ctx, i);
-        if let Some(call) = maybe_call {
-            out.push(call);
+        if bytes.get(i + 3) == Some(&b'.') && mask[i + 3] {
+            let (next_i, maybe_call) = try_parse_api_call(&ctx, i);
+            if let Some(call) = maybe_call {
+                out.push(call);
+            }
+            i = next_i.max(i + 1);
+            continue;
         }
-        i = next_i.max(i + 1);
+        if !bytes.get(i + 3).copied().is_some_and(is_ident_byte)
+            && !is_ts_fn_declaration_at(source, i)
+            && let Some((next_i, maybe_call)) = try_parse_direct_api_fn_call(&ctx, i, &local_paths)
+        {
+            if let Some(call) = maybe_call {
+                out.push(call);
+            }
+            i = next_i.max(i + 1);
+            continue;
+        }
+        i += 1;
     }
     out
+}
+
+fn collect_local_path_consts(source: &str, mask: &[bool]) -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    for caps in LOCAL_PATH_CONST_RE.captures_iter(source) {
+        let m0 = caps.get(0).unwrap();
+        if mask[m0.start()] {
+            map.insert(caps[1].to_owned(), caps[2].to_owned());
+        }
+    }
+    map
+}
+
+fn is_ts_fn_declaration_at(source: &str, pos: usize) -> bool {
+    const KW_LEN: usize = 8;
+    let prefix = source[..pos].trim_end();
+    prefix.ends_with("function")
+        && (prefix.len() == KW_LEN || !is_ident_byte(prefix.as_bytes()[prefix.len() - KW_LEN - 1]))
+}
+
+fn try_parse_direct_api_fn_call(
+    ctx: &FileScanCtx<'_>,
+    start: usize,
+    local_paths: &HashMap<String, String>,
+) -> Option<(usize, Option<ExtractedCall>)> {
+    let bytes = ctx.source.as_bytes();
+    let open_paren = skip_ts_generics_to_paren(bytes, ctx.mask, start + 3, bytes.len())?;
+    let close_paren = find_matching_delim(bytes, ctx.mask, open_paren, b'(', b')')?;
+    let args = split_top_level_args(ctx.source, ctx.mask, 0, open_paren + 1, close_paren);
+    let raw_lit = args
+        .first()
+        .and_then(|(_, arg0)| extract_ts_path_with_consts(arg0, local_paths));
+    let call = raw_lit.and_then(|lit| {
+        let full_raw = apply_base_prefix(&lit, ctx.base_prefix);
+        let path_norm = normalize_path(&full_raw);
+        if path_norm.is_empty() {
+            return None;
+        }
+        let method = args
+            .get(1)
+            .and_then(|(_, opts)| METHOD_PROP_RE.captures(opts))
+            .and_then(|c| HttpMethod::parse(&c[1]))
+            .unwrap_or(HttpMethod::Get);
+        Some(build_ts_call(
+            ctx,
+            start,
+            method,
+            full_raw,
+            path_norm,
+            "api".to_owned(),
+        ))
+    });
+    Some((open_paren + 1, call))
+}
+
+fn extract_ts_path_with_consts(
+    arg: &str,
+    local_paths: &HashMap<String, String>,
+) -> Option<String> {
+    let inner = unquote_ts_string(arg)?;
+    if let Some(rest) = inner.strip_prefix("${")
+        && let Some(close) = rest.find('}')
+    {
+        let var_name = rest[..close].trim();
+        let suffix = &rest[close + 1..];
+        if let Some(prefix) = local_paths.get(var_name) {
+            if suffix.is_empty() || suffix.starts_with('?') {
+                return Some(prefix.clone());
+            }
+            if suffix.starts_with('/') {
+                return Some(join_paths(prefix, suffix));
+            }
+        }
+        if suffix.starts_with('/') {
+            return Some(suffix.to_owned());
+        }
+        return None;
+    }
+    (inner.starts_with('/') || inner.starts_with("http://") || inner.starts_with("https://"))
+        .then_some(inner)
 }
 
 fn try_parse_api_call(ctx: &FileScanCtx<'_>, start: usize) -> (usize, Option<ExtractedCall>) {
@@ -425,18 +525,8 @@ fn parse_direct_ts_method(name: &str) -> Option<HttpMethod> {
 }
 
 fn extract_ts_path_literal(arg: &str) -> Option<String> {
-    let trimmed = arg.trim();
-    if trimmed.len() < 2 {
-        return None;
-    }
-    let (first, last) = (trimmed.as_bytes()[0], trimmed.as_bytes()[trimmed.len() - 1]);
-    let quoted = (first == b'"' && last == b'"')
-        || (first == b'\'' && last == b'\'')
-        || (first == b'`' && last == b'`');
-    if !quoted {
-        return None;
-    }
-    let stripped = strip_ts_base_expr(&trimmed[1..trimmed.len() - 1]);
+    let inner = unquote_ts_string(arg)?;
+    let stripped = strip_ts_base_expr(&inner);
     (stripped.starts_with('/') || stripped.starts_with("http://") || stripped.starts_with("https://"))
         .then(|| stripped.to_owned())
 }
@@ -462,27 +552,6 @@ fn apply_base_prefix(raw: &str, base_prefix: Option<&str>) -> String {
         return raw.to_owned();
     }
     join_paths(prefix, raw)
-}
-
-fn extract_area(rel_file: &str, service_root: &str) -> String {
-    let in_root = if service_root.is_empty() {
-        rel_file
-    } else {
-        rel_file
-            .strip_prefix(&format!("{service_root}/"))
-            .unwrap_or(rel_file)
-    };
-    let Some(after_pages) = in_root.strip_prefix("src/pages/") else {
-        return String::new();
-    };
-    if let Some((dir, _)) = after_pages.split_once('/') {
-        dir.to_owned()
-    } else {
-        after_pages
-            .rsplit_once('.')
-            .map(|(stem, _)| stem.to_owned())
-            .unwrap_or_else(|| after_pages.to_owned())
-    }
 }
 
 #[cfg(test)]
@@ -543,7 +612,7 @@ export async function loadSales(id: string) {
             &wrappers,
             "ez-commerce-api",
             Some("/api/v1"),
-            &extract_area("frontend/src/pages/sales/SalesPage.tsx", "frontend"),
+            &extract_ts_area("frontend/src/pages/sales/SalesPage.tsx", "frontend"),
             false,
         );
         let pairs: Vec<(HttpMethod, &str, &str)> = calls
@@ -560,5 +629,39 @@ export async function loadSales(id: string) {
             ]
         );
         assert!(calls[0].why.starts_with("loadSales: Load recent sales"));
+    }
+
+    #[test]
+    fn extracts_direct_generic_api_fn_calls_with_local_base_const() {
+        let admin_ts = r#"
+import { api } from '../stores/auth';
+const BASE = '/admin/growth';
+
+export const listClients = () => api<unknown>(`${BASE}/clients`);
+export const createClient = (body: unknown) =>
+  api<unknown>(`${BASE}/clients`, { method: 'POST', body: JSON.stringify(body) });
+export const getCoverage = () => api<unknown>('/admin/revenue/coverage');
+"#;
+        let calls = extract_calls_from_file(
+            "packages/admin-web/src/lib/growth-api.ts",
+            admin_ts,
+            &HashMap::new(),
+            "huggian-core",
+            None,
+            "",
+            false,
+        );
+        let pairs: Vec<(HttpMethod, &str)> = calls
+            .iter()
+            .map(|c| (c.method, c.path_norm.as_str()))
+            .collect();
+        assert_eq!(
+            pairs,
+            vec![
+                (HttpMethod::Get, "/admin/growth/clients"),
+                (HttpMethod::Post, "/admin/growth/clients"),
+                (HttpMethod::Get, "/admin/revenue/coverage"),
+            ]
+        );
     }
 }

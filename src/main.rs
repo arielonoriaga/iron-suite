@@ -183,6 +183,8 @@ enum GraphCommand {
     Suggest {
         #[arg(long)]
         apply: bool,
+        #[arg(long)]
+        safe: bool,
     },
     Changes {
         #[arg(long, default_value_t = 7)]
@@ -266,7 +268,9 @@ fn run_graph(db: &std::path::Path, command: GraphCommand) -> Result<()> {
                 report.impact_text
             }
         }
-        GraphCommand::Suggest { apply } => output::encode(&graph::run_suggest(db, apply)?)?,
+        GraphCommand::Suggest { apply, safe } => {
+            output::encode(&graph::run_suggest(db, apply, safe)?)?
+        }
         GraphCommand::Changes { since, opts } => graph::query_changes(
             db,
             since,

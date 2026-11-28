@@ -12,6 +12,7 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension, Transaction, Transactio
 
 use crate::aliases::ensure_private_dir;
 
+use super::nginx::NginxRoute;
 use super::scan::matches_external_glob;
 use super::types::{
     Confidence, ExtractedCall, ExtractedEndpoint, HttpMethod, PrefixState, ServiceConfig, Stack,
@@ -519,12 +520,23 @@ impl GraphStore {
         load_all_compose_env_conn(&self.conn, active_repos)
     }
 
+    pub fn load_all_nginx_routes(
+        &self,
+        active_services: &HashSet<String>,
+    ) -> Result<Vec<NginxRoute>> {
+        load_all_nginx_routes_conn(&self.conn, active_services)
+    }
+
     pub fn load_all_services(&self) -> Result<Vec<ServiceRow>> {
         load_all_services_conn(&self.conn)
     }
 
     pub fn load_all_endpoints(&self) -> Result<Vec<EndpointRow>> {
         load_all_endpoints_conn(&self.conn)
+    }
+
+    pub fn load_all_calls(&self) -> Result<Vec<CallRow>> {
+        load_all_calls_conn(&self.conn)
     }
 
     pub fn find_endpoints(
@@ -866,7 +878,13 @@ impl GraphWriteTx<'_> {
     }
 
     pub fn delete_service_meta(&self, service: &str) -> Result<()> {
-        for prefix in ["axum_ctx:", "ts_wrappers:", "svc_cfg_hash:"] {
+        for prefix in [
+            "axum_ctx:",
+            "ts_wrappers:",
+            "web_exports:",
+            "nginx_routes:",
+            "svc_cfg_hash:",
+        ] {
             let key = format!("{prefix}{service}");
             self.tx
                 .execute("DELETE FROM graph_meta WHERE key = ?1", params![key])?;
@@ -974,6 +992,13 @@ impl GraphWriteTx<'_> {
         active_repos: &HashSet<String>,
     ) -> Result<BTreeMap<String, String>> {
         load_all_compose_env_conn(&self.tx, active_repos)
+    }
+
+    pub fn load_all_nginx_routes(
+        &self,
+        active_services: &HashSet<String>,
+    ) -> Result<Vec<NginxRoute>> {
+        load_all_nginx_routes_conn(&self.tx, active_services)
     }
 
     pub fn load_all_services(&self) -> Result<Vec<ServiceRow>> {
@@ -1331,6 +1356,24 @@ fn load_all_compose_env_conn(
         }
     }
     Ok(merged)
+}
+
+fn load_all_nginx_routes_conn(
+    conn: &Connection,
+    active_services: &HashSet<String>,
+) -> Result<Vec<NginxRoute>> {
+    let mut routes = Vec::new();
+    let mut names: Vec<&String> = active_services.iter().collect();
+    names.sort();
+    for svc in names {
+        let key = format!("nginx_routes:{svc}");
+        if let Some(raw) = get_meta_conn(conn, &key)?
+            && let Ok(parsed) = serde_json::from_str::<Vec<NginxRoute>>(&raw)
+        {
+            routes.extend(parsed);
+        }
+    }
+    Ok(routes)
 }
 
 fn load_all_services_conn(conn: &Connection) -> Result<Vec<ServiceRow>> {

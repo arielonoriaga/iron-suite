@@ -387,7 +387,7 @@ pub fn link_session_co_used(db: &Path, new_id: &str, prior_ids: &[String]) -> Re
     store.link_co_used_against(new_id, prior_ids)
 }
 
-fn is_superseded(store: &Store, id: &str) -> bool {
+pub(crate) fn is_superseded(store: &Store, id: &str) -> bool {
     store
         .record_signal(id)
         .ok()

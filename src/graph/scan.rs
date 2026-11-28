@@ -10,7 +10,7 @@ use crate::output;
 
 const MAX_WHY_BYTES: usize = 80;
 pub(crate) const DYNAMIC_SEG: &str = "{}";
-const ROOT_SLASH: &str = "/";
+pub(crate) const ROOT_SLASH: &str = "/";
 const CFG_TEST_NAME: &str = "test";
 const STAGE_NORMAL: &str = "0";
 const HASH_OBJECT_CHUNK: usize = 256;
@@ -20,14 +20,29 @@ const TEST_DIRS: &[&str] = &[
     "tests",
     "test",
     "test_support",
+    "test-support",
     "__tests__",
     "__mocks__",
     "benches",
     "e2e",
 ];
 const RUST_TEST_STEMS: &[&str] = &["tests", "test", "test_support"];
-const TS_JS_EXTS: &[&str] = &[".tsx", ".ts", ".jsx", ".js", ".mts", ".cts"];
-const TS_SCAN_EXTS: &[&str] = &[".ts", ".tsx", ".js", ".jsx"];
+const TS_JS_EXTS: &[&str] = &[".tsx", ".ts", ".jsx", ".js", ".mts", ".cts", ".mjs"];
+const TS_SCAN_EXTS: &[&str] = &[".ts", ".tsx", ".js", ".jsx", ".mts", ".mjs"];
+const WEB_SCAN_EXTS: &[&str] = &[".astro", ".ts", ".tsx", ".js", ".jsx", ".mts", ".mjs"];
+const NGINX_EXT: &str = ".conf";
+const TS_IMPORT_EXTS: &[&str] = &[
+    "",
+    ".ts",
+    ".tsx",
+    ".mts",
+    ".js",
+    ".jsx",
+    ".mjs",
+    "/index.ts",
+    "/index.tsx",
+    "/index.js",
+];
 
 pub struct LineIndex {
     line_starts: Vec<usize>,
@@ -298,13 +313,130 @@ pub fn is_ts_source(rel: &str) -> bool {
     TS_SCAN_EXTS.iter().any(|ext| rel.ends_with(ext))
 }
 
+pub fn is_web_source(rel: &str) -> bool {
+    WEB_SCAN_EXTS.iter().any(|ext| rel.ends_with(ext))
+}
+
+pub fn is_nginx_conf(rel: &str) -> bool {
+    rel.ends_with(NGINX_EXT)
+}
+
 pub fn is_rust_source(rel: &str) -> bool {
     rel.ends_with(".rs")
+}
+
+pub fn unquote_ts_string(expr: &str) -> Option<String> {
+    let trimmed = expr.trim();
+    if trimmed.len() < 2 {
+        return None;
+    }
+    let bytes = trimmed.as_bytes();
+    let (first, last) = (bytes[0], bytes[trimmed.len() - 1]);
+    let matched = (first == b'"' && last == b'"')
+        || (first == b'\'' && last == b'\'')
+        || (first == b'`' && last == b'`');
+    matched.then(|| trimmed[1..trimmed.len() - 1].to_owned())
+}
+
+pub fn extract_url_host(raw: &str) -> Option<String> {
+    let idx = raw.find("://")?;
+    let host_port = raw[idx + 3..].split(['/', '?', '#']).next()?;
+    let host = host_port.split(':').next()?.trim();
+    (!host.is_empty()).then(|| host.to_ascii_lowercase())
+}
+
+pub fn extract_ts_area(rel_file: &str, service_root: &str) -> String {
+    let in_root = if service_root.is_empty() {
+        rel_file
+    } else {
+        rel_file
+            .strip_prefix(&format!("{service_root}/"))
+            .unwrap_or(rel_file)
+    };
+    let Some(after_pages) = in_root.strip_prefix("src/pages/") else {
+        return String::new();
+    };
+    if let Some((dir, _)) = after_pages.split_once('/') {
+        dir.to_owned()
+    } else {
+        after_pages
+            .rsplit_once('.')
+            .map(|(stem, _)| stem.to_owned())
+            .unwrap_or_else(|| after_pages.to_owned())
+    }
+}
+
+pub fn resolve_ts_relative_import(
+    from_file: &str,
+    specifier: &str,
+    known_files: &std::collections::HashSet<String>,
+) -> Option<String> {
+    if !specifier.starts_with('.') {
+        return None;
+    }
+    let parent = from_file.rsplit_once('/').map_or("", |(dir, _)| dir);
+    let mut parts: Vec<&str> = if parent.is_empty() {
+        Vec::new()
+    } else {
+        parent.split('/').collect()
+    };
+    for seg in specifier.split('/') {
+        match seg {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+            }
+            other => parts.push(other),
+        }
+    }
+    let base = parts.join("/");
+    let trimmed = base
+        .strip_suffix(".js")
+        .or_else(|| base.strip_suffix(".mjs"))
+        .unwrap_or(&base);
+    for ext in TS_IMPORT_EXTS {
+        let candidate = format!("{trimmed}{ext}");
+        if known_files.contains(&candidate) {
+            return Some(candidate);
+        }
+    }
+    if known_files.contains(&base) {
+        return Some(base);
+    }
+    None
 }
 
 pub fn is_compose_file(rel: &str) -> bool {
     let lower = rel.to_ascii_lowercase();
     lower.contains("compose") && (lower.ends_with(".yml") || lower.ends_with(".yaml"))
+}
+
+pub fn read_files_parallel(repo_dir: &Path, files: &[String]) -> Vec<(String, String)> {
+    parallel_map(files, |rel| {
+        fs::read_to_string(repo_dir.join(rel))
+            .ok()
+            .map(|raw| (rel.clone(), raw))
+    })
+    .into_iter()
+    .flatten()
+    .collect()
+}
+
+pub fn split_ts_import_clause(clause: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for item in clause.split(',') {
+        let cleaned = item.trim().trim_start_matches("type ").trim();
+        if cleaned.is_empty() {
+            continue;
+        }
+        let (orig, local) = cleaned
+            .split_once(" as ")
+            .map_or((cleaned, cleaned), |(o, a)| (o.trim(), a.trim()));
+        if !orig.is_empty() && !local.is_empty() {
+            out.push((orig.to_owned(), local.to_owned()));
+        }
+    }
+    out
 }
 
 pub fn read_rust_service_files(
@@ -417,7 +549,7 @@ pub fn is_test_file(rel_path: &str) -> bool {
     false
 }
 
-fn build_code_mask(source: &str, next_span: fn(&[u8], usize) -> Option<usize>) -> Vec<bool> {
+pub fn build_code_mask(source: &str, next_span: fn(&[u8], usize) -> Option<usize>) -> Vec<bool> {
     let bytes = source.as_bytes();
     let mut mask = vec![true; bytes.len()];
     let mut i = 0usize;
@@ -534,7 +666,7 @@ fn utf8_char_width(first: u8) -> usize {
     }
 }
 
-fn skip_quoted_string(bytes: &[u8], start: usize, quote: u8) -> usize {
+pub fn skip_quoted_string(bytes: &[u8], start: usize, quote: u8) -> usize {
     let mut i = start + 1;
     while i < bytes.len() {
         if bytes[i] == b'\\' {
@@ -874,7 +1006,8 @@ pub fn normalize_path(raw: &str) -> String {
     let segments: Vec<&str> = collapsed
         .split('/')
         .filter(|seg| !seg.is_empty())
-        .map(|seg| if is_dynamic_segment(seg) { DYNAMIC_SEG } else { seg })
+        .map(normalize_segment)
+        .filter(|seg| !seg.is_empty())
         .collect();
     if segments.is_empty() {
         return if collapsed.contains('/') {
@@ -927,6 +1060,18 @@ fn skip_braced_expr(bytes: &[u8], mut i: usize) -> usize {
         i += 1;
     }
     i
+}
+
+fn normalize_segment(seg: &str) -> &str {
+    if is_dynamic_segment(seg) {
+        return DYNAMIC_SEG;
+    }
+    if let Some(stem) = seg.strip_suffix(DYNAMIC_SEG)
+        && !stem.is_empty()
+    {
+        return stem;
+    }
+    seg
 }
 
 fn is_dynamic_segment(seg: &str) -> bool {

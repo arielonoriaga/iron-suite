@@ -10,6 +10,8 @@ use sha2::{Digest, Sha256};
 use crate::intelligence::now_ms;
 
 use super::axum::{self, AxumServiceContext};
+use super::hono;
+use super::nginx::{self, NginxRoute};
 use super::query;
 use super::resolve;
 use super::rust_client;
@@ -23,6 +25,7 @@ use super::types::{
     EXTRACTOR_VERSION, ExtractedCall, ExtractedEndpoint, GraphConfig, HttpMethod, PrefixState,
     RefreshStatus, ServiceConfig, Stack, TOUCH_MAX_BYTES,
 };
+use super::web_client;
 
 pub(crate) const META_CONFIG_HASH: &str = "config_hash";
 
@@ -51,6 +54,7 @@ struct RepoPlan {
     file_hashes: Vec<FileHashRow>,
     meta_updates: Vec<(String, String)>,
     compose_env_changed: bool,
+    nginx_routes_changed: bool,
     is_initial_scan: bool,
 }
 
@@ -76,6 +80,7 @@ impl RepoPlan {
             file_hashes: Vec::new(),
             meta_updates: Vec::new(),
             compose_env_changed: false,
+            nginx_routes_changed: false,
             is_initial_scan,
         }
     }
@@ -161,11 +166,7 @@ pub fn refresh_graph(
     if config_changed || pruned || summary.any_work {
         tx.sync_services(&config.services)?;
     }
-    let full_resolve = config_changed
-        || pruned
-        || plans.iter().any(|p| {
-            p.compose_env_changed || p.is_initial_scan || !p.removed_services.is_empty()
-        });
+    let full_resolve = needs_full_resolve(&plans, config_changed, pruned);
     if summary.any_work || config_changed || pruned {
         let active_plans: Vec<&RepoPlan> = plans
             .iter()
@@ -250,7 +251,7 @@ pub fn touch_paths(
         .collect();
     let full_resolve = plan_refs
         .iter()
-        .any(|p| p.compose_env_changed || p.is_initial_scan);
+        .any(|p| p.compose_env_changed || p.nginx_routes_changed || p.is_initial_scan);
 
     let (edges_added, edges_removed) = if !plan_refs.is_empty() {
         let tx = store.begin_write()?;
@@ -289,6 +290,17 @@ pub fn touch_paths(
             "elapsed_ms": elapsed_ms,
         }),
     })
+}
+
+fn needs_full_resolve(plans: &[RepoPlan], config_changed: bool, pruned: bool) -> bool {
+    config_changed
+        || pruned
+        || plans.iter().any(|p| {
+            p.compose_env_changed
+                || p.nginx_routes_changed
+                || p.is_initial_scan
+                || !p.removed_services.is_empty()
+        })
 }
 
 fn empty_touch_report(elapsed_ms: u128) -> TouchReport {
@@ -485,7 +497,9 @@ fn service_for_file<'a>(
             scan::under_root(rel, &cfg.root)
                 && match cfg.stack {
                     Stack::Axum => scan::is_rust_source(rel),
-                    Stack::Spa => scan::is_ts_source(rel),
+                    Stack::Spa | Stack::Hono => scan::is_ts_source(rel),
+                    Stack::Nginx => scan::is_nginx_conf(rel),
+                    Stack::Web => scan::is_web_source(rel),
                 }
         })
         .max_by_key(|(_, cfg)| cfg.root.len())
@@ -494,7 +508,7 @@ fn service_for_file<'a>(
 
 fn is_service_special_file(rel: &str, svc: &ServiceConfig) -> bool {
     match svc.stack {
-        Stack::Axum => svc
+        Stack::Axum | Stack::Hono => svc
             .entry
             .as_deref()
             .is_some_and(|e| scan::qualify_under_root(&svc.root, e) == rel),
@@ -502,6 +516,8 @@ fn is_service_special_file(rel: &str, svc: &ServiceConfig) -> bool {
             .client
             .as_deref()
             .is_some_and(|c| scan::qualify_under_root(&svc.root, c) == rel),
+        Stack::Nginx => true,
+        Stack::Web => false,
     }
 }
 
@@ -766,8 +782,12 @@ fn apply_compose_refresh(
     if !compose_touched {
         return Ok(());
     }
-    let repo_compose_env =
-        resolve::collect_compose_env(ctx.canon_dir, compose_files, &ctx.config.services);
+    let repo_compose_env = resolve::collect_compose_env(
+        ctx.canon_dir,
+        compose_files,
+        &ctx.config.services,
+        &ctx.config.containers,
+    );
     let serialized = serde_json::to_string(&repo_compose_env)?;
     let env_key = format!("compose_env:{}", ctx.repo_name);
     if ctx.store.get_meta(&env_key)?.as_deref() != Some(serialized.as_str()) {
@@ -815,7 +835,12 @@ fn plan_repo_touch(
 
     if plan.compose_env_changed {
         let all_compose = merge_repo_compose_files(store, repo_name, &touched_compose, &plan.deleted_files)?;
-        let env_map = resolve::collect_compose_env(canon_dir, &all_compose, &config.services);
+        let env_map = resolve::collect_compose_env(
+            canon_dir,
+            &all_compose,
+            &config.services,
+            &config.containers,
+        );
         plan.meta_updates.push((
             format!("compose_env:{repo_name}"),
             serde_json::to_string(&env_map)?,
@@ -869,6 +894,7 @@ fn plan_repo_touch(
         && plan.deleted_files.is_empty()
         && plan.full_services.is_empty()
         && !plan.compose_env_changed
+        && !plan.nginx_routes_changed
     {
         plan.status = RefreshStatus::Skipped;
     }
@@ -977,7 +1003,48 @@ fn try_incremental_service_extract(
     match work.svc_cfg.stack {
         Stack::Axum => try_incremental_axum(store, config, work, plan),
         Stack::Spa => try_incremental_spa(store, config, work, plan),
+        Stack::Web => try_incremental_web(store, config, work, plan),
+        Stack::Hono | Stack::Nginx => Ok(false),
     }
+}
+
+fn try_incremental_web(
+    store: &GraphStore,
+    config: &GraphConfig,
+    work: &ServiceWork<'_>,
+    plan: &mut RepoPlan,
+) -> Result<bool> {
+    let Some(raw_exports) = store.get_meta(&format!("web_exports:{}", work.svc_name))? else {
+        return Ok(false);
+    };
+    let Ok(exports_map) = serde_json::from_str::<web_client::WebExportsMap>(&raw_exports) else {
+        return Ok(false);
+    };
+    let mut known: HashSet<String> = store
+        .load_file_hashes(work.repo_name)?
+        .into_iter()
+        .filter(|(_, r)| r.service == work.svc_name)
+        .map(|(f, _)| f)
+        .collect();
+    for (rel, _) in work.changed {
+        known.insert(rel.clone());
+    }
+    let rel_list: Vec<String> = work.changed.iter().map(|(f, _)| f.clone()).collect();
+    let (calls, has_exports) = web_client::extract_files_incremental(
+        work.repo_name,
+        work.canon_dir,
+        &work.svc_cfg.root,
+        work.svc_cfg.base.as_deref(),
+        &config.external,
+        &rel_list,
+        &known,
+        &exports_map,
+    );
+    if has_exports {
+        return Ok(false);
+    }
+    commit_incremental_calls(plan, work, calls);
+    Ok(true)
 }
 
 fn try_incremental_axum(
@@ -1048,6 +1115,15 @@ fn try_incremental_spa(
     let rel_list: Vec<String> = work.changed.iter().map(|(f, _)| f.clone()).collect();
     let spec = ts_spec(config, work);
     let calls = ts_client::extract_files_with_wrappers(&spec, &rel_list, &wrapper_map);
+    commit_incremental_calls(plan, work, calls);
+    Ok(true)
+}
+
+fn commit_incremental_calls(
+    plan: &mut RepoPlan,
+    work: &ServiceWork<'_>,
+    calls: Vec<ExtractedCall>,
+) {
     for (rel, hash) in work.changed {
         record_incremental_file(plan, rel.clone(), hash.clone(), work.svc_name);
     }
@@ -1055,7 +1131,6 @@ fn try_incremental_spa(
     if !calls.is_empty() {
         plan.service_calls.push((work.svc_name.to_owned(), calls));
     }
-    Ok(true)
 }
 
 fn record_incremental_file(plan: &mut RepoPlan, rel: String, hash: String, svc_name: &str) {
@@ -1125,6 +1200,41 @@ fn extract_full_service(
             plan.service_calls.push((work.svc_name.to_owned(), calls));
             HashSet::new()
         }
+        Stack::Hono => {
+            let (endpoints, deps) = hono::extract_service_with_deps(
+                work.canon_dir,
+                &work.svc_cfg.root,
+                work.svc_cfg.entry.as_deref(),
+                &rel_paths,
+            )?;
+            plan.service_endpoints
+                .push((work.svc_name.to_owned(), endpoints));
+            deps
+        }
+        Stack::Nginx => {
+            let routes = nginx::extract_service(work.canon_dir, &work.svc_cfg.root, &rel_paths)?;
+            let serialized = serde_json::to_string(&routes)?;
+            plan.meta_updates
+                .push((format!("nginx_routes:{}", work.svc_name), serialized));
+            plan.nginx_routes_changed = true;
+            rel_paths.iter().cloned().collect()
+        }
+        Stack::Web => {
+            let (calls, exports_map, deps) = web_client::extract_service_with_exports(
+                work.repo_name,
+                work.canon_dir,
+                &work.svc_cfg.root,
+                work.svc_cfg.base.as_deref(),
+                &config.external,
+                &rel_paths,
+            )?;
+            plan.meta_updates.push((
+                format!("web_exports:{}", work.svc_name),
+                serde_json::to_string(&exports_map)?,
+            ));
+            plan.service_calls.push((work.svc_name.to_owned(), calls));
+            deps
+        }
     };
     plan.meta_updates.push((
         format!("svc_cfg_hash:{}", work.svc_name),
@@ -1161,12 +1271,15 @@ fn apply_plans_and_resolve(
     }
 
     let auto_env = tx.load_all_compose_env(active_repos)?;
+    let active_services: HashSet<String> = config.services.keys().cloned().collect();
+    let nginx_routes = tx.load_all_nginx_routes(&active_services)?;
     let services = tx.load_all_services()?;
     if full_resolve {
         return run_full_resolve(
             tx,
             config,
             &auto_env,
+            &nginx_routes,
             &services,
             &old_snapshots,
             &changed_repos,
@@ -1177,6 +1290,7 @@ fn apply_plans_and_resolve(
         tx,
         config,
         &auto_env,
+        &nginx_routes,
         &services,
         plans,
         &full_services,
@@ -1261,20 +1375,16 @@ fn write_plans_to_tx(tx: &GraphWriteTx<'_>, plans: &[&RepoPlan], now_ms: i64) ->
 #[allow(clippy::too_many_arguments)]
 fn resolve_and_commit_edges(
     tx: &GraphWriteTx<'_>,
-    config: &GraphConfig,
-    auto_env: &BTreeMap<String, String>,
-    services: &[ServiceRow],
-    endpoints: &[EndpointRow],
-    calls: &[CallRow],
+    inputs: &resolve::ResolveInputs<'_>,
     full_replace: bool,
     replace_call_ids: &[i64],
     old_snapshots: &[ExistingEdgeSnapshot],
     changed_repos: &HashSet<String>,
     now_ms: i64,
 ) -> Result<(usize, usize)> {
-    let new_edges = resolve::resolve_edges(config, auto_env, services, endpoints, calls);
-    let calls_map: HashMap<i64, &CallRow> = calls.iter().map(|c| (c.id, c)).collect();
-    let eps_map: HashMap<i64, &EndpointRow> = endpoints.iter().map(|e| (e.id, e)).collect();
+    let new_edges = resolve::resolve_edges(inputs);
+    let calls_map: HashMap<i64, &CallRow> = inputs.calls.iter().map(|c| (c.id, c)).collect();
+    let eps_map: HashMap<i64, &EndpointRow> = inputs.endpoints.iter().map(|e| (e.id, e)).collect();
     tx.apply_edge_updates(&EdgeUpdateBatch {
         full_replace,
         replace_call_ids,
@@ -1287,10 +1397,12 @@ fn resolve_and_commit_edges(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_full_resolve(
     tx: &GraphWriteTx<'_>,
     config: &GraphConfig,
     auto_env: &BTreeMap<String, String>,
+    nginx_routes: &[NginxRoute],
     services: &[ServiceRow],
     old_snapshots: &[ExistingEdgeSnapshot],
     changed_repos: &HashSet<String>,
@@ -1298,19 +1410,15 @@ fn run_full_resolve(
 ) -> Result<(usize, usize)> {
     let endpoints = tx.load_all_endpoints()?;
     let calls = tx.load_all_calls()?;
-    resolve_and_commit_edges(
-        tx,
+    let inputs = resolve::ResolveInputs {
         config,
-        auto_env,
+        extra_env: auto_env,
+        nginx_routes,
         services,
-        &endpoints,
-        &calls,
-        true,
-        &[],
-        old_snapshots,
-        changed_repos,
-        now_ms,
-    )
+        endpoints: &endpoints,
+        calls: &calls,
+    };
+    resolve_and_commit_edges(tx, &inputs, true, &[], old_snapshots, changed_repos, now_ms)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1318,6 +1426,7 @@ fn run_incremental_resolve(
     tx: &GraphWriteTx<'_>,
     config: &GraphConfig,
     auto_env: &BTreeMap<String, String>,
+    nginx_routes: &[NginxRoute],
     services: &[ServiceRow],
     plans: &[&RepoPlan],
     full_services: &[(String, String)],
@@ -1345,6 +1454,7 @@ fn run_incremental_resolve(
         tx,
         config,
         auto_env,
+        nginx_routes,
         services,
         old_endpoints,
         &new_endpoints,
@@ -1356,16 +1466,20 @@ fn run_incremental_resolve(
         return Ok((0, 0));
     }
 
-    let needed_ep_keys = collect_needed_endpoint_keys(config, &affected_calls);
+    let needed_ep_keys = collect_needed_endpoint_keys(config, nginx_routes, &affected_calls);
     let needed_endpoints = tx.load_endpoints_for_keys(&needed_ep_keys, true)?;
     let replace_call_ids: Vec<i64> = affected_calls.iter().map(|c| c.id).collect();
+    let inputs = resolve::ResolveInputs {
+        config,
+        extra_env: auto_env,
+        nginx_routes,
+        services,
+        endpoints: &needed_endpoints,
+        calls: &affected_calls,
+    };
     resolve_and_commit_edges(
         tx,
-        config,
-        auto_env,
-        services,
-        &needed_endpoints,
-        &affected_calls,
+        &inputs,
         false,
         &replace_call_ids,
         old_snapshots,
@@ -1379,6 +1493,7 @@ fn expand_affected_calls_for_endpoints(
     tx: &GraphWriteTx<'_>,
     config: &GraphConfig,
     auto_env: &BTreeMap<String, String>,
+    nginx_routes: &[NginxRoute],
     services: &[ServiceRow],
     old_endpoints: &[EndpointRow],
     new_endpoints: &[EndpointRow],
@@ -1399,7 +1514,7 @@ fn expand_affected_calls_for_endpoints(
         return Ok(());
     }
 
-    let call_keys = expand_prefixed_call_keys(&affected_keys, config);
+    let call_keys = expand_prefixed_call_keys(&affected_keys, config, nginx_routes);
     let mut extra_calls = tx.load_calls_for_keys(&call_keys)?;
     if !affected_partials.is_empty() {
         append_partial_target_calls(
@@ -1432,10 +1547,17 @@ fn expand_affected_calls_for_endpoints(
 fn expand_prefixed_call_keys(
     affected_keys: &HashSet<(HttpMethod, String)>,
     config: &GraphConfig,
+    nginx_routes: &[NginxRoute],
 ) -> HashSet<(HttpMethod, String)> {
     let mut out = affected_keys.clone();
+    let mut all_prefixes: Vec<&str> = config.prefixes.values().map(String::as_str).collect();
+    for route in nginx_routes {
+        if !route.rewrite_prefix.is_empty() {
+            all_prefixes.push(route.rewrite_prefix.as_str());
+        }
+    }
     for (method, ep_path) in affected_keys {
-        for prefix in config.prefixes.values() {
+        for prefix in &all_prefixes {
             let norm_p = scan::normalize_path(prefix);
             if *ep_path == norm_p {
                 out.insert((*method, "/".to_owned()));
@@ -1486,14 +1608,18 @@ fn append_partial_target_calls(
 
 fn collect_needed_endpoint_keys(
     config: &GraphConfig,
+    nginx_routes: &[NginxRoute],
     affected_calls: &[CallRow],
 ) -> HashSet<(HttpMethod, String)> {
     let mut keys = HashSet::new();
     for call in affected_calls {
         let (eff, applied) = resolve::effective_call_path(config, call);
-        keys.insert((call.method, eff.into_owned()));
+        keys.insert((call.method, eff.clone().into_owned()));
         if applied {
             keys.insert((call.method, call.path_norm.clone()));
+        }
+        if let Some(hit) = resolve::resolve_nginx_for_call(config, nginx_routes, call, &eff) {
+            keys.insert((call.method, hit.path_norm));
         }
     }
     keys
@@ -1513,12 +1639,13 @@ mod tests {
             env: BTreeMap::new(),
             clients: BTreeMap::new(),
             prefixes,
+            containers: BTreeMap::new(),
             external: Vec::new(),
         };
         let mut affected = HashSet::new();
         affected.insert((HttpMethod::Get, "/catalog".to_owned()));
         affected.insert((HttpMethod::Post, "/catalog/v1/items".to_owned()));
-        let expanded = expand_prefixed_call_keys(&affected, &config);
+        let expanded = expand_prefixed_call_keys(&affected, &config, &[]);
         assert!(expanded.contains(&(HttpMethod::Get, "/".to_owned())));
         assert!(expanded.contains(&(HttpMethod::Post, "/v1/items".to_owned())));
     }

@@ -5,6 +5,7 @@ use anyhow::Result;
 
 use crate::output;
 
+use super::memory::{self, MemoryAttachmentContext};
 use super::scan::normalize_path;
 use super::store::{
     CallRow, CallerEdge, CrossRepoEdgeInfo, EdgeChangeKind, EndpointRow, GraphStore,
@@ -18,10 +19,14 @@ const SPA_FILE_PREVIEW: usize = 3;
 const SHORT_SHA_LEN: usize = 7;
 const MS_PER_DAY: i64 = 86_400_000;
 const TOUCH_ROUTE_PREVIEW: usize = 3;
+const MIN_BODY_BUDGET_WITH_MEM: usize = 128;
 
 enum QueryOutput {
     Empty(String),
-    Lines(Vec<String>),
+    Lines {
+        body: Vec<String>,
+        footer: Vec<String>,
+    },
 }
 
 fn run_budgeted_query(
@@ -33,8 +38,37 @@ fn run_budgeted_query(
     let max_items = limit.unwrap_or(DEFAULT_LIMIT).max(1);
     match build(max_items)? {
         QueryOutput::Empty(msg) => Ok(truncate_to_budget(&msg, max_bytes)),
-        QueryOutput::Lines(lines) => Ok(render_lines_within_budget(&lines, max_bytes)),
+        QueryOutput::Lines { body, footer } => {
+            Ok(render_lines_with_footer(&body, &footer, max_bytes))
+        }
     }
+}
+
+fn render_lines_with_footer(body: &[String], footer: &[String], max_bytes: usize) -> String {
+    if footer.is_empty() {
+        return render_lines_within_budget(body, max_bytes);
+    }
+    let mut kept_footer = Vec::new();
+    let mut footer_bytes = 0usize;
+    for line in footer {
+        let need = line.len() + 1;
+        if footer_bytes + need + MIN_BODY_BUDGET_WITH_MEM <= max_bytes {
+            kept_footer.push(line.as_str());
+            footer_bytes += need;
+        }
+    }
+    if kept_footer.is_empty() {
+        return render_lines_within_budget(body, max_bytes);
+    }
+    let body_budget = max_bytes.saturating_sub(footer_bytes);
+    let mut out = render_lines_within_budget(body, body_budget);
+    for line in kept_footer {
+        if out.len() + line.len() < max_bytes {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    truncate_to_budget(&out, max_bytes)
 }
 
 pub fn who_calls(
@@ -43,6 +77,7 @@ pub fn who_calls(
     repo: Option<&str>,
     limit: Option<usize>,
     max_bytes: usize,
+    memory_db: Option<&Path>,
 ) -> Result<String> {
     run_budgeted_query(limit, max_bytes, |max_items| {
         let (method, path_norm) = parse_endpoint_query(raw_query);
@@ -54,17 +89,28 @@ pub fn who_calls(
             )));
         }
         let mut lines = Vec::new();
+        let mut mem_files = Vec::new();
+        let mut mem_endpoints = Vec::new();
         for ep in &endpoints {
             lines.push(format_provider_line(ep));
+            mem_files.push((ep.repo.clone(), ep.file.clone()));
+            mem_endpoints.push((ep.method, ep.path_norm.clone()));
             let callers = store.callers_for_endpoint(ep.id)?;
             if callers.is_empty() {
                 lines.push("  (no callers)".to_owned());
                 continue;
             }
+            for c in &callers {
+                mem_files.push((c.call.repo.clone(), c.call.file.clone()));
+            }
             let formatted_callers = format_grouped_callers(&callers);
             push_capped_lines(&mut lines, formatted_callers, max_items, "  ");
         }
-        Ok(QueryOutput::Lines(lines))
+        let footer = collect_attached_memories(memory_db, mem_files, mem_endpoints);
+        Ok(QueryOutput::Lines {
+            body: lines,
+            footer,
+        })
     })
 }
 
@@ -74,6 +120,7 @@ pub fn impact(
     repo_filter: Option<&str>,
     limit: Option<usize>,
     max_bytes: usize,
+    memory_db: Option<&Path>,
 ) -> Result<String> {
     run_budgeted_query(limit, max_bytes, |max_items| {
         let (resolved_repo, rel_file) = resolve_file_target(store, file_arg, repo_filter)?;
@@ -86,21 +133,56 @@ pub fn impact(
             )));
         }
         let mut lines = Vec::new();
-        append_defined_endpoints(store, &rel_file, &endpoints, max_items, &mut lines)?;
+        let mut mem_files = Vec::new();
+        let mut mem_endpoints = Vec::new();
+        append_defined_endpoints(
+            store,
+            &rel_file,
+            &endpoints,
+            max_items,
+            &mut lines,
+            &mut mem_files,
+            &mut mem_endpoints,
+        )?;
         if !calls.is_empty() {
             lines.push(format!("makes {} call(s) from {rel_file}:", calls.len()));
-            append_call_provider_lines(store, &calls, max_items, &mut lines)?;
+            append_call_provider_lines_tracked(
+                store,
+                &calls,
+                max_items,
+                &mut lines,
+                Some((&mut mem_files, &mut mem_endpoints)),
+            )?;
         }
-        Ok(QueryOutput::Lines(lines))
+        let footer = collect_attached_memories(memory_db, mem_files, mem_endpoints);
+        Ok(QueryOutput::Lines {
+            body: lines,
+            footer,
+        })
     })
 }
 
+fn collect_attached_memories(
+    memory_db: Option<&Path>,
+    files: Vec<(String, String)>,
+    endpoints: Vec<(HttpMethod, String)>,
+) -> Vec<String> {
+    let Some(db) = memory_db else {
+        return Vec::new();
+    };
+    let ctx = MemoryAttachmentContext { files, endpoints };
+    memory::attach_memory_lines(db, &ctx)
+}
+
+#[allow(clippy::too_many_arguments)]
 fn append_defined_endpoints(
     store: &GraphStore,
     rel_file: &str,
     endpoints: &[EndpointRow],
     max_items: usize,
     lines: &mut Vec<String>,
+    mem_files: &mut Vec<(String, String)>,
+    mem_endpoints: &mut Vec<(HttpMethod, String)>,
 ) -> Result<()> {
     if endpoints.is_empty() {
         return Ok(());
@@ -108,10 +190,15 @@ fn append_defined_endpoints(
     lines.push(format!("defines {} endpoint(s) in {rel_file}:", endpoints.len()));
     for ep in endpoints.iter().take(max_items) {
         lines.push(format!("  {}", format_provider_line(ep)));
+        mem_files.push((ep.repo.clone(), ep.file.clone()));
+        mem_endpoints.push((ep.method, ep.path_norm.clone()));
         let callers = store.callers_for_endpoint(ep.id)?;
         if callers.is_empty() {
             lines.push("    (no callers)".to_owned());
         } else {
+            for c in &callers {
+                mem_files.push((c.call.repo.clone(), c.call.file.clone()));
+            }
             let indented: Vec<String> = format_grouped_callers(&callers)
                 .into_iter()
                 .map(|cl| format!("  {cl}"))
@@ -146,7 +233,10 @@ pub fn callees(
         }
         let mut lines = vec![format!("outbound calls for {trimmed} ({}):", calls.len())];
         append_call_provider_lines(store, &calls, max_items, &mut lines)?;
-        Ok(QueryOutput::Lines(lines))
+        Ok(QueryOutput::Lines {
+            body: lines,
+            footer: Vec::new(),
+        })
     })
 }
 
@@ -245,7 +335,10 @@ pub fn changes(
             })
             .collect();
         push_capped_lines(&mut lines, formatted, max_items, "  ");
-        Ok(QueryOutput::Lines(lines))
+        Ok(QueryOutput::Lines {
+            body: lines,
+            footer: Vec::new(),
+        })
     })
 }
 
@@ -314,8 +407,23 @@ fn append_call_provider_lines(
     max_items: usize,
     lines: &mut Vec<String>,
 ) -> Result<()> {
+    append_call_provider_lines_tracked(store, calls, max_items, lines, None)
+}
+
+#[allow(clippy::type_complexity)]
+fn append_call_provider_lines_tracked(
+    store: &GraphStore,
+    calls: &[CallRow],
+    max_items: usize,
+    lines: &mut Vec<String>,
+    mut mem_track: Option<(&mut Vec<(String, String)>, &mut Vec<(HttpMethod, String)>)>,
+) -> Result<()> {
     let take = calls.len().min(max_items);
     for call in calls.iter().take(take) {
+        if let Some((files, eps)) = mem_track.as_mut() {
+            files.push((call.repo.clone(), call.file.clone()));
+            eps.push((call.method, call.path_norm.clone()));
+        }
         let why_part = why_parens(&call.why);
         let head = format!(
             "  {}:{} {} {} ->",
@@ -334,6 +442,10 @@ fn append_call_provider_lines(
             continue;
         }
         for prov in providers {
+            if let Some((files, eps)) = mem_track.as_mut() {
+                files.push((prov.endpoint.repo.clone(), prov.endpoint.file.clone()));
+                eps.push((prov.endpoint.method, prov.endpoint.path_norm.clone()));
+            }
             lines.push(format!(
                 "{head} {} {}:{}@{} [{}]{why_part}",
                 prov.endpoint.service,
