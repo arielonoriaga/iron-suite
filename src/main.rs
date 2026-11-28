@@ -388,24 +388,19 @@ fn run_readonly_memory(db: &std::path::Path, command: MemoryCommand) -> Result<s
 
 fn run(cli: Cli) -> Result<()> {
     let db = cli.db.map(Ok).unwrap_or_else(default_db)?;
-    if matches!(cli.command, Command::Mcp { .. } | Command::Ui { .. }) {
-        for index in [db.clone(), db.with_file_name("archive.db")] {
-            if let Err(error) = store::relabel_legacy_history_in_place(&index) {
-                eprintln!("iron: history relabel skipped for {}: {error:#}", index.display());
-            }
-        }
-    }
     if let Command::Mcp {
         claude_root,
         cavemem_db,
     } = &cli.command
     {
+        relabel_legacy_history_before_serving(&db);
         if claude_root.is_some() || cavemem_db.is_some() {
             refresh::run(&db, claude_root.as_deref(), cavemem_db.as_deref(), None)?;
         }
         return mcp::serve(&db);
     }
     if let Command::Ui { host, port } = &cli.command {
+        relabel_legacy_history_before_serving(&db);
         return ui::serve(&db, host, *port);
     }
     if let Command::Memory {
@@ -529,6 +524,14 @@ fn run(cli: Cli) -> Result<()> {
         .lock()
         .write_all(output::encode(&result)?.as_bytes())?;
     Ok(())
+}
+
+fn relabel_legacy_history_before_serving(db: &std::path::Path) {
+    for index in [db.to_path_buf(), db.with_file_name("archive.db")] {
+        if let Err(error) = store::relabel_legacy_history_in_place(&index) {
+            eprintln!("iron: history relabel skipped for {}: {error:#}", index.display());
+        }
+    }
 }
 
 fn main() {
