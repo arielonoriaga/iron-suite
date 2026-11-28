@@ -911,6 +911,19 @@ impl Store {
             .optional()?)
     }
 
+    pub fn find_curated_by_source_path(&self, path: &str) -> Result<Option<(String, String)>> {
+        Ok(self
+            .connection
+            .query_row(
+                "SELECT id, project FROM records
+                 WHERE source_path = ? AND source_type IN ('markdown', 'iron')
+                 ORDER BY updated_at DESC LIMIT 1",
+                [path],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?)
+    }
+
     pub fn related(
         &self,
         id: &str,

@@ -85,6 +85,12 @@ enum MemoryCommand {
         #[arg(long)]
         repo: PathBuf,
     },
+    Recall {
+        #[arg(long)]
+        path: PathBuf,
+        #[arg(long)]
+        session: String,
+    },
     Outcome {
         #[arg(long, value_parser = ["pass", "fail", "correction"])]
         outcome: String,
@@ -302,6 +308,9 @@ fn run(cli: Cli) -> Result<()> {
                 },
         } => intelligence::record_outcome(&db, &outcome, project.as_deref(), &ids, note.as_deref())?,
         Command::Memory {
+            command: MemoryCommand::Recall { path, session },
+        } => intelligence::record_file_recall(&db, &session, &path)?,
+        Command::Memory {
             command:
                 MemoryCommand::Import {
                     claude_root,
@@ -368,6 +377,7 @@ fn run(cli: Cli) -> Result<()> {
                 | MemoryCommand::Backup { .. }
                 | MemoryCommand::Sleep { .. }
                 | MemoryCommand::AuditDrift { .. }
+                | MemoryCommand::Recall { .. }
                 | MemoryCommand::Outcome { .. } => unreachable!(),
             }
         }

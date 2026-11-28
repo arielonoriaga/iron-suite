@@ -337,6 +337,47 @@ pub fn record_session_recall(
     save_ledger(db, &ledger)
 }
 
+pub fn record_file_recall(db: &Path, session_id: &str, path: &Path) -> Result<Value> {
+    ensure!(
+        db != Path::new(":memory:"),
+        "recall requires a durable index path"
+    );
+    let session_id = session_id.trim();
+    ensure!(!session_id.is_empty(), "session id must not be empty");
+    let found = {
+        let store = Store::open(db, false)?;
+        let mut hit = None;
+        for candidate in recall_path_candidates(path) {
+            if let Some(record) = store.find_curated_by_source_path(&candidate)? {
+                hit = Some(record);
+                break;
+            }
+        }
+        hit
+    };
+    let Some((id, project)) = found else {
+        return Ok(json!({"found": false, "path": path.display().to_string()}));
+    };
+    let already_recalled = load_ledger(db)?
+        .sessions
+        .iter()
+        .any(|s| s.session_id == session_id && s.record_ids.iter().any(|r| *r == id));
+    let reinforced = !already_recalled && crate::native::reinforce_once(db, &id)?;
+    record_session_recall(db, session_id, &project, &id)?;
+    Ok(json!({"found": true, "id": id, "project": project, "reinforced": reinforced}))
+}
+
+fn recall_path_candidates(path: &Path) -> Vec<String> {
+    let mut candidates = vec![path.to_string_lossy().into_owned()];
+    if let Ok(real) = fs::canonicalize(path) {
+        let real = real.to_string_lossy().into_owned();
+        if !candidates.contains(&real) {
+            candidates.push(real);
+        }
+    }
+    candidates
+}
+
 pub fn link_session_co_used(db: &Path, new_id: &str, prior_ids: &[String]) -> Result<usize> {
     if db == Path::new(":memory:") || prior_ids.is_empty() {
         return Ok(0);

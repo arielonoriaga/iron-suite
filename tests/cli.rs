@@ -698,3 +698,55 @@ fn v02_autolink_reinforcement_feedback_supersession_and_consolidate_work_end_to_
     assert_eq!(old_hit["status"], "superseded");
     assert_eq!(old_hit["superseded_by"], corr_id);
 }
+
+#[test]
+fn file_recall_credits_markdown_memory_once_per_session_and_feeds_outcomes() {
+    let fixture = Fixture::new();
+    fixture.import();
+    let decision = fixture.root.join("memory/projects/alpha/decision.md");
+    let decision = decision.to_str().unwrap();
+
+    let (first, _) = fixture.call(&[
+        "memory",
+        "recall",
+        "--path",
+        decision,
+        "--session",
+        "claude-s1",
+    ]);
+    assert_eq!(first["found"], true);
+    assert_eq!(first["project"], "alpha");
+    assert_eq!(first["reinforced"], true);
+    let id = first["id"].as_str().unwrap().to_owned();
+
+    let (again, _) = fixture.call(&[
+        "memory",
+        "recall",
+        "--path",
+        decision,
+        "--session",
+        "claude-s1",
+    ]);
+    assert_eq!(again["id"], id.as_str());
+    assert_eq!(again["reinforced"], false);
+
+    let missing = fixture.root.join("memory/projects/alpha/absent.md");
+    let (absent, _) = fixture.call(&[
+        "memory",
+        "recall",
+        "--path",
+        missing.to_str().unwrap(),
+        "--session",
+        "claude-s1",
+    ]);
+    assert_eq!(absent["found"], false);
+
+    let (outcome, _) = fixture.call(&["memory", "outcome", "--outcome", "pass", "--project", "alpha"]);
+    let targets: Vec<&str> = outcome["target_ids"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert_eq!(targets, vec![id.as_str()]);
+}
