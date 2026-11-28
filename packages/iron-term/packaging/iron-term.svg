@@ -1,0 +1,70 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="shell" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#060b13"/>
+      <stop offset="100%" stop-color="#0f1b2e"/>
+    </linearGradient>
+    <linearGradient id="paneAccent" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#2DD4BF"/>
+      <stop offset="100%" stop-color="#3B82F6"/>
+    </linearGradient>
+    <linearGradient id="promptStroke" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#2DD4BF"/>
+      <stop offset="100%" stop-color="#3B82F6"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Outer Iron Stack squircle -->
+  <path d="M256 12C364 12 418 12 458 54S500 148 500 256 498 418 458 458 364 500 256 500 94 500 54 458 12 364 12 256 14 94 54 54 148 12 256 12Z"
+        fill="url(#shell)"/>
+  <path d="M256 12C364 12 418 12 458 54S500 148 500 256 498 418 458 458 364 500 256 500 94 500 54 458 12 364 12 256 14 94 54 54 148 12 256 12Z"
+        transform="translate(6.4 6.4) scale(.975)"
+        fill="none" stroke="#2b4468" stroke-width="4"/>
+
+  <!-- Left Whisper Rail -->
+  <rect x="64" y="88" width="90" height="248" rx="18" fill="#0b1320" stroke="#2b4468" stroke-width="4"/>
+  <path d="M80 116 H138" stroke="#2b4468" stroke-width="4" stroke-linecap="round"/>
+
+  <!-- Whisper Rail status indicators (NEEDS YOU / ACTIVE / DORMANT) -->
+  <circle cx="88" cy="150" r="8" fill="#E8622C"/>
+  <rect x="104" y="145" width="34" height="10" rx="5" fill="#E8622C" opacity="0.88"/>
+
+  <circle cx="88" cy="188" r="8" fill="#34D399"/>
+  <rect x="104" y="183" width="30" height="10" rx="5" fill="#34D399" opacity="0.72"/>
+
+  <circle cx="88" cy="226" r="8" fill="#2DD4BF"/>
+  <rect x="104" y="221" width="26" height="10" rx="5" fill="#2DD4BF" opacity="0.65"/>
+
+  <circle cx="88" cy="264" r="7" fill="#7086A3" opacity="0.6"/>
+  <rect x="104" y="259" width="28" height="10" rx="5" fill="#7086A3" opacity="0.38"/>
+
+  <circle cx="88" cy="300" r="7" fill="#7086A3" opacity="0.45"/>
+  <rect x="104" y="295" width="22" height="10" rx="5" fill="#7086A3" opacity="0.28"/>
+
+  <!-- Main Terminal Glass Pane -->
+  <rect x="170" y="88" width="278" height="248" rx="18" fill="#0b1320" stroke="url(#paneAccent)" stroke-width="6"/>
+  <path d="M188 88 H430 Q448 88 448 106 V120 H170 V106 Q170 88 188 88 Z" fill="#111c2d"/>
+  <circle cx="196" cy="104" r="5" fill="#E8622C"/>
+  <circle cx="214" cy="104" r="5" fill="#F7BF2E"/>
+  <circle cx="232" cy="104" r="5" fill="#34D399"/>
+
+  <!-- Prompt chevron + command bar + Accent Blue block cursor -->
+  <path d="M206 154 L244 186 L206 218"
+        fill="none" stroke="url(#promptStroke)" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="266" y="178" width="80" height="16" rx="8" fill="#EDF2F8"/>
+  <rect x="360" y="160" width="24" height="50" rx="5" fill="#3B82F6"/>
+  <rect x="364" y="164" width="16" height="6" rx="3" fill="#77DDF5" opacity="0.7"/>
+
+  <!-- Terminal output lines -->
+  <rect x="206" y="248" width="146" height="12" rx="6" fill="#34D399" opacity="0.72"/>
+  <rect x="206" y="274" width="198" height="12" rx="6" fill="#7086A3" opacity="0.5"/>
+  <rect x="206" y="300" width="114" height="12" rx="6" fill="#2DD4BF" opacity="0.45"/>
+
+  <!-- Bottom Ghost Action / Telemetry Strip -->
+  <rect x="64" y="356" width="384" height="50" rx="16" fill="#142238" stroke="#2b4468" stroke-width="4"/>
+  <circle cx="96" cy="381" r="8" fill="#E8622C"/>
+  <circle cx="122" cy="381" r="8" fill="#34D399"/>
+  <circle cx="148" cy="381" r="8" fill="#2DD4BF"/>
+  <path d="M174 381 H414" stroke="#2b4468" stroke-width="4" stroke-linecap="round"/>
+  <rect x="332" y="374" width="84" height="14" rx="7" fill="#3B82F6"/>
+</svg>

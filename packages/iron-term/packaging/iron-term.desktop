@@ -1,0 +1,19 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=IronTerm
+GenericName=Terminal Emulator
+Comment=Native Rust + GPUI multi-agent terminal
+TryExec=iron-term
+Exec=iron-term
+Icon=iron-term
+Terminal=false
+Categories=System;TerminalEmulator;
+Keywords=terminal;shell;prompt;agent;ai;iron;iron-term;
+StartupNotify=true
+StartupWMClass=iron-term
+Actions=NewWindow;
+
+[Desktop Action NewWindow]
+Name=New Terminal Window
+Exec=iron-term --new-session
