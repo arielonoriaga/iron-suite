@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="shell" x2="0" y2="1" gradientUnits="objectBoundingBox">
+      <stop stop-color="#060b13"/>
+      <stop offset="1" stop-color="#0f1b2e"/>
+    </linearGradient>
+    <linearGradient id="portrait" x2="0" y2="1">
+      <stop stop-color="#14B8A6"/>
+      <stop offset="1" stop-color="#42857F"/>
+    </linearGradient>
+    <linearGradient id="landscape" x2="0" y2="1">
+      <stop stop-color="#3B82F6"/>
+      <stop offset="1" stop-color="#4B70A5"/>
+    </linearGradient>
+    <linearGradient id="signal" gradientUnits="userSpaceOnUse" x1="174" y1="0" x2="278" y2="0">
+      <stop stop-color="#2DD4BF"/>
+      <stop offset="0.5" stop-color="#77DDF5"/>
+      <stop offset="1" stop-color="#3B82F6"/>
+    </linearGradient>
+    <path id="tile" d="M256 12C364 12 418 12 458 54S500 148 500 256
+      498 418 458 458 364 500 256 500 94 500 54 458 12 364 12 256
+      14 94 54 54 148 12 256 12Z"/>
+    <path id="exchange" d="M191 229H273L255 211 M260 265H178L196 283"/>
+  </defs>
+
+  <use xmlns:xlink="http://www.w3.org/1999/xlink" xlink:href="#tile" fill="url(#shell)"/>
+  <use xmlns:xlink="http://www.w3.org/1999/xlink" xlink:href="#tile"
+       transform="translate(6.4 6.4) scale(.975)" fill="none" stroke="#2b4468" stroke-width="4"/>
+
+  <g fill="#0b1320" stroke-width="9">
+    <rect x="67" y="100" width="135" height="230" rx="22" stroke="url(#portrait)"/>
+    <rect x="250" y="164" width="195" height="166" rx="22" stroke="url(#landscape)"/>
+  </g>
+  <path fill="#14B8A6" d="M89 96H180Q206 96 206 122V131H63V122Q63 96 89 96Z"/>
+  <path fill="#3B82F6" d="M272 160H423Q449 160 449 186V195H246V186Q246 160 272 160Z"/>
+
+  <g xmlns:xlink="http://www.w3.org/1999/xlink" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <use xlink:href="#exchange" stroke="#0b1320" stroke-width="30"/>
+    <use xlink:href="#exchange" stroke="url(#signal)" stroke-width="24" opacity=".09"/>
+    <use xlink:href="#exchange" stroke="url(#signal)" stroke-width="18" opacity=".15"/>
+    <use xlink:href="#exchange" stroke="url(#signal)" stroke-width="12"/>
+  </g>
+
+  <rect x="64" y="356" width="384" height="50" rx="16" fill="#142238" stroke="#2b4468" stroke-width="4"/>
+  <circle cx="96" cy="381" r="8" fill="#E8622C"/>
+  <circle cx="122" cy="381" r="8" fill="#34D399"/>
+  <path d="M155 381H413" stroke="#2b4468" stroke-width="4" stroke-linecap="round"/>
+  <path d="M317 381H343L352 370L364 393L374 378L380 381H413"
+        fill="none" stroke="#34D399" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

@@ -1,0 +1,100 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640" role="img" aria-labelledby="title description">
+<title id="title">IronBrowser — Public Beta</title>
+<desc id="description">Dual-viewport Chromium developer browser and 18-tool native Rust MCP server for The Iron Stack. Simultaneous Portrait and Landscape verification with 3-tier mirrored input, HTTP/WebSocket/SSE/SFS2X deduplication, and POS hardware throttling.</desc>
+<defs>
+ <linearGradient id="slate" x2="1" y2="0.7" gradientUnits="objectBoundingBox"><stop stop-color="#0B1220"/><stop offset="1" stop-color="#111C2D"/></linearGradient>
+ <linearGradient id="pane" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#152336"/><stop offset="1" stop-color="#0E1826"/></linearGradient>
+ <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse"><path d="M32 0H0V32" fill="none" stroke="#70869c" stroke-opacity=".12"/></pattern>
+ <pattern id="ruling" width="11" height="5" patternUnits="userSpaceOnUse"><path d="M0 0v4" stroke="#8294a8"/></pattern>
+</defs>
+<rect width="1280" height="640" fill="url(#slate)"/><rect width="1280" height="640" fill="url(#grid)"/>
+<path d="M22 30v-9h9 M1249 21h9v9 M22 610v9h9 M1249 619h9v-9" fill="none" stroke="#6b7e92"/>
+
+<g id="identity">
+ <rect x="48" y="47" width="382" height="30" rx="3" stroke="#485564" fill="#182331"/>
+ <rect x="48" y="47" width="4" height="30" fill="#E8622C"/>
+ <text x="64" y="67" font-family="GeistMono Nerd Font Mono, monospace" font-size="13" font-weight="600" fill="#F4F5EF">PUBLIC BETA · DUAL VIEWPORT · RUST MCP · MIT</text>
+ <text x="42" y="182" font-family="Adwaita Sans, sans-serif" font-size="92" font-weight="900" letter-spacing="-4" fill="#F4F5EF">IRON BROWSER</text>
+ <text x="48" y="248" font-family="Adwaita Sans, sans-serif" font-size="34" font-weight="600" letter-spacing="-0.8" fill="#F4F5EF">Verify mobile &amp; desktop side-by-side.</text>
+ <text x="48" y="294" font-family="Adwaita Sans, sans-serif" font-size="34" font-weight="600" letter-spacing="-0.8" fill="#CAD5E0">One gesture. Zero duplicate mutations.</text>
+ <path d="M48 338h56" stroke="#E8622C" stroke-width="4" fill="none"/>
+ <rect x="116" y="336" width="144" height="5" fill="url(#ruling)"/>
+</g>
+
+<g id="dual-viewport-blueprint">
+ <path d="M748 48v304" fill="none" stroke="#394859"/>
+ <rect x="776" y="54" width="456" height="236" rx="5" fill="url(#pane)" stroke="#485c73" stroke-width="1.5"/>
+ <rect x="776" y="54" width="456" height="28" rx="5" fill="#19283B"/>
+ <circle cx="792" cy="68" r="4" fill="#E8622C"/>
+ <circle cx="806" cy="68" r="4" fill="#F7BF2E"/>
+ <circle cx="820" cy="68" r="4" fill="#14B8A6"/>
+ <text x="840" y="73" font-family="GeistMono Nerd Font Mono, monospace" font-size="11.5" font-weight="600" fill="#D5E0EC">Dual · Mirror · Shared · Dedup On</text>
+
+ <rect x="790" y="94" width="132" height="162" rx="3" fill="#0D1624" stroke="#14B8A6" stroke-width="1.4"/>
+ <text x="800" y="112" font-family="GeistMono Nerd Font Mono, monospace" font-size="11" font-weight="700" fill="#14B8A6">PORTRAIT 390×844</text>
+ <rect x="802" y="122" width="108" height="22" rx="2" fill="#17263A" stroke="#2D435E"/>
+ <rect x="802" y="152" width="108" height="54" rx="2" fill="#132133" stroke="#283C54"/>
+ <rect x="802" y="216" width="108" height="26" rx="2" fill="#2A1D1B" stroke="#E8622C"/>
+ <text x="816" y="233" font-family="GeistMono Nerd Font Mono, monospace" font-size="10.5" font-weight="600" fill="#FFC198">Tap / PIN Sync</text>
+
+ <path d="M926 175h18m-5 -4 5 4 -5 4 M944 185h-18m5 -4 -5 4 5 4" stroke="#F7BF2E" stroke-width="1.6" fill="none"/>
+
+ <rect x="948" y="94" width="270" height="162" rx="3" fill="#0D1624" stroke="#699BEA" stroke-width="1.4"/>
+ <text x="960" y="112" font-family="GeistMono Nerd Font Mono, monospace" font-size="11" font-weight="700" fill="#8AB4F8">LANDSCAPE 1280×720</text>
+ <rect x="960" y="122" width="246" height="22" rx="2" fill="#17263A" stroke="#2D435E"/>
+ <rect x="960" y="152" width="158" height="90" rx="2" fill="#132133" stroke="#283C54"/>
+ <rect x="1126" y="152" width="80" height="54" rx="2" fill="#132133" stroke="#283C54"/>
+ <rect x="1126" y="216" width="80" height="26" rx="2" fill="#2A1D1B" stroke="#E8622C"/>
+ <text x="1136" y="233" font-family="GeistMono Nerd Font Mono, monospace" font-size="10.5" font-weight="600" fill="#FFC198">Mirrored</text>
+
+ <rect x="776" y="264" width="456" height="26" rx="2" fill="#121E2E" stroke="#304256"/>
+ <text x="788" y="281" font-family="GeistMono Nerd Font Mono, monospace" font-size="11" fill="#A9E8DF">TabEventBus ~878ns · ctl.sock (0600) · 18 Rust MCP Tools</text>
+
+ <rect x="776" y="306" width="220" height="39" rx="3" fill="#1D2927" stroke="#14B8A6"/>
+ <text x="792" y="331" font-family="GeistMono Nerd Font Mono, monospace" font-size="14" font-weight="600" fill="#A9E8DF">iron-browser --smoke</text>
+ <rect x="1008" y="306" width="224" height="39" rx="3" fill="#282a27" stroke="#87713f"/>
+ <text x="1024" y="331" font-family="GeistMono Nerd Font Mono, monospace" font-size="14" font-weight="600" fill="#FBE4A0">iron-browser mcp · 18</text>
+</g>
+
+<g id="card-mirror">
+ <rect x="48" y="384" width="384" height="170" rx="3" fill="#142132" stroke="#394859"/>
+ <path d="M49 384h61" stroke="#14B8A6" stroke-width="3" fill="none"/>
+ <text x="67" y="428" font-family="Adwaita Sans, sans-serif" font-size="27" font-weight="700" letter-spacing="-0.8" fill="#F4F5EF">3-Tier Mirror &amp; Dedup</text>
+ <text x="67" y="468" font-family="Adwaita Sans, sans-serif" font-size="18.5" font-weight="450" fill="#CAD5E0">Scroll, semantic DOM, dialog &amp; canvas</text>
+ <text x="67" y="497" font-family="Adwaita Sans, sans-serif" font-size="18.5" font-weight="450" fill="#CAD5E0">sync · HTTP POST + WebSocket + SSE +</text>
+ <text x="67" y="526" font-family="Adwaita Sans, sans-serif" font-size="18.5" font-weight="450" fill="#CAD5E0">SFS2X binary single-flight mux</text>
+</g>
+
+<g id="card-mcp">
+ <rect x="448" y="384" width="384" height="170" rx="3" fill="#142132" stroke="#394859"/>
+ <path d="M449 384h61" stroke="#E8622C" stroke-width="3" fill="none"/>
+ <text x="467" y="428" font-family="Adwaita Sans, sans-serif" font-size="27" font-weight="700" letter-spacing="-0.8" fill="#F4F5EF">Causal Forensics</text>
+ <text x="467" y="468" font-family="Adwaita Sans, sans-serif" font-size="18.5" font-weight="450" fill="#CAD5E0">Rust N-API TabEventBus (gestureSeq) ·</text>
+ <text x="467" y="497" font-family="Adwaita Sans, sans-serif" font-size="18.5" font-weight="450" fill="#CAD5E0">exact PNG + clipped overflow audit ·</text>
+ <text x="467" y="526" font-family="Adwaita Sans, sans-serif" font-size="18.5" font-weight="450" fill="#CAD5E0">frame-stepped filmstrips &amp; doctor CLI</text>
+</g>
+
+<g id="card-emulation">
+ <rect x="848" y="384" width="384" height="170" rx="3" fill="#142132" stroke="#394859"/>
+ <path d="M849 384h61" stroke="#F7BF2E" stroke-width="3" fill="none"/>
+ <text x="867" y="428" font-family="Adwaita Sans, sans-serif" font-size="27" font-weight="700" letter-spacing="-0.8" fill="#F4F5EF">POS &amp; Slow-Device Lab</text>
+ <text x="867" y="468" font-family="Adwaita Sans, sans-serif" font-size="18.5" font-weight="450" fill="#CAD5E0">Sunmi V2 Pro &amp; low-end Android CDP</text>
+ <text x="867" y="497" font-family="Adwaita Sans, sans-serif" font-size="18.5" font-weight="450" fill="#CAD5E0">profiles · CPU rate calibration ·</text>
+ <text x="867" y="526" font-family="Adwaita Sans, sans-serif" font-size="18.5" font-weight="450" fill="#CAD5E0">off-thread V8 .cpuprofile hotspots</text>
+</g>
+
+<g id="footer">
+ <path d="M48 579h1184" stroke="#394859"/>
+ <rect x="48" y="593" width="114" height="29" rx="14.5" fill="#142131" stroke="#435267"/>
+ <text x="61" y="613" font-family="GeistMono Nerd Font Mono, monospace" font-size="14" font-weight="500" fill="#CED8E3">Claude Code</text>
+ <rect x="170" y="593" width="69" height="29" rx="14.5" fill="#142131" stroke="#435267"/>
+ <text x="183" y="613" font-family="GeistMono Nerd Font Mono, monospace" font-size="14" font-weight="500" fill="#CED8E3">Codex</text>
+ <rect x="247" y="593" width="96" height="29" rx="14.5" fill="#142131" stroke="#435267"/>
+ <text x="260" y="613" font-family="GeistMono Nerd Font Mono, monospace" font-size="14" font-weight="500" fill="#CED8E3">OpenCode</text>
+ <rect x="351" y="593" width="118" height="29" rx="14.5" fill="#142131" stroke="#435267"/>
+ <text x="364" y="613" font-family="GeistMono Nerd Font Mono, monospace" font-size="14" font-weight="500" fill="#CED8E3">Antigravity</text>
+ <g text-anchor="end">
+  <text x="1231" y="615" font-family="GeistMono Nerd Font Mono, monospace" font-size="18" font-weight="550" fill="#EEF1F3">github.com/arielonoriaga/iron-browser</text>
+ </g>
+</g>
+</svg>

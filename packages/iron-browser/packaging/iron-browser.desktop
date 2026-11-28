@@ -1,0 +1,15 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=IronBrowser
+GenericName=Dual-Viewport Developer Browser
+Comment=Site-agnostic Zen Chromium browser with simultaneous Portrait + Landscape viewports, mirrored interaction, live telemetry, and native MCP
+TryExec=iron-browser
+Exec=iron-browser %U
+Icon=iron-browser
+Terminal=false
+Categories=Network;WebBrowser;
+StartupWMClass=iron-browser
+StartupNotify=true
+MimeType=text/html;x-scheme-handler/http;x-scheme-handler/https;
+Keywords=browser;iron-browser;devtools;responsive;portrait;landscape;mcp;iron;

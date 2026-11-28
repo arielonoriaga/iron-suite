@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline';" />
+  <title>IronBrowser Agent Dock</title>
+  <link rel="stylesheet" href="./agent-dock.css" />
+</head>
+<body>
+  <div id="dock-root" class="dock-root">
+    <!-- Custom resize handles (active only when floating) -->
+    <div class="float-resize-handle handle-n" data-resize-edge="n" aria-label="Resize top edge"></div>
+    <div class="float-resize-handle handle-s" data-resize-edge="s" aria-label="Resize bottom edge"></div>
+    <div class="float-resize-handle handle-e" data-resize-edge="e" aria-label="Resize right edge"></div>
+    <div class="float-resize-handle handle-w" data-resize-edge="w" aria-label="Resize left edge"></div>
+    <div class="float-resize-handle handle-ne" data-resize-edge="ne" aria-label="Resize top-right corner"></div>
+    <div class="float-resize-handle handle-nw" data-resize-edge="nw" aria-label="Resize top-left corner"></div>
+    <div class="float-resize-handle handle-se" data-resize-edge="se" aria-label="Resize bottom-right corner" title="Drag any edge or corner to resize"></div>
+    <div class="float-resize-handle handle-sw" data-resize-edge="sw" aria-label="Resize bottom-left corner"></div>
+
+    <header id="dock-drag-bar" class="dock-header">
+      <div class="dock-brand">
+        <span id="status-dot" class="status-dot"></span>
+        <span class="brand-title">IRON AGENT</span>
+        <span id="session-badge" class="session-badge">Idle</span>
+      </div>
+      <div class="dock-actions">
+        <button id="btn-format-md" class="hdr-btn active" type="button" title="Toggle Markdown & Code formatting vs Raw ANSI terminal">MD</button>
+        <button id="btn-mode-docked" class="hdr-btn" title="Dock to side">Dock</button>
+        <button id="btn-mode-floating" class="hdr-btn" title="Float over viewports">Float</button>
+        <button id="btn-mode-min" class="hdr-btn" title="Minimize (Ctrl+`)">_</button>
+      </div>
+    </header>
+
+    <section class="launcher-panel">
+      <div class="launcher-tabs">
+        <button id="tab-running" class="ltab active" type="button">Running Instances</button>
+        <button id="tab-start" class="ltab" type="button">Start CLI Agent</button>
+        <button id="btn-refresh-instances" class="mini-btn" type="button" title="Refresh live agent / terminal instances">↻</button>
+        <button id="btn-disconnect" class="mini-btn danger hidden" type="button" title="Disconnect / Stop session">Stop</button>
+      </div>
+
+      <div id="pane-running" class="launcher-body">
+        <div id="instance-list" class="instance-list"></div>
+      </div>
+
+      <div id="pane-start" class="launcher-body hidden">
+        <div id="preset-chips" class="preset-chips">
+          <button class="chip-btn" data-preset="shell" type="button">shell</button>
+        </div>
+        <div class="custom-row">
+          <input id="input-cwd" class="field-input" type="text" placeholder="Working dir (e.g. ~/Projects/...)" />
+        </div>
+        <form id="custom-cli-form" class="custom-row">
+          <input id="input-custom-cli" class="field-input" type="text" placeholder="Or any CLI command (e.g. claude, aider, sh -l, ...)" />
+          <button class="run-btn" type="submit">Start</button>
+        </form>
+      </div>
+    </section>
+
+    <div class="transcript-toolbar">
+      <span class="transcript-label">Transcript</span>
+      <div class="transcript-actions">
+        <button id="btn-copy-transcript" class="transcript-btn" type="button" title="Copy transcript to clipboard">Copy</button>
+        <button id="btn-export-transcript" class="transcript-btn" type="button" title="Export transcript to file">Export</button>
+        <button id="btn-clear-transcript" class="transcript-btn danger" type="button" title="Clear transcript">Clear</button>
+      </div>
+    </div>
+
+    <main id="terminal-wrap" class="terminal-wrap" tabindex="0" aria-label="Agent terminal output (click to send direct keys)">
+      <div id="terminal-screen" class="terminal-screen md-mode"></div>
+    </main>
+
+    <div class="quick-keys-bar">
+      <button id="btn-insert-context" class="qkey accent" type="button" title="Insert active tab URL, viewport sizes & WebGL/error context">+ Tab Context</button>
+      <button class="qkey" data-skey="1" type="button">[1]</button>
+      <button class="qkey" data-skey="2" type="button">[2]</button>
+      <button class="qkey" data-skey="3" type="button">[3]</button>
+      <button class="qkey" data-skey="Enter" type="button">Enter</button>
+      <button class="qkey" data-skey="Escape" type="button">Esc</button>
+      <button class="qkey danger" data-skey="Interrupt" type="button">^C</button>
+    </div>
+
+    <div id="composer-status" class="composer-status hidden" role="status" aria-live="polite"></div>
+
+    <form id="chat-form" class="chat-composer">
+      <textarea id="chat-input" class="chat-input" rows="2" placeholder="Chat with connected instance or CLI agent (Enter to send, Shift+Enter newline)..."></textarea>
+      <button id="btn-send" class="send-btn" type="submit">Send</button>
+    </form>
+  </div>
+  <script src="./agent-dock.js"></script>
+</body>
+</html>

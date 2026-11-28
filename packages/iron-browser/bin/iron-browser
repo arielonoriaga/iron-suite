@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
+ROOT_DIR="$(cd "$(dirname "$SCRIPT_PATH")/.." && pwd)"
+
+resolve_mcp_bin() {
+  local mcp_bin="${IRON_BROWSER_MCP_BIN:-}"
+  if [[ -z "$mcp_bin" ]]; then
+    for candidate in \
+      "$ROOT_DIR/target/release/iron-browser-mcp" \
+      "$ROOT_DIR/target/debug/iron-browser-mcp" \
+      "$HOME/.cache/cargo-targets/main/release/iron-browser-mcp" \
+      "$HOME/.cache/cargo-targets/main/debug/iron-browser-mcp" \
+      "$(command -v iron-browser-mcp 2>/dev/null || true)"; do
+      if [[ -n "$candidate" && -x "$candidate" ]]; then
+        mcp_bin="$candidate"
+        break
+      fi
+    done
+  fi
+  if [[ -z "$mcp_bin" ]]; then
+    echo "iron-browser-mcp binary not found; build with: cargo build --release -p iron-browser-mcp" >&2
+    exit 1
+  fi
+  printf '%s' "$mcp_bin"
+}
+
+if [[ "${1:-}" == "mcp" ]]; then
+  shift
+  MCP_BIN="$(resolve_mcp_bin)"
+  exec "$MCP_BIN" "$@"
+fi
+
+if [[ "${1:-}" == "doctor" || "${1:-}" == "health" ]]; then
+  shift
+  MCP_BIN="$(resolve_mcp_bin)"
+  exec "$MCP_BIN" --doctor "$@"
+fi
+
+APP_DIR="$ROOT_DIR/app"
+ELECTRON_BIN="$APP_DIR/node_modules/.bin/electron"
+
+if [[ ! -x "$ELECTRON_BIN" ]]; then
+  echo "Electron not installed in $APP_DIR; run: (cd $APP_DIR && bun install)" >&2
+  exit 1
+fi
+
+if [[ ! -f "$APP_DIR/dist/main/index.js" || ! -f "$APP_DIR/dist/native/iron_browser_bus.node" ]]; then
+  (cd "$APP_DIR" && bun run build)
+fi
+
+# Prevent Linux systemd-coredump from holding a 1.45 TB V8 virtual address space in
+# `anon_pipe_write` (`CoreDumping: 1`) for 5 minutes with ctl.sock still bound; Electron's
+# out-of-process Crashpad (`crashReporter`) still writes full minidumps to Crashpad/completed.
+if [[ "${IRON_BROWSER_CORE_DUMP:-0}" != "1" ]]; then
+  ulimit -c 0 2>/dev/null || true
+fi
+
+HAS_OZONE_ARG=0
+for arg in "$@"; do
+  if [[ "$arg" == --ozone-platform* ]]; then
+    HAS_OZONE_ARG=1
+    break
+  fi
+done
+
+OZONE_ARGS=()
+if [[ "$HAS_OZONE_ARG" -eq 0 ]]; then
+  if [[ -n "${DISPLAY:-}" || -n "${WAYLAND_DISPLAY:-}" ]]; then
+    OZONE_ARGS=(--ozone-platform-hint=auto)
+  else
+    OZONE_ARGS=(--ozone-platform=headless --ozone-override-screen-size=1480,920)
+  fi
+fi
+
+exec "$ELECTRON_BIN" "$APP_DIR" --class=iron-browser "${OZONE_ARGS[@]}" "$@"

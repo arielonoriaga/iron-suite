@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:;" />
+  <title>IronBrowser</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <div id="shell-root" class="shell-root">
+    <!-- Top URL & Control Bar (40px) -->
+    <header id="top-bar" class="top-bar">
+      <div class="top-left">
+        <button id="btn-rail" class="icon-btn" title="Toggle Zen Rail (Ctrl+\)" aria-label="Toggle Zen Rail">
+          <svg viewBox="0 0 16 16"><rect x="2" y="2.5" width="12" height="11" rx="1.5"/><line x1="6" y1="2.5" x2="6" y2="13.5"/></svg>
+        </button>
+        <button id="btn-back" class="icon-btn" title="Back" aria-label="Back">
+          <svg viewBox="0 0 16 16"><polyline points="9.5 3.5 5 8 9.5 12.5"/></svg>
+        </button>
+        <button id="btn-forward" class="icon-btn" title="Forward" aria-label="Forward">
+          <svg viewBox="0 0 16 16"><polyline points="6.5 3.5 11 8 6.5 12.5"/></svg>
+        </button>
+        <button id="btn-reload" class="icon-btn" title="Reload (Clear Cache — Ctrl+Shift+R)" aria-label="Reload">
+          <svg viewBox="0 0 16 16"><path d="M13 8a5 5 0 1 1-1.4-3.5"/><polyline points="13 2.5 13 5.5 10 5.5"/></svg>
+        </button>
+        <button id="btn-history" class="icon-btn" title="Recent History & Closed Tabs" aria-label="Recent History">
+          <svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.5"/><polyline points="8 4.8 8 8.2 10.4 9.6"/></svg>
+        </button>
+      </div>
+
+      <form id="url-form" class="url-form" autocomplete="off">
+        <input id="url-input" class="url-input" type="text" list="url-history-list" spellcheck="false" placeholder="Enter URL or localhost:port (Ctrl+L)" aria-label="Address bar" />
+        <datalist id="url-history-list"></datalist>
+      </form>
+
+      <div class="top-right">
+        <button id="btn-dual" class="pill-btn" title="Toggle Single / Dual Viewports (Ctrl+Shift+D)">
+          <svg viewBox="0 0 16 16"><rect x="1.5" y="2.5" width="4.5" height="11" rx="1"/><rect x="7.5" y="2.5" width="7" height="11" rx="1"/></svg>
+          <span id="lbl-dual">Dual</span>
+        </button>
+        <button id="btn-mirror" class="pill-btn" title="Toggle 3-Tier Mirrored Interaction (Ctrl+M)">
+          <svg viewBox="0 0 16 16"><polyline points="5 4 2 7 5 10"/><line x1="2.5" y1="7" x2="13.5" y2="7"/><polyline points="11 6 14 9 11 12"/></svg>
+          <span id="lbl-mirror">Mirror</span>
+        </button>
+        <button id="btn-session" class="pill-btn" title="Toggle Shared / Isolated Secondary Partition">
+          <svg viewBox="0 0 16 16"><path d="M8 2L3 4v4c0 3.2 2.1 5.4 5 6 2.9-.6 5-2.8 5-6V4L8 2z"/></svg>
+          <span id="lbl-session">Shared</span>
+        </button>
+        <button id="btn-dedup" class="pill-btn" title="Toggle Request & WS/SSE Deduplication (Dual + Shared + Mirror)">
+          <span id="lbl-dedup">Dedup On</span>
+        </button>
+        <button id="btn-eco" class="pill-btn" title="Toggle Eco DPR Cap vs Full HiDPI">
+          <span id="lbl-eco">Eco</span>
+        </button>
+        <button id="btn-auto-sleep" class="pill-btn" title="Toggle Opt-in Auto-Sleep for Inactive Tabs">
+          <span id="lbl-auto-sleep">Auto-Sleep</span>
+        </button>
+        <button id="btn-agent-chat" class="pill-btn agent-chat-btn" title="Toggle Embedded Agent Chat & Running CLI Instances (Ctrl+`)">
+          <span id="agent-chat-dot" class="agent-chat-dot"></span>
+          <span id="lbl-agent-chat">Agent Chat</span>
+        </button>
+        <button id="btn-theme" class="icon-btn" title="Toggle Celestial Dark / Light Theme" aria-label="Toggle Theme">
+          <svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="3.5"/><path d="M8 1.5v1.5M8 13v1.5M1.5 8H3M13 8h1.5M3.4 3.4l1.1 1.1M11.5 11.5l1.1 1.1M12.6 3.4l-1.1 1.1M4.5 11.5l-1.1 1.1"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <!-- Navigation Load Error Banner (34px when active) -->
+    <div id="load-error-banner" class="error-banner hidden" role="alert">
+      <span id="load-error-text" class="error-banner-text">Failed to load page</span>
+      <button id="btn-retry-load" class="error-banner-btn" type="button">Retry</button>
+      <button id="btn-dismiss-error" class="find-btn" type="button" aria-label="Dismiss error" title="Dismiss">×</button>
+    </div>
+
+    <!-- Find-in-Page Bar (34px when active, Ctrl+F) -->
+    <div id="find-bar" class="find-bar hidden" data-testid="find-bar">
+      <input id="find-input" class="find-input" type="text" placeholder="Find in page..." aria-label="Find in page" spellcheck="false" />
+      <span id="find-count" class="find-count">0 / 0</span>
+      <button id="find-prev" class="find-btn" type="button" aria-label="Previous match" title="Previous match (Shift+Enter)">▲</button>
+      <button id="find-next" class="find-btn" type="button" aria-label="Next match" title="Next match (Enter)">▼</button>
+      <button id="find-close" class="find-btn" type="button" aria-label="Close find bar" title="Close (Esc)">×</button>
+    </div>
+
+    <!-- Collapsible Zen Vertical Tab Rail -->
+    <aside id="zen-rail" class="zen-rail">
+      <div class="rail-header">
+        <span class="rail-brand">IRON<span class="rail-brand-sub">BROWSER</span></span>
+        <button id="btn-new-tab" class="rail-add-btn" title="New Tab (Ctrl+T)">
+          <svg viewBox="0 0 16 16"><line x1="8" y1="3" x2="8" y2="13"/><line x1="3" y1="8" x2="13" y2="8"/></svg>
+          <span>New</span>
+        </button>
+      </div>
+      <div id="tab-list" class="tab-list"></div>
+      <div id="history-section" class="history-section hidden">
+        <div class="history-header">
+          <span class="history-heading">RECENT</span>
+          <button id="btn-clear-history" class="history-clear-btn" title="Clear recent history">Clear</button>
+        </div>
+        <div id="history-list" class="history-list"></div>
+      </div>
+      <div class="rail-footer">
+        <div class="rail-hint"><kbd>Ctrl+Shift+D</kbd><span>Dual Split</span></div>
+        <div class="rail-hint"><kbd>Ctrl+M</kbd><span>Mirror Sync</span></div>
+        <div class="rail-hint"><kbd>Ctrl+Shift+T</kbd><span>Reopen Tab</span></div>
+        <div class="rail-hint"><kbd>Ctrl+\</kbd><span>Hide Rail</span></div>
+        <div class="rail-hint"><kbd>Ctrl+`</kbd><span>Agent Chat</span></div>
+        <div class="rail-hint"><kbd>F12</kbd><span>DevTools Dock</span></div>
+      </div>
+    </aside>
+
+    <!-- Portrait Viewport Header (28px, Dual Mode only) -->
+    <div id="portrait-header" class="vp-header">
+      <span class="vp-tag">PORTRAIT</span>
+      <select id="select-portrait-preset" class="preset-select" aria-label="Portrait preset"></select>
+      <button id="btn-audio-portrait" class="vp-audio-btn" title="Toggle Portrait Audio" aria-label="Toggle Portrait Audio"></button>
+      <span id="portrait-fps" class="vp-stat">-- fps</span>
+    </div>
+
+    <!-- Split Resize Handle (6px, Dual Mode only) -->
+    <div id="split-divider" class="split-divider" title="Drag to resize split"></div>
+
+    <!-- Agent Dock Resize Handle (Docked mode only) -->
+    <div id="agent-resize-handle" class="split-divider hidden" title="Drag to resize Agent Chat Dock"></div>
+
+    <!-- Landscape Viewport Header (28px) -->
+    <div id="landscape-header" class="vp-header">
+      <span id="landscape-tag" class="vp-tag">LANDSCAPE</span>
+      <select id="select-landscape-preset" class="preset-select" aria-label="Landscape preset"></select>
+      <div id="zoom-controls" class="zoom-controls">
+        <button id="btn-zoom-out" class="vp-zoom-btn" type="button" title="Zoom out (Ctrl+-)" aria-label="Zoom out">−</button>
+        <button id="btn-zoom-reset" class="vp-zoom-reset" type="button" title="Reset zoom (Ctrl+0)" aria-label="Reset zoom">100%</button>
+        <button id="btn-zoom-in" class="vp-zoom-btn" type="button" title="Zoom in (Ctrl+=)" aria-label="Zoom in">+</button>
+      </div>
+      <button id="btn-audio-landscape" class="vp-audio-btn" title="Toggle Landscape Audio" aria-label="Toggle Landscape Audio"></button>
+      <span id="landscape-fps" class="vp-stat">-- fps</span>
+    </div>
+
+    <!-- Always-Visible 28px Live Telemetry Strip (top edge doubles as dock resize handle) -->
+    <div id="telemetry-bar" class="telemetry-bar">
+      <div id="dock-resize-handle" class="dock-resize-handle" title="Drag to resize DevTools dock"></div>
+      <div class="telemetry-metrics">
+        <span class="metric-item"><span class="metric-k">GPU</span> <span id="m-gpu" class="metric-v">0.0%</span></span>
+        <span class="metric-sep">·</span>
+        <span class="metric-item"><span class="metric-k">Port</span> <span id="m-port" class="metric-v">--</span></span>
+        <span class="metric-sep">·</span>
+        <span class="metric-item"><span class="metric-k">Land</span> <span id="m-land" class="metric-v">--</span></span>
+        <span class="metric-sep">·</span>
+        <span class="metric-item"><span class="metric-k">RAM</span> <span id="m-ram" class="metric-v">0 MB</span></span>
+        <span class="metric-sep">·</span>
+        <span class="metric-item"><span class="metric-k">Frame</span> <span id="m-frame" class="metric-v">--</span></span>
+        <svg id="sparkline" class="sparkline" viewBox="0 0 64 16" preserveAspectRatio="none" aria-label="Frame time sparkline">
+          <polyline id="sparkline-line" fill="none" stroke="currentColor" stroke-width="1.4" points="" />
+        </svg>
+        <span class="metric-sep">·</span>
+        <span class="metric-item"><span class="metric-k">Heap</span> <span id="m-heap" class="metric-v">0 MB</span></span>
+        <span class="metric-sep">·</span>
+        <span class="metric-item"><span class="metric-k">DOM</span> <span id="m-dom" class="metric-v">0</span></span>
+        <span id="m-dc-sep" class="metric-sep hidden">·</span>
+        <span id="m-dc-wrap" class="metric-item hidden"><span class="metric-k">DC</span> <span id="m-dc" class="metric-v">0</span></span>
+      </div>
+
+      <div class="telemetry-pills">
+        <span id="download-toast" class="telemetry-stat-pill download-toast hidden" role="status" aria-live="polite"></span>
+        <span id="pill-dedup-count" class="telemetry-stat-pill" title="Deduplicated mutations in active tab">
+          Dedup <span id="m-dedup">0</span>
+        </span>
+        <button id="pill-emulation" class="anomaly-pill emu-pill hidden" title="Active Slow-Device Emulation — click to reset to None">
+          Throttle: <span id="emu-pill-label"></span>
+        </button>
+        <button id="pill-mirror-miss" class="anomaly-pill mirror-miss-pill hidden" title="Interactive Mirror Miss — click to copy redacted debug JSON">
+          Mirror miss: <span id="mirror-miss-label"></span>
+        </button>
+        <button id="pill-console" class="anomaly-pill" title="Focus viewport with latest Console Error">
+          Console <span id="err-console-count">0</span>
+        </button>
+        <button id="pill-network" class="anomaly-pill" title="Focus viewport with latest Failed Network Request">
+          Network <span id="err-network-count">0</span>
+        </button>
+        <button id="btn-dock-toggle" class="dock-toggle-btn" title="Toggle Docked Chrome DevTools (F12)">
+          DevTools
+        </button>
+      </div>
+    </div>
+
+    <!-- DevTools Target Switcher Header (28px, visible when dock is open) -->
+    <div id="devtools-header" class="devtools-header">
+      <div class="dt-switcher">
+        <span class="dt-label">Inspect:</span>
+        <button id="dt-target-portrait" class="dt-tab">Portrait</button>
+        <button id="dt-target-landscape" class="dt-tab">Landscape</button>
+      </div>
+      <span id="dt-status" class="dt-status">Chrome DevTools (Docked)</span>
+    </div>
+  </div>
+  <script src="./shell.js"></script>
+</body>
+</html>
